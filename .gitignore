@@ -1,0 +1,24 @@
+# Python / Backend
+backend/venv/
+backend/__pycache__/
+backend/.env
+backend/assets/output/*.mp4
+backend/assets/output/*.srt
+backend/assets/audio/*.mp3
+backend/assets/images/*.png
+backend/assets/images/*.jpg
+backend/.pytest_cache/
+*.pyc
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+status.json
