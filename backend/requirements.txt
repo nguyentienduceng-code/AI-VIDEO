@@ -7,3 +7,5 @@ edge-tts>=6.1.0
 moviepy>=2.0.0
 pillow>=10.4.0
 srt>=3.5.3
+python-multipart>=0.0.9
+mutagen>=1.47.0

@@ -1,29 +1,21 @@
 """
 main.py
 -------
-NÂNG CẤP TỔNG HỢP (giải quyết đồng thời nợ kỹ thuật #1, #3, #4):
+NÂNG CẤP V2 — Đa chế độ (Multi-Mode) AI Video Studio:
 
-1. FIX TIMEOUT (#3): Thay vì xử lý toàn bộ pipeline ngay trong request
-   HTTP (gây 504 Gateway Timeout với video dài), endpoint
-   `/api/generate-video` giờ:
-     - Tạo 1 `job_id`, lưu trạng thái "pending" vào bộ nhớ (dict).
-     - Lên lịch toàn bộ pipeline chạy trong `BackgroundTasks`.
-     - Trả về `job_id` NGAY LẬP TỨC (không chờ).
-   Frontend sau đó gọi `GET /api/job-status/{job_id}` định kỳ (polling)
-   để lấy % tiến trình và link video khi xong.
+5 chế độ tạo video:
+  1. storyteller   — Gemini viết kịch bản từ chủ đề → Imagen → TTS → render
+  2. photo_narration — User upload ảnh → Gemini multimodal → TTS → render với ảnh gốc
+  3. photo_slideshow — User upload ảnh → slideshow cinematic + BGM (không TTS)
+  4. script_video  — User paste script → Gemini chia cảnh → Imagen → TTS → render
+  5. quiz_listicle — Gemini sinh dạng Top N / Q&A → Imagen → TTS → render
 
-2. FIX EVENT LOOP (#1): toàn bộ chuỗi xử lý là `async def`, dùng
-   `await` trực tiếp xuống tts_service/gemini_service. Không có
-   run_until_complete ở đâu trong file này.
+Endpoints mới:
+  - POST /api/upload-images — upload ảnh cho photo_narration / photo_slideshow
+  - GET  /api/bgm-list      — danh sách nhạc nền có sẵn
+  - GET  /api/voices         — danh sách giọng đọc tiếng Việt
 
-3. FIX RÁC BỘ NHỚ (#4): sau khi render xong và trả video cho người dùng,
-   một task dọn dẹp sẽ tự xoá toàn bộ ảnh/audio tạm của job đó (giữ lại
-   video final trong 1 khoảng thời gian rồi cũng xoá).
-
-Lưu ý quan trọng khi triển khai thực tế nhiều người dùng đồng thời:
-   Dict `JOBS` ở đây chỉ lưu trong RAM của 1 process — đủ dùng cho
-   cá nhân (1 user, chạy local) như bạn đã chọn. Nếu sau này deploy
-   multi-instance/production thật, hãy thay bằng Redis hoặc DB.
+Giữ nguyên các fix nợ kỹ thuật V1 (#1 #3 #4).
 """
 
 from __future__ import annotations
@@ -35,13 +27,19 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from services import gemini_service, tts_service, video_service
+from services.image_upload_service import (
+    cleanup_upload,
+    get_upload_paths,
+    process_uploaded_images,
+)
 
-app = FastAPI(title="AI Video Maker API")
+app = FastAPI(title="AI Video Studio API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,8 +54,9 @@ ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 AUDIO_DIR = os.path.join(ASSETS_DIR, "audio")
 IMAGES_DIR = os.path.join(ASSETS_DIR, "images")
 OUTPUT_DIR = os.path.join(ASSETS_DIR, "output")
+BGM_DIR = os.path.join(ASSETS_DIR, "bgm")
 
-for d in (AUDIO_DIR, IMAGES_DIR, OUTPUT_DIR):
+for d in (AUDIO_DIR, IMAGES_DIR, OUTPUT_DIR, BGM_DIR):
     os.makedirs(d, exist_ok=True)
 
 
@@ -73,101 +72,246 @@ class JobState(BaseModel):
     srt_url: Optional[str] = None
     scenes: Optional[List[dict]] = None
     error: Optional[str] = None
+    mode: str = "storyteller"
     created_at: datetime = datetime.utcnow()
 
 
 JOBS: Dict[str, JobState] = {}
 
 
+# ---------------------------------------------------------------------------
+# WebSocket Connection Manager
+# ---------------------------------------------------------------------------
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        if job_id not in self.active_connections:
+            self.active_connections[job_id] = []
+        self.active_connections[job_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, job_id: str):
+        if job_id in self.active_connections:
+            self.active_connections[job_id].remove(websocket)
+            if not self.active_connections[job_id]:
+                del self.active_connections[job_id]
+
+    async def broadcast(self, job_id: str, message: dict):
+        if job_id in self.active_connections:
+            for connection in self.active_connections[job_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+manager = ConnectionManager()
+
+
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
 class GenerateVideoRequest(BaseModel):
-    topic: str
+    topic: Optional[str] = ""
+    mode: str = "storyteller"  # storyteller | photo_narration | photo_slideshow | script_video | quiz_listicle
+    num_scenes: int = 4  # 4-20
+    aspect_ratio: str = "9:16"  # 9:16 | 16:9 | 1:1
     gemini_api_key: Optional[str] = None
-    voice: Optional[str] = None  # ví dụ "vi-VN-HoaiMyNeural" / "vi-VN-NamMinhNeural"
+    voice: Optional[str] = None
     art_style: Optional[str] = "Cinematic"
+    bgm_track: Optional[str] = None  # filename from bgm/ dir, or None
+    script_text: Optional[str] = None  # for script_video mode
+    upload_session_id: Optional[str] = None  # for photo_narration / photo_slideshow
+    speech_rate: Optional[str] = "+0%"  # TTS speed: "-10%", "+0%", "+15%"
+
+
+VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle"}
+VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
 
 
 # ---------------------------------------------------------------------------
-# Pipeline chạy nền — đây là nơi tổng hợp toàn bộ logic cũ nằm rải rác
+# Pipeline helpers
 # ---------------------------------------------------------------------------
-async def _run_pipeline(job_id: str, topic: str, api_key: Optional[str], voice: Optional[str], art_style: Optional[str] = "Cinematic"):
+async def _update_job(job_id: str, **kwargs):
+    """Helper: cập nhật job state + broadcast qua WebSocket."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    for k, v in kwargs.items():
+        setattr(job, k, v)
+    await manager.broadcast(job_id, job.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# Pipeline chạy nền — đa chế độ
+# ---------------------------------------------------------------------------
+async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
     job_dir_audio = os.path.join(AUDIO_DIR, job_id)
     job_dir_images = os.path.join(IMAGES_DIR, job_id)
     os.makedirs(job_dir_audio, exist_ok=True)
     os.makedirs(job_dir_images, exist_ok=True)
 
-    try:
-        # --- Bước 1: Sinh kịch bản (Structured Output, không thể lỗi parse) ---
-        JOBS[job_id].status = "generating_script"
-        JOBS[job_id].message = "Đang sinh kịch bản với Gemini..."
-        JOBS[job_id].progress = 10
-        scenes = await gemini_service.generate_script(topic, art_style=art_style, api_key=api_key)
-        JOBS[job_id].scenes = scenes
+    mode = req.mode
+    api_key = req.gemini_api_key
+    voice = req.voice or tts_service.DEFAULT_VOICE
+    art_style = req.art_style or "Cinematic"
+    speech_rate = req.speech_rate or "+0%"
+    num_scenes = max(4, min(20, req.num_scenes))
+    aspect_ratio = req.aspect_ratio if req.aspect_ratio in VALID_ASPECT_RATIOS else "9:16"
 
-        # --- Bước 2: Sinh audio (TTS) + ảnh (Imagen, fallback placeholder) ---
-        JOBS[job_id].status = "generating_assets"
+    # Map aspect ratio cho Imagen
+    imagen_aspect = aspect_ratio.replace(":", ":")  # already fine for Imagen
+
+    # BGM path (nếu user chọn)
+    bgm_path = None
+    if req.bgm_track:
+        candidate = os.path.join(BGM_DIR, req.bgm_track)
+        if os.path.isfile(candidate):
+            bgm_path = candidate
+
+    try:
+        # ══════════════════════════════════════════════════════════════
+        # BƯỚC 1: SINH KỊCH BẢN — tuỳ theo mode
+        # ══════════════════════════════════════════════════════════════
+        await _update_job(job_id, status="generating_script", message="Đang sinh kịch bản...", progress=10)
+
+        scenes: List[dict] = []
+
+        if mode == "storyteller" or mode == "quiz_listicle":
+            if not req.topic or not req.topic.strip():
+                raise ValueError("Thiếu chủ đề (topic) cho mode này.")
+            scenes = await gemini_service.generate_script(
+                topic=req.topic, num_scenes=num_scenes, mode=mode,
+                art_style=art_style, api_key=api_key,
+            )
+
+        elif mode == "script_video":
+            if not req.script_text or not req.script_text.strip():
+                raise ValueError("Thiếu script text cho mode Script → Video.")
+            scenes = await gemini_service.split_script_to_scenes(
+                script_text=req.script_text, num_scenes=num_scenes,
+                art_style=art_style, api_key=api_key,
+            )
+
+        elif mode == "photo_narration":
+            if not req.upload_session_id:
+                raise ValueError("Thiếu ảnh upload cho mode Photo Narration.")
+            user_images = get_upload_paths(req.upload_session_id)
+            if not user_images:
+                raise ValueError("Không tìm thấy ảnh upload. Vui lòng upload lại.")
+            scenes = await gemini_service.generate_script_from_images(
+                image_paths=user_images, topic=req.topic, api_key=api_key,
+            )
+
+        elif mode == "photo_slideshow":
+            if not req.upload_session_id:
+                raise ValueError("Thiếu ảnh upload cho mode Photo Slideshow.")
+            user_images = get_upload_paths(req.upload_session_id)
+            if not user_images:
+                raise ValueError("Không tìm thấy ảnh upload. Vui lòng upload lại.")
+            # Slideshow: không cần Gemini, mỗi ảnh là 1 scene không có text
+            scenes = [
+                {"scene": i + 1, "text": "", "image_prompt": ""}
+                for i in range(len(user_images))
+            ]
+
+        await _update_job(job_id, scenes=scenes, progress=25)
+
+        # ══════════════════════════════════════════════════════════════
+        # BƯỚC 2: TẠO ASSETS — Audio (TTS) + Hình ảnh
+        # ══════════════════════════════════════════════════════════════
+        await _update_job(job_id, status="generating_assets")
+
         scene_assets = []
         total = len(scenes)
+
+        # Lấy ảnh user upload (nếu mode photo)
+        user_images = []
+        if mode in ("photo_narration", "photo_slideshow") and req.upload_session_id:
+            user_images = get_upload_paths(req.upload_session_id)
+
         for i, scene in enumerate(scenes):
             audio_path = os.path.join(job_dir_audio, f"scene_{i+1}.mp3")
             image_path = os.path.join(job_dir_images, f"scene_{i+1}.png")
 
-            JOBS[job_id].message = f"Đang tạo giọng đọc cảnh {i+1}/{total}..."
-            duration = await tts_service.synthesize_speech(
-                scene["text"], audio_path, voice=voice or tts_service.DEFAULT_VOICE
-            )
-
-            JOBS[job_id].message = f"Đang sinh ảnh AI cho cảnh {i+1}/{total}..."
-            try:
-                await gemini_service.generate_image(
-                    scene["image_prompt"], image_path, api_key=api_key
+            # ── Audio: TTS nếu có text ──
+            duration = video_service.SLIDESHOW_SCENE_DURATION  # default cho slideshow
+            if scene.get("text") and scene["text"].strip() and mode != "photo_slideshow":
+                await _update_job(job_id, message=f"Đang tạo giọng đọc cảnh {i+1}/{total}...")
+                duration = await tts_service.synthesize_speech(
+                    scene["text"], audio_path, voice=voice, rate=speech_rate,
                 )
-            except Exception as img_err:
-                # Fallback: không để lỗi sinh ảnh (hết quota, bị safety filter...)
-                # làm chết toàn bộ video. Dùng ảnh placeholder thay thế.
-                JOBS[job_id].message = (
-                    f"Cảnh {i+1}: sinh ảnh AI lỗi ({img_err}), dùng ảnh placeholder."
-                )
-                _create_placeholder_image(image_path)
+            else:
+                audio_path = ""  # slideshow: không có audio per-scene
 
-            scene_assets.append(
-                {
-                    "image_path": image_path,
-                    "audio_path": audio_path,
-                    "text": scene["text"],
-                    "duration": duration,
-                }
-            )
-            JOBS[job_id].progress = 10 + int(60 * (i + 1) / total)
+            # ── Image: dùng ảnh user hoặc sinh bằng Imagen ──
+            if mode in ("photo_narration", "photo_slideshow") and i < len(user_images):
+                # Dùng ảnh gốc của user
+                image_path = user_images[i]
+            else:
+                # Sinh ảnh AI bằng Imagen
+                await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
+                try:
+                    await gemini_service.generate_image(
+                        scene["image_prompt"], image_path,
+                        api_key=api_key, aspect_ratio=imagen_aspect,
+                    )
+                except Exception as img_err:
+                    await _update_job(
+                        job_id,
+                        message=f"Cảnh {i+1}: sinh ảnh AI lỗi ({img_err}), dùng ảnh placeholder.",
+                    )
+                    _create_placeholder_image(image_path)
 
-        # --- Bước 3: Render video (MoviePy v2, có crossfade + subtitle burn-in) ---
-        JOBS[job_id].status = "rendering"
-        JOBS[job_id].message = "Đang render video cuối cùng..."
-        JOBS[job_id].progress = 75
+            scene_assets.append({
+                "image_path": image_path,
+                "audio_path": audio_path,
+                "text": scene.get("text", ""),
+                "duration": duration,
+            })
+            await _update_job(job_id, progress=25 + int(50 * (i + 1) / total))
+
+        # ══════════════════════════════════════════════════════════════
+        # BƯỚC 3: RENDER VIDEO (MoviePy v2)
+        # ══════════════════════════════════════════════════════════════
+        await _update_job(
+            job_id, status="rendering", message="Đang render video cuối cùng...", progress=80,
+        )
 
         output_video_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
         output_srt_path = os.path.join(OUTPUT_DIR, f"{job_id}.srt")
 
-        # MoviePy là thư viện đồng bộ/CPU-bound -> chạy trong thread riêng
-        # để không block event loop trong lúc render (vài chục giây tới vài phút)
-        await asyncio.to_thread(video_service.render_final_video, scene_assets, output_video_path)
-        await asyncio.to_thread(video_service.generate_srt_file, scene_assets, output_srt_path)
+        # MoviePy CPU-bound -> chạy trong thread riêng
+        await asyncio.to_thread(
+            video_service.render_final_video,
+            scene_assets, output_video_path,
+            aspect_ratio=aspect_ratio,
+            bgm_path=bgm_path,
+            mode=mode,
+        )
 
-        JOBS[job_id].status = "done"
-        JOBS[job_id].progress = 100
-        JOBS[job_id].message = "Hoàn tất!"
-        JOBS[job_id].video_url = f"/api/download/{job_id}.mp4"
-        JOBS[job_id].srt_url = f"/api/download/{job_id}.srt"
+        # SRT chỉ có ý nghĩa khi có text (không cho slideshow)
+        if mode != "photo_slideshow":
+            await asyncio.to_thread(video_service.generate_srt_file, scene_assets, output_srt_path)
+
+        await _update_job(
+            job_id,
+            status="done", progress=100, message="Hoàn tất!",
+            video_url=f"/api/download/{job_id}.mp4",
+            srt_url=f"/api/download/{job_id}.srt" if mode != "photo_slideshow" else None,
+        )
 
     except Exception as e:
-        JOBS[job_id].status = "error"
-        JOBS[job_id].error = str(e)
-        JOBS[job_id].message = f"Lỗi: {e}"
+        await _update_job(job_id, status="error", error=str(e), message=f"Lỗi: {e}")
 
     finally:
-        # --- FIX NỢ #4: luôn dọn rác audio/ảnh tạm sau mỗi lần chạy,
-        # bất kể thành công hay lỗi. Chỉ giữ lại video/srt final. ---
+        # Dọn rác audio/ảnh tạm (giữ lại video/srt final + ảnh upload)
         shutil.rmtree(job_dir_audio, ignore_errors=True)
         shutil.rmtree(job_dir_images, ignore_errors=True)
+        # Cleanup ảnh upload sau khi render xong
+        if req.upload_session_id:
+            cleanup_upload(req.upload_session_id)
 
 
 def _create_placeholder_image(path: str):
@@ -181,11 +325,7 @@ def _create_placeholder_image(path: str):
 
 
 async def _cleanup_old_outputs(max_age_hours: int = 24):
-    """
-    Dọn các video/srt final cũ hơn max_age_hours trong assets/output.
-    Gọi định kỳ (vd. mỗi khi có request mới) để tránh tích rác lâu dài,
-    bổ sung thêm cho phần cleanup tức thời ở trên.
-    """
+    """Dọn các video/srt final cũ hơn max_age_hours trong assets/output."""
     now = datetime.utcnow().timestamp()
     for fname in os.listdir(OUTPUT_DIR):
         fpath = os.path.join(OUTPUT_DIR, fname)
@@ -200,17 +340,62 @@ async def _cleanup_old_outputs(max_age_hours: int = 24):
 # ---------------------------------------------------------------------------
 @app.post("/api/generate-video")
 async def generate_video(req: GenerateVideoRequest, background_tasks: BackgroundTasks):
-    if not req.topic or not req.topic.strip():
-        raise HTTPException(status_code=400, detail="Thiếu chủ đề (topic).")
+    # Validate mode
+    if req.mode not in VALID_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Mode không hợp lệ. Chọn 1 trong: {', '.join(VALID_MODES)}",
+        )
+
+    # Validate input theo mode
+    if req.mode in ("storyteller", "quiz_listicle") and (not req.topic or not req.topic.strip()):
+        raise HTTPException(status_code=400, detail="Thiếu chủ đề (topic) cho mode này.")
+
+    if req.mode == "script_video" and (not req.script_text or not req.script_text.strip()):
+        raise HTTPException(status_code=400, detail="Thiếu script text cho mode Script → Video.")
+
+    if req.mode in ("photo_narration", "photo_slideshow") and not req.upload_session_id:
+        raise HTTPException(status_code=400, detail="Thiếu ảnh upload. Vui lòng upload ảnh trước.")
 
     job_id = str(uuid.uuid4())
-    JOBS[job_id] = JobState(job_id=job_id, status="pending", message="Đã nhận yêu cầu, đang chờ xử lý...")
+    JOBS[job_id] = JobState(
+        job_id=job_id, status="pending", mode=req.mode,
+        message="Đã nhận yêu cầu, đang chờ xử lý...",
+    )
 
-    background_tasks.add_task(_run_pipeline, job_id, req.topic, req.gemini_api_key, req.voice, req.art_style)
+    background_tasks.add_task(_run_pipeline, job_id, req)
     background_tasks.add_task(_cleanup_old_outputs)
 
-    # Trả về NGAY, không chờ render -> không còn lo 504 Gateway Timeout
     return {"job_id": job_id, "status_url": f"/api/job-status/{job_id}"}
+
+
+@app.post("/api/upload-images")
+async def upload_images(images: List[UploadFile] = File(...)):
+    """
+    Upload ảnh cho mode photo_narration / photo_slideshow.
+    Trả về session_id và danh sách ảnh đã xử lý.
+    """
+    try:
+        session_id, paths = await process_uploaded_images(images)
+        return {
+            "session_id": session_id,
+            "count": len(paths),
+            "message": f"Đã upload thành công {len(paths)} ảnh.",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/bgm-list")
+async def bgm_list():
+    """Trả về danh sách nhạc nền có sẵn."""
+    return {"tracks": video_service.get_available_bgm()}
+
+
+@app.get("/api/voices")
+async def voices_list():
+    """Trả về danh sách giọng đọc tiếng Việt."""
+    return {"voices": tts_service.get_available_voices()}
 
 
 @app.get("/api/job-status/{job_id}")
@@ -219,6 +404,18 @@ async def job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Không tìm thấy job_id này.")
     return job
+
+
+@app.websocket("/api/ws/job-status/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await manager.connect(websocket, job_id)
+    try:
+        if job_id in JOBS:
+            await websocket.send_json(JOBS[job_id].model_dump())
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, job_id)
 
 
 @app.get("/api/download/{filename}")
@@ -233,4 +430,4 @@ async def download_file(filename: str):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "service": "AI Video Maker API"}
+    return {"status": "ok", "service": "AI Video Studio API v2"}
