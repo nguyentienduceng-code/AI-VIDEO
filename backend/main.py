@@ -124,6 +124,9 @@ class GenerateVideoRequest(BaseModel):
     script_text: Optional[str] = None  # for script_video mode
     upload_session_id: Optional[str] = None  # for photo_narration / photo_slideshow
     speech_rate: Optional[str] = "+0%"  # TTS speed: "-10%", "+0%", "+15%"
+    speech_pitch: Optional[str] = "+0Hz" # TTS pitch: "-5Hz", "+10Hz"
+    bgm_volume: Optional[float] = 0.15   # Volume control
+    negative_prompt: Optional[str] = ""  # For image generation avoidance
 
 
 VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle"}
@@ -221,6 +224,12 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
         # ══════════════════════════════════════════════════════════════
         # BƯỚC 2: TẠO ASSETS — Audio (TTS) + Hình ảnh
         # ══════════════════════════════════════════════════════════════
+        # Cập nhật Schema V2 (dict)
+        sentiment = "happy"
+        if isinstance(scenes, dict):
+            sentiment = scenes.get("sentiment", "happy")
+            scenes = scenes.get("scenes", [])
+            
         await _update_job(job_id, status="generating_assets")
 
         scene_assets = []
@@ -231,31 +240,52 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
         if mode in ("photo_narration", "photo_slideshow") and req.upload_session_id:
             user_images = get_upload_paths(req.upload_session_id)
 
+        # Dynamic BGM (Nạp từ sentiment)
+        if not req.bgm_track:
+            bgm_path = os.path.join(BGM_DIR, f"{sentiment}.mp3")
+            if not os.path.isfile(bgm_path):
+                bgm_path = os.path.join(BGM_DIR, "background.mp3")
+
+        from services import image_router
         for i, scene in enumerate(scenes):
             audio_path = os.path.join(job_dir_audio, f"scene_{i+1}.mp3")
             image_path = os.path.join(job_dir_images, f"scene_{i+1}.png")
 
+            text = scene.get("text", "")
+            img_prompt = scene.get("image_prompt", "")
+            sfx = scene.get("sfx", "")
+            visual_effect = scene.get("visual_effect", "zoom_in")
+
             # ── Audio: TTS nếu có text ──
             duration = video_service.SLIDESHOW_SCENE_DURATION  # default cho slideshow
-            if scene.get("text") and scene["text"].strip() and mode != "photo_slideshow":
+            if text.strip() and mode != "photo_slideshow":
                 await _update_job(job_id, message=f"Đang tạo giọng đọc cảnh {i+1}/{total}...")
-                duration = await tts_service.synthesize_speech(
-                    scene["text"], audio_path, voice=voice, rate=speech_rate,
-                )
+                try:
+                    dur = await tts_service.synthesize_speech(
+                        text, audio_path, voice=voice, rate=speech_rate, pitch=req.speech_pitch, mode=mode
+                    )
+                    duration = max(1.0, dur)
+                except Exception as audio_err:
+                    print(f"TTS Error: {audio_err}")
+                    audio_path = ""
+                    duration = 3.0
             else:
                 audio_path = ""  # slideshow: không có audio per-scene
 
             # ── Image: dùng ảnh user hoặc sinh bằng Imagen ──
             if mode in ("photo_narration", "photo_slideshow") and i < len(user_images):
                 # Dùng ảnh gốc của user
-                image_path = user_images[i]
+                shutil.copy(user_images[i], image_path)
             else:
-                # Sinh ảnh AI bằng Imagen
                 await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
                 try:
-                    await gemini_service.generate_image(
-                        scene["image_prompt"], image_path,
-                        api_key=api_key, aspect_ratio=imagen_aspect,
+                    await image_router.generate_image_with_fallback(
+                        image_prompt=img_prompt,
+                        output_path=image_path,
+                        aspect_ratio=imagen_aspect,
+                        google_api_key=api_key,
+                        banana_mode=getattr(req, "banana_mode", False),
+                        negative_prompt=req.negative_prompt
                     )
                 except Exception as img_err:
                     await _update_job(
@@ -267,8 +297,10 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
             scene_assets.append({
                 "image_path": image_path,
                 "audio_path": audio_path,
-                "text": scene.get("text", ""),
+                "text": text,
                 "duration": duration,
+                "sfx": sfx,
+                "visual_effect": visual_effect
             })
             await _update_job(job_id, progress=25 + int(50 * (i + 1) / total))
 
@@ -280,7 +312,7 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
         )
 
         output_video_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
-        output_srt_path = os.path.join(OUTPUT_DIR, f"{job_id}.srt")
+        output_srt_path = os.path.join(OUTPUT_DIR, f"{job_id}.ass")
 
         # MoviePy CPU-bound -> chạy trong thread riêng
         await asyncio.to_thread(
@@ -289,17 +321,18 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
             aspect_ratio=aspect_ratio,
             bgm_path=bgm_path,
             mode=mode,
+            bgm_volume=req.bgm_volume
         )
 
-        # SRT chỉ có ý nghĩa khi có text (không cho slideshow)
+        # ASS chỉ có ý nghĩa khi có text (không cho slideshow)
         if mode != "photo_slideshow":
-            await asyncio.to_thread(video_service.generate_srt_file, scene_assets, output_srt_path)
+            await asyncio.to_thread(video_service.generate_ass_file, scene_assets, output_srt_path, mode)
 
         await _update_job(
             job_id,
             status="done", progress=100, message="Hoàn tất!",
             video_url=f"/api/download/{job_id}.mp4",
-            srt_url=f"/api/download/{job_id}.srt" if mode != "photo_slideshow" else None,
+            srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
         )
 
     except Exception as e:

@@ -1,606 +1,756 @@
 import React, { useState, useRef, useCallback } from 'react';
-import axios from 'axios';
 import {
-  Film, Play, Loader2, CheckCircle, Sparkles, Mic, Video, Wand2, Key,
-  ImagePlus, Music, Upload, X, FileText, Brain, Camera, SlidersHorizontal,
-  MonitorPlay, Square, Smartphone
+  Wand2, Smartphone, Monitor, Square, AlertTriangle,
+  ChevronDown, ChevronUp, Trash2, Plus, GripVertical,
+  Upload, X, Eye, Download, RotateCcw, Key, Play,
+  Sparkles, PenLine, Film, Check
 } from 'lucide-react';
 
-const API_BASE = "http://127.0.0.1:8000";
+// ─── CONSTANTS ───
+const API_BASE = 'http://localhost:8000';
+
+const MODE_MAP = {
+  storyteller: 'storyteller',
+  img2vid: 'photo_narration',
+  slideshow: 'photo_slideshow',
+  script: 'script_video',
+  quiz: 'quiz_listicle',
+};
 
 const MODES = [
-  {
-    id: 'storyteller',
-    icon: <Wand2 size={22} />,
-    label: 'AI Storyteller',
-    desc: 'Nhập chủ đề → AI viết kịch bản, sinh ảnh, render video tự động',
-    color: '#f59e0b',
-  },
-  {
-    id: 'photo_narration',
-    icon: <Camera size={22} />,
-    label: 'Ảnh → Video',
-    desc: 'Upload ảnh của bạn → AI viết lời bình và kể chuyện cho từng ảnh',
-    color: '#3b82f6',
-  },
-  {
-    id: 'photo_slideshow',
-    icon: <ImagePlus size={22} />,
-    label: 'Slideshow',
-    desc: 'Upload ảnh → Video cinematic với nhạc nền, hiệu ứng Ken Burns',
-    color: '#8b5cf6',
-  },
-  {
-    id: 'script_video',
-    icon: <FileText size={22} />,
-    label: 'Script → Video',
-    desc: 'Paste script viết sẵn → AI chia cảnh, sinh ảnh, đọc lời cho bạn',
-    color: '#10b981',
-  },
-  {
-    id: 'quiz_listicle',
-    icon: <Brain size={22} />,
-    label: 'Quiz / Listicle',
-    desc: 'Nhập chủ đề → AI sinh video dạng "Top N" hoặc hỏi-đáp',
-    color: '#ec4899',
-  },
+  { id: 'storyteller', icon: '✨', title: 'AI Storyteller', desc: 'Nhập chủ đề → AI viết kịch bản,\nsinh ảnh, render video tự động' },
+  { id: 'img2vid', icon: '🖼️', title: 'Ảnh → Video', desc: 'Upload ảnh → AI viết lời bình\nvà kể chuyện cho từng ảnh' },
+  { id: 'slideshow', icon: '🎞️', title: 'Slideshow', desc: 'Upload ảnh → Video cinematic\nvới nhạc nền, hiệu ứng' },
+  { id: 'script', icon: '📝', title: 'Script → Video', desc: 'Paste script viết sẵn → AI chia\ncảnh, sinh ảnh, đọc lời' },
+  { id: 'quiz', icon: '❓', title: 'Quiz / Listicle', desc: 'Chủ đề → AI sinh video dạng\n"Top N" hoặc hỏi-đáp' },
 ];
 
-const ART_STYLES = [
-  { value: 'Cinematic', label: 'Cinematic (Điện ảnh)' },
-  { value: 'Anime', label: 'Anime (Hoạt hình)' },
-  { value: 'Realistic', label: 'Realistic (Chân thực)' },
-  { value: '3D Render', label: '3D Render (Khối 3D)' },
-  { value: 'Watercolor', label: 'Watercolor (Màu nước)' },
-  { value: 'Comic Book', label: 'Comic Book (Truyện tranh)' },
+const STYLES = [
+  { value: 'Anime illustration, vibrant colors, Studio Ghibli inspired', label: 'Anime (Hoạt hình)' },
+  { value: 'Photorealistic, cinematic lighting, 8K UHD', label: 'Realistic (Thực tế)' },
+  { value: '3D render, Pixar style, soft lighting, highly detailed', label: '3D Render' },
+  { value: 'Cinematic, dramatic lighting, widescreen composition', label: 'Cinematic (Điện ảnh)' },
+  { value: 'Watercolor painting, soft brush strokes, artistic', label: 'Watercolor (Màu nước)' },
+  { value: 'Cyberpunk 2077 style, neon lights, futuristic city, sci-fi', label: 'Cyberpunk 2077 (Tương lai)' },
+  { value: 'Dark Fantasy, gothic, moody lighting, mysterious, highly detailed', label: 'Dark Fantasy (Huyền bí)' },
+  { value: 'Vintage 35mm film, grainy, retro aesthetic, warm nostalgic colors', label: 'Vintage Film (Phim cũ)' },
+  { value: 'Comic book panel, manga style, heavy shadows, halftone patterns, dramatic angles', label: 'Comic/Manga (Truyện tranh)' },
+  { value: 'Hand-drawn Japanese animation, pastel tones, beautiful scenery, nostalgic', label: 'Japanese Animation (Tươi sáng)' },
 ];
 
-const ASPECT_RATIOS = [
-  { value: '9:16', label: '9:16 Dọc', desc: 'TikTok / Reels', icon: <Smartphone size={14} /> },
-  { value: '16:9', label: '16:9 Ngang', desc: 'YouTube', icon: <MonitorPlay size={14} /> },
-  { value: '1:1', label: '1:1 Vuông', desc: 'Instagram', icon: <Square size={14} /> },
+const VOICES = [
+  { value: 'vi-VN-NamMinhNeural', label: 'Nam - Nam Minh' },
+  { value: 'vi-VN-HoaiMyNeural', label: 'Nữ - Hoài My' },
+  { value: 'vi-VN-AnNiNeural', label: 'Nữ - An Ni (Trẻ trung)' },
+  { value: 'vi-VN-PhuongMyNeural', label: 'Nữ - Phương My (Tin tức)' },
+  { value: 'minion', label: 'Minion (Nhí nhảnh)' },
+  { value: 'minion_pro', label: 'Minion Pro (Hỗn loạn, Cuốn hút)' },
 ];
 
+// ─── MAIN APP ───
 export default function App() {
-  // ── Mode & Input state ──
-  const [mode, setMode] = useState('storyteller');
+  // Workflow step: 'config' → 'editor' → 'rendering' → 'done'
+  const [step, setStep] = useState('config');
+
+  // Config states
+  const [activeMode, setActiveMode] = useState('storyteller');
   const [topic, setTopic] = useState('');
   const [scriptText, setScriptText] = useState('');
+  const [ratio, setRatio] = useState('9:16');
   const [numScenes, setNumScenes] = useState(6);
-  const [aspectRatio, setAspectRatio] = useState('9:16');
-
-  // ── Advanced settings ──
+  const [voice, setVoice] = useState('vi-VN-NamMinhNeural');
+  const [style, setStyle] = useState(STYLES[0].value);
+  const [bgm, setBgm] = useState('none');
   const [apiKey, setApiKey] = useState('');
-  const [voice, setVoice] = useState('vi-VN-HoaiMyNeural');
-  const [artStyle, setArtStyle] = useState('Cinematic');
-  const [bgmTrack, setBgmTrack] = useState('');
-  const [speechRate, setSpeechRate] = useState('+0%');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
 
-  // ── Image upload state ──
-  const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [uploadPreviews, setUploadPreviews] = useState([]);
+  // V3 features
+  const [useVeo, setUseVeo] = useState(false);
+  const [useAnimatedCaptions, setUseAnimatedCaptions] = useState(true);
+  const [ctaText, setCtaText] = useState('');
+
+  // V4 features (Phase 2 UI upgrades)
+  const [speechRate, setSpeechRate] = useState('+0%');
+  const [speechPitch, setSpeechPitch] = useState('+0Hz');
+  const [bgmVolume, setBgmVolume] = useState(15); // 0 to 100
+  const [negativePrompt, setNegativePrompt] = useState('');
+
+  // Upload states
   const [uploadSessionId, setUploadSessionId] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [uploadLoading, setUploadLoading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // ── Job state ──
+  // Script editor states
+  const [scenes, setScenes] = useState([]);
+  const [scriptLoading, setScriptLoading] = useState(false);
+
+  // Render states
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState(0);
-  const [message, setMessage] = useState('');
+  const [jobMessage, setJobMessage] = useState('');
+  const [progressLog, setProgressLog] = useState([]);
   const [videoUrl, setVideoUrl] = useState(null);
   const [srtUrl, setSrtUrl] = useState(null);
+
+  // Error
   const [errorMsg, setErrorMsg] = useState('');
-  const [script, setScript] = useState([]);
 
-  // ── BGM list ──
-  const [bgmList, setBgmList] = useState([]);
-  const [bgmLoaded, setBgmLoaded] = useState(false);
+  // Slider
+  const minScenes = 4, maxScenes = 20;
+  const sliderPercent = ((numScenes - minScenes) / (maxScenes - minScenes)) * 100;
 
-  const wsRef = useRef(null);
-  const dragCountRef = useRef(0);
-  const [isDragging, setIsDragging] = useState(false);
+  // ─── Needs upload? ───
+  const needsUpload = activeMode === 'img2vid' || activeMode === 'slideshow';
+  const needsScript = activeMode === 'script';
+  const needsTopic = !needsUpload && !needsScript;
 
-  // ── Load BGM list on first render ──
-  React.useEffect(() => {
-    if (!bgmLoaded) {
-      axios.get(`${API_BASE}/api/bgm-list`).then(res => {
-        setBgmList(res.data.tracks || []);
-        setBgmLoaded(true);
-      }).catch(() => setBgmLoaded(true));
-    }
-  }, [bgmLoaded]);
+  // ─── UPLOAD HANDLER ───
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
 
-  // ── Modes that need photo upload ──
-  const needsUpload = mode === 'photo_narration' || mode === 'photo_slideshow';
-  const needsTopic = mode === 'storyteller' || mode === 'quiz_listicle';
-  const needsScript = mode === 'script_video';
-  const needsSceneCount = mode === 'storyteller' || mode === 'quiz_listicle' || mode === 'script_video';
-
-  // ── Image upload handlers ──
-  const handleFileSelect = useCallback((files) => {
-    const newFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-    if (newFiles.length === 0) return;
-
-    const combined = [...uploadedFiles, ...newFiles].slice(0, 20);
-    setUploadedFiles(combined);
-
-    // Generate previews
-    const newPreviews = [...uploadPreviews];
-    newFiles.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setUploadPreviews(prev => [...prev, { name: file.name, src: e.target.result }].slice(0, 20));
-      };
-      reader.readAsDataURL(file);
-    });
-  }, [uploadedFiles, uploadPreviews]);
-
-  const removeImage = (index) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
-    setUploadPreviews(prev => prev.filter((_, i) => i !== index));
-    setUploadSessionId(null);
-  };
-
-  const handleDragEnter = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCountRef.current++;
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCountRef.current--;
-    if (dragCountRef.current === 0) setIsDragging(false);
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCountRef.current = 0;
-    setIsDragging(false);
-    if (e.dataTransfer.files?.length > 0) {
-      handleFileSelect(e.dataTransfer.files);
-    }
-  };
-
-  // ── Upload images to server ──
-  const uploadImagesToServer = async () => {
-    if (uploadedFiles.length === 0) return null;
-    if (uploadSessionId) return uploadSessionId; // already uploaded
-
-    setIsUploading(true);
-    try {
-      const formData = new FormData();
-      uploadedFiles.forEach(f => formData.append('images', f));
-      const res = await axios.post(`${API_BASE}/api/upload-images`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      const sid = res.data.session_id;
-      setUploadSessionId(sid);
-      setIsUploading(false);
-      return sid;
-    } catch (err) {
-      setIsUploading(false);
-      throw new Error(err.response?.data?.detail || 'Upload ảnh thất bại.');
-    }
-  };
-
-  // ── Generate video ──
-  const handleGenerate = async () => {
+    setUploadLoading(true);
     setErrorMsg('');
+    const formData = new FormData();
+    files.forEach(f => formData.append('images', f));
+
+    try {
+      const res = await fetch(`${API_BASE}/api/upload-images`, { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Upload lỗi');
+      }
+      const data = await res.json();
+      setUploadSessionId(data.session_id);
+      setUploadedFiles(files.map(f => f.name));
+      setNumScenes(files.length);
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
+  // ─── STEP 1: GENERATE SCRIPT ───
+  const handleGenerateScript = async () => {
+    if (needsTopic && !topic.trim()) {
+      setErrorMsg('Vui lòng nhập chủ đề video!');
+      return;
+    }
+    if (needsScript && !scriptText.trim()) {
+      setErrorMsg('Vui lòng nhập nội dung kịch bản!');
+      return;
+    }
+    if (needsUpload && !uploadSessionId) {
+      setErrorMsg('Vui lòng upload ảnh trước!');
+      return;
+    }
+
+    setErrorMsg('');
+    setScriptLoading(true);
+
+    try {
+      const payload = {
+        topic,
+        mode: MODE_MAP[activeMode],
+        num_scenes: numScenes,
+        art_style: style,
+        script_text: scriptText || undefined,
+        upload_session_id: uploadSessionId || undefined,
+        gemini_api_key: apiKey || undefined,
+      };
+
+      const res = await fetch(`${API_BASE}/api/generate-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Lỗi sinh kịch bản');
+      }
+
+      const data = await res.json();
+      setScenes(data.scenes || []);
+      setStep('editor');
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setScriptLoading(false);
+    }
+  };
+
+  // ─── STEP 2: RENDER VIDEO ───
+  const handleRenderVideo = async () => {
+    if (!scenes.length) {
+      setErrorMsg('Chưa có cảnh nào để render!');
+      return;
+    }
+
+    setErrorMsg('');
+    setStep('rendering');
+    setStatus('loading');
+    setProgress(0);
+    setJobMessage('Đang khởi tạo...');
+    setProgressLog([]);
     setVideoUrl(null);
     setSrtUrl(null);
-    setScript([]);
-    setStatus('pending');
-    setProgress(0);
 
     try {
-      // Upload images if needed
-      let sessionId = uploadSessionId;
-      if (needsUpload) {
-        if (uploadedFiles.length === 0) {
-          throw new Error('Vui lòng upload ít nhất 1 ảnh.');
-        }
-        sessionId = await uploadImagesToServer();
-      }
-
       const payload = {
-        mode,
-        topic: topic || '',
-        num_scenes: numScenes,
-        aspect_ratio: aspectRatio,
-        gemini_api_key: apiKey || null,
+        scenes,
+        mode: MODE_MAP[activeMode],
+        aspect_ratio: ratio,
         voice,
-        art_style: artStyle,
-        bgm_track: bgmTrack || null,
+        bgm_track: bgm === 'none' ? null : bgm,
+        upload_session_id: uploadSessionId || undefined,
         speech_rate: speechRate,
-        script_text: needsScript ? scriptText : null,
-        upload_session_id: needsUpload ? sessionId : null,
+        speech_pitch: speechPitch,
+        bgm_volume: bgmVolume / 100, // convert percentage to float
+        negative_prompt: negativePrompt || undefined,
+        gemini_api_key: apiKey || undefined,
+        use_veo: useVeo,
+        cta_text: ctaText || undefined,
+        use_animated_captions: useAnimatedCaptions,
       };
 
-      const res = await axios.post(`${API_BASE}/api/generate-video`, payload);
-      startWebSocket(res.data.job_id);
+      const res = await fetch(`${API_BASE}/api/render-video`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Lỗi server');
+      }
+
+      const data = await res.json();
+      const jobId = data.job_id;
+
+      // WebSocket progress
+      const ws = new WebSocket(`ws://localhost:8000/api/ws/job-status/${jobId}`);
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.progress !== undefined) setProgress(msg.progress);
+        if (msg.message) {
+          setJobMessage(msg.message);
+          setProgressLog(prev => {
+            const last = prev[prev.length - 1];
+            if (last === msg.message) return prev;
+            return [...prev, msg.message];
+          });
+        }
+
+        if (msg.status === 'done') {
+          ws.close();
+          setStatus('done');
+          setStep('done');
+          if (msg.video_url) setVideoUrl(`${API_BASE}${msg.video_url}`);
+          if (msg.srt_url) setSrtUrl(`${API_BASE}${msg.srt_url}`);
+        } else if (msg.status === 'error') {
+          ws.close();
+          setStatus('error');
+          setStep('rendering');
+          setErrorMsg(msg.error || msg.message || 'Có lỗi xảy ra');
+        }
+      };
+
+      ws.onerror = () => {
+        setStatus('error');
+        setErrorMsg('Mất kết nối WebSocket với máy chủ!');
+      };
+
     } catch (err) {
       setStatus('error');
-      setErrorMsg(err.response?.data?.detail || err.message || 'Lỗi từ server.');
+      setErrorMsg(err.message);
     }
   };
 
-  const startWebSocket = (jobId) => {
-    if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(`ws://127.0.0.1:8000/api/ws/job-status/${jobId}`);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      const job = JSON.parse(event.data);
-      setStatus(job.status);
-      setProgress(job.progress);
-      setMessage(job.message);
-      if (job.scenes?.length > 0) setScript(job.scenes);
-      if (job.status === 'done') {
-        ws.close();
-        setVideoUrl(`${API_BASE}${job.video_url}`);
-        if (job.srt_url) setSrtUrl(`${API_BASE}${job.srt_url}`);
-      }
-      if (job.status === 'error') {
-        ws.close();
-        setErrorMsg(job.error);
-      }
-    };
-
-    ws.onerror = () => {
-      ws.close();
-      setStatus('error');
-      setErrorMsg("Mất kết nối tới server (WebSocket lỗi).");
-    };
+  // ─── SCENE EDITOR HELPERS ───
+  const updateScene = (index, field, value) => {
+    setScenes(prev => prev.map((s, i) => i === index ? { ...s, [field]: value } : s));
+  };
+  const removeScene = (index) => {
+    setScenes(prev => prev.filter((_, i) => i !== index).map((s, i) => ({ ...s, scene: i + 1 })));
+  };
+  const addScene = () => {
+    setScenes(prev => [...prev, { scene: prev.length + 1, text: '', image_prompt: '' }]);
+  };
+  const moveScene = (from, to) => {
+    if (to < 0 || to >= scenes.length) return;
+    setScenes(prev => {
+      const arr = [...prev];
+      const [item] = arr.splice(from, 1);
+      arr.splice(to, 0, item);
+      return arr.map((s, i) => ({ ...s, scene: i + 1 }));
+    });
   };
 
-  const isProcessing = ['pending', 'generating_script', 'generating_assets', 'rendering'].includes(status);
-
-  const canGenerate = () => {
-    if (isProcessing) return false;
-    if (needsTopic && !topic.trim()) return false;
-    if (needsScript && !scriptText.trim()) return false;
-    if (needsUpload && uploadedFiles.length === 0) return false;
-    return true;
+  // ─── RESET ───
+  const handleReset = () => {
+    setStep('config');
+    setScenes([]);
+    setStatus('idle');
+    setProgress(0);
+    setJobMessage('');
+    setProgressLog([]);
+    setVideoUrl(null);
+    setSrtUrl(null);
+    setErrorMsg('');
+    setUploadSessionId(null);
+    setUploadedFiles([]);
   };
 
+  // ═══════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════
   return (
-    <div className="app-wrapper">
+    <div className="app-container">
 
-      {/* ── HEADER ── */}
-      <header className="app-header">
-        <div className="header-icon-wrap">
-          <Film size={26} />
+      {/* ─── HEADER ─── */}
+      <div className="app-header">
+        <div className="app-logo">
+          <Film size={24} /> AI Video Studio
         </div>
-        <div>
-          <h1 className="header-title">AI Video Studio</h1>
-          <p className="header-sub">Xưởng sản xuất Video Tự động — 5 chế độ · Đa nền tảng</p>
+        <div className="header-steps">
+          <div className={`header-step ${step === 'config' ? 'active' : ''} ${step !== 'config' ? 'completed' : ''}`}>
+            <div className="header-step-num">1</div> Cài đặt
+          </div>
+          <div className="header-step-arrow">→</div>
+          <div className={`header-step ${step === 'editor' ? 'active' : ''} ${['rendering', 'done'].includes(step) ? 'completed' : ''}`}>
+            <div className="header-step-num">2</div> Kịch bản
+          </div>
+          <div className="header-step-arrow">→</div>
+          <div className={`header-step ${step === 'rendering' || step === 'done' ? 'active' : ''}`}>
+            <div className="header-step-num">3</div> Render
+          </div>
         </div>
-        <div className="status-bar" style={{ marginLeft: 'auto' }}>
-          <span className="status-chip chip-green"><span className="chip-dot" />Backend Online</span>
-          <span className="status-chip chip-blue"><span className="chip-dot" />Gemini API</span>
-        </div>
-      </header>
+      </div>
 
-      {/* ── MODE SELECTOR ── */}
-      <div className="card mode-selector-card">
-        <p className="workflow-title">Chọn chế độ sản xuất</p>
-        <div className="mode-grid">
-          {MODES.map(m => (
-            <button
-              key={m.id}
-              className={`mode-card ${mode === m.id ? 'mode-active' : ''}`}
-              onClick={() => {
-                setMode(m.id);
-                setErrorMsg('');
-              }}
-              style={{ '--mode-color': m.color }}
+      {/* ─── MODE CARDS ─── */}
+      {step === 'config' && (
+        <div className="top-modes">
+          {MODES.map(mode => (
+            <div
+              key={mode.id}
+              className={`mode-card ${activeMode === mode.id ? 'active' : ''}`}
+              onClick={() => { setActiveMode(mode.id); setErrorMsg(''); }}
             >
-              <div className="mode-icon">{m.icon}</div>
-              <div className="mode-label">{m.label}</div>
-              <div className="mode-desc">{m.desc}</div>
-            </button>
+              <div className="mode-icon">{mode.icon}</div>
+              <div className="mode-title">{mode.title}</div>
+              <div className="mode-desc" style={{ whiteSpace: 'pre-line' }}>{mode.desc}</div>
+            </div>
           ))}
         </div>
-      </div>
+      )}
 
-      {/* ── MAIN GRID ── */}
-      <div className="main-grid">
-
-        {/* LEFT — Control Panel */}
-        <div className="card" style={{ alignSelf: 'start' }}>
-          <div className="card-top-bar" />
-
-          {/* ── Input Section (mode-dependent) ── */}
-          <div className="section-label">
-            <div className="step-badge">1</div>
-            <span className="section-title">
-              {needsUpload ? 'Upload ảnh của bạn' : needsScript ? 'Nhập kịch bản' : 'Nội dung Kịch bản'}
-            </span>
-          </div>
-
-          {/* Topic input (storyteller, quiz, photo_narration optional) */}
-          {(needsTopic || mode === 'photo_narration') && (
-            <div className="form-group">
-              <label className="form-label">
-                {mode === 'photo_narration' ? 'Chủ đề gợi ý (tùy chọn)' : 'Ý tưởng / Chủ đề'}
-              </label>
-              <textarea
-                className="form-textarea"
-                value={topic}
-                onChange={e => setTopic(e.target.value)}
-                placeholder={
-                  mode === 'quiz_listicle'
-                    ? 'Ví dụ: Top 5 sự thật thú vị về vũ trụ...'
-                    : mode === 'photo_narration'
-                    ? 'Ví dụ: Kỷ niệm chuyến du lịch Đà Lạt 2024...'
-                    : 'Ví dụ: Làm video 1 phút giới thiệu Căn hộ dịch vụ...'
-                }
-              />
-            </div>
-          )}
-
-          {/* Script input */}
-          {needsScript && (
-            <div className="form-group">
-              <label className="form-label">Nội dung kịch bản</label>
-              <textarea
-                className="form-textarea"
-                style={{ height: 200 }}
-                value={scriptText}
-                onChange={e => setScriptText(e.target.value)}
-                placeholder="Paste nội dung script bạn đã viết sẵn vào đây. AI sẽ tự chia cảnh, sinh ảnh minh họa và đọc lời cho bạn..."
-              />
-            </div>
-          )}
-
-          {/* Image upload zone */}
-          {needsUpload && (
-            <div className="form-group">
-              <div
-                className={`upload-zone ${isDragging ? 'upload-zone-active' : ''}`}
-                onDragEnter={handleDragEnter}
-                onDragLeave={handleDragLeave}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(e) => handleFileSelect(e.target.files)}
-                />
-                <Upload size={28} className="upload-icon" />
-                <p className="upload-text">Kéo thả ảnh vào đây hoặc click để chọn</p>
-                <p className="upload-hint">JPG, PNG, WebP · Tối đa 20 ảnh · Mỗi ảnh ≤ 10MB</p>
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/* STEP 1: CONFIG */}
+      {/* ═══════════════════════════════════════════════════════ */}
+      {step === 'config' && (
+        <div className="main-grid">
+          <div className="control-panel">
+            {/* ── Content Input ── */}
+            <div>
+              <div className="step-header">
+                <div className="step-badge step-1">1</div>
+                <span className="step-title">
+                  {needsUpload ? 'Upload Ảnh' : needsScript ? 'Nhập Kịch bản' : 'Ý Tưởng / Chủ Đề'}
+                </span>
               </div>
 
-              {/* Image preview grid */}
-              {uploadPreviews.length > 0 && (
-                <div className="image-grid">
-                  {uploadPreviews.map((img, i) => (
-                    <div key={i} className="image-thumb">
-                      <img src={img.src} alt={img.name} />
-                      <button className="image-remove" onClick={(e) => { e.stopPropagation(); removeImage(i); }}>
-                        <X size={12} />
-                      </button>
-                      <span className="image-index">{i + 1}</span>
+              {/* Topic input (storyteller, quiz) */}
+              {needsTopic && (
+                <>
+                  <label className="field-label">CHỦ ĐỀ VIDEO</label>
+                  <textarea
+                    className="form-textarea"
+                    value={topic}
+                    onChange={e => setTopic(e.target.value)}
+                    placeholder="VD: 5 sự thật thú vị về vũ trụ mà bạn chưa biết..."
+                    rows={4}
+                  />
+                </>
+              )}
+
+              {/* Script input (script mode) */}
+              {needsScript && (
+                <>
+                  <label className="field-label">KỊCH BẢN CỦA BẠN</label>
+                  <textarea
+                    className="form-textarea"
+                    value={scriptText}
+                    onChange={e => setScriptText(e.target.value)}
+                    placeholder="Paste toàn bộ script vào đây. AI sẽ tự chia thành các cảnh và sinh hình ảnh phù hợp..."
+                    rows={6}
+                    style={{ minHeight: 160 }}
+                  />
+                </>
+              )}
+
+              {/* Image upload (img2vid, slideshow) */}
+              {needsUpload && (
+                <div className="upload-zone">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleUpload}
+                    style={{ display: 'none' }}
+                  />
+                  {uploadedFiles.length === 0 ? (
+                    <div
+                      className="upload-placeholder"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Upload size={32} />
+                      <p>Nhấn để chọn ảnh (JPG, PNG, WebP)</p>
+                      <span>Tối đa 20 ảnh, mỗi ảnh ≤ 10MB</span>
                     </div>
-                  ))}
+                  ) : (
+                    <div className="upload-done">
+                      <Check size={20} style={{ color: 'var(--green)' }} />
+                      <span>Đã upload {uploadedFiles.length} ảnh</span>
+                      <button
+                        className="btn-icon"
+                        onClick={() => { setUploadedFiles([]); setUploadSessionId(null); }}
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  )}
+                  {uploadLoading && <div className="upload-loading">Đang upload...</div>}
                 </div>
               )}
             </div>
-          )}
 
-          <div className="divider" />
+            <div className="divider" />
 
-          {/* ── Settings Section ── */}
-          <div className="section-label">
-            <div className="step-badge" style={{ color: '#ec4899', borderColor: '#ec489940', background: '#ec489910' }}>2</div>
-            <span className="section-title">Cài đặt</span>
-          </div>
+            {/* ── Settings ── */}
+            <div>
+              <div className="step-header">
+                <div className="step-badge step-2">2</div>
+                <span className="step-title">Cài đặt</span>
+              </div>
 
-          {/* Aspect Ratio */}
-          <div className="form-group">
-            <label className="form-label">Tỉ lệ khung hình</label>
-            <div className="aspect-ratio-group">
-              {ASPECT_RATIOS.map(ar => (
-                <button
-                  key={ar.value}
-                  className={`ar-btn ${aspectRatio === ar.value ? 'ar-active' : ''}`}
-                  onClick={() => setAspectRatio(ar.value)}
-                >
-                  {ar.icon}
-                  <span>{ar.label}</span>
-                </button>
-              ))}
+              {/* Ratio */}
+              <div style={{ marginBottom: 24 }}>
+                <label className="field-label">TỈ LỆ KHUNG HÌNH</label>
+                <div className="ratio-group">
+                  {[
+                    { v: '9:16', icon: <Smartphone size={14} />, label: '9:16 Dọc' },
+                    { v: '16:9', icon: <Monitor size={14} />, label: '16:9 Ngang' },
+                    { v: '1:1', icon: <Square size={14} />, label: '1:1 Vuông' },
+                  ].map(r => (
+                    <button key={r.v} className={`ratio-btn ${ratio === r.v ? 'active' : ''}`} onClick={() => setRatio(r.v)}>
+                      {r.icon} {r.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Scenes slider */}
+              {!needsUpload && (
+                <div style={{ marginBottom: 24 }}>
+                  <div className="slider-header">
+                    <label className="field-label" style={{ marginBottom: 0 }}>SỐ CẢNH:</label>
+                    <span className="slider-value">{numScenes}</span>
+                  </div>
+                  <div className="slider-container">
+                    <div style={{ position: 'relative', height: 24, display: 'flex', alignItems: 'center' }}>
+                      <input type="range" min={minScenes} max={maxScenes} value={numScenes}
+                        onChange={e => setNumScenes(Number(e.target.value))}
+                        style={{ position: 'absolute', width: '100%', opacity: 0, zIndex: 10, cursor: 'pointer', height: '100%' }}
+                      />
+                      <div style={{ width: '100%', height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, position: 'relative' }}>
+                        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${sliderPercent}%`, background: 'var(--amber)', borderRadius: 2 }} />
+                        <div style={{ position: 'absolute', left: `${sliderPercent}%`, top: '50%', transform: 'translate(-50%, -50%)', width: 16, height: 16, background: 'var(--amber)', borderRadius: '50%', boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.2)' }} />
+                      </div>
+                    </div>
+                    <div className="slider-labels"><span>{minScenes}</span><span>{maxScenes}</span></div>
+                    <div className="slider-hint">~{numScenes * 5}-{numScenes * 10}s</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Voice + Style */}
+              <div className="settings-grid">
+                <div>
+                  <label className="field-label">GIỌNG ĐỌC</label>
+                  <select className="form-select" value={voice} onChange={e => setVoice(e.target.value)}>
+                    {VOICES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label">PHONG CÁCH ẢNH</label>
+                  <select className="form-select" value={style} onChange={e => setStyle(e.target.value)}>
+                    {STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* BGM */}
+              <div style={{ marginBottom: 20 }}>
+                <label className="field-label">♬ NHẠC NỀN</label>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                  <select className="form-select" value={bgm} onChange={e => setBgm(e.target.value)} style={{ flex: 1 }}>
+                    <option value="none">Không dùng nhạc nền</option>
+                    <option value="chill_lofi">Chill Lo-Fi</option>
+                    <option value="epic_cinematic">Epic Cinematic</option>
+                    <option value="soft_piano">Soft Piano</option>
+                    <option value="upbeat_pop">Upbeat Pop</option>
+                  </select>
+                  {bgm !== 'none' && (
+                    <div style={{ width: 120, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <span style={{ fontSize: 11, color: '#aaa' }}>ÂM LƯỢNG ({bgmVolume}%)</span>
+                      <input type="range" min="0" max="100" value={bgmVolume} onChange={e => setBgmVolume(Number(e.target.value))} />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Advanced audio & image */}
+              <div className="settings-grid" style={{ marginBottom: 20 }}>
+                <div>
+                  <label className="field-label">TỐC ĐỘ GIỌNG ĐỌC</label>
+                  <select className="form-select" value={speechRate} onChange={e => setSpeechRate(e.target.value)}>
+                    <option value="-20%">Rất chậm (-20%)</option>
+                    <option value="-10%">Chậm (-10%)</option>
+                    <option value="+0%">Bình thường</option>
+                    <option value="+10%">Nhanh (+10%)</option>
+                    <option value="+20%">Rất nhanh (+20%)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label">CAO ĐỘ (PITCH)</label>
+                  <select className="form-select" value={speechPitch} onChange={e => setSpeechPitch(e.target.value)}>
+                    <option value="-20Hz">Rất trầm (-20Hz)</option>
+                    <option value="-10Hz">Trầm (-10Hz)</option>
+                    <option value="+0Hz">Bình thường</option>
+                    <option value="+10Hz">Cao (+10Hz)</option>
+                    <option value="+20Hz">Rất cao (+20Hz)</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div style={{ marginBottom: 20 }}>
+                <label className="field-label">TỪ KHÓA LOẠI TRỪ (NEGATIVE PROMPT)</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  style={{ width: '100%', boxSizing: 'border-box' }} 
+                  value={negativePrompt} 
+                  onChange={e => setNegativePrompt(e.target.value)} 
+                  placeholder="VD: text, watermark, ugly, low resolution..." 
+                />
+              </div>
+
+              {/* Advanced */}
+              <div className="advanced-box">
+                <div className="advanced-title">⚡ Tùy chọn nâng cao</div>
+                <label className="checkbox-row">
+                  <input type="checkbox" checked={useVeo} onChange={e => setUseVeo(e.target.checked)} />
+                  <span>Dùng <b>Veo 3</b> biến ảnh → video clip động (~3 phút/cảnh)</span>
+                </label>
+                <label className="checkbox-row">
+                  <input type="checkbox" checked={useAnimatedCaptions} onChange={e => setUseAnimatedCaptions(e.target.checked)} />
+                  <span>Phụ đề động kiểu TikTok</span>
+                </label>
+                <div style={{ marginTop: 8 }}>
+                  <label className="field-label">CTA CUỐI VIDEO (Tùy chọn)</label>
+                  <input type="text" className="form-input" value={ctaText} onChange={e => setCtaText(e.target.value)} placeholder="VD: Inbox ngay để nhận ưu đãi!" />
+                </div>
+              </div>
+
+              {/* API Key */}
+              <div className="api-key-box" style={{ marginTop: 16 }}>
+                <div className="api-key-header" onClick={() => setShowApiKey(!showApiKey)}>
+                  <Key size={14} /> Gemini API Key (tùy chọn)
+                  {showApiKey ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </div>
+                {showApiKey && (
+                  <input type="password" className="form-input" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                    placeholder="Nhập API Key nếu không dùng key trong .env" style={{ marginTop: 8 }}
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* Generate Script button */}
+            <div style={{ marginTop: 'auto', paddingTop: 20 }}>
+              <button className="btn-generate" onClick={handleGenerateScript} disabled={scriptLoading}>
+                {scriptLoading ? (
+                  <span className="btn-loading"><div className="spinner" /> Đang sinh kịch bản...</span>
+                ) : (
+                  <><Sparkles size={18} /> Sinh Kịch Bản (Bước 1)</>
+                )}
+              </button>
+              {errorMsg && (
+                <div className="error-box" style={{ marginTop: 16 }}>
+                  <AlertTriangle size={16} /> {errorMsg}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Scene count slider */}
-          {needsSceneCount && (
-            <div className="form-group">
-              <label className="form-label">Số cảnh: <strong style={{ color: '#f59e0b' }}>{numScenes}</strong></label>
-              <div className="slider-wrap">
-                <span className="slider-label">4</span>
-                <input
-                  type="range"
-                  min="4"
-                  max="20"
-                  value={numScenes}
-                  onChange={e => setNumScenes(Number(e.target.value))}
-                  className="scene-slider"
-                />
-                <span className="slider-label">20</span>
-              </div>
-              <p className="form-hint">
-                {numScenes <= 6 ? '~30-60s (ngắn)' : numScenes <= 12 ? '~1-2 phút (trung bình)' : '~2-5 phút (dài)'}
+          {/* ── Right: Preview placeholder ── */}
+          <div className="preview-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.35)', padding: 40 }}>
+              <Sparkles size={48} style={{ opacity: 0.4, marginBottom: 16 }} />
+              <h3 style={{ marginBottom: 8, fontWeight: 600 }}>Bước 1: Sinh Kịch Bản</h3>
+              <p style={{ fontSize: 14, lineHeight: 1.6 }}>
+                Nhập ý tưởng bên trái và nhấn <b>"Sinh Kịch Bản"</b>.<br />
+                AI sẽ viết kịch bản để bạn xem và chỉnh sửa<br />
+                trước khi render video.
               </p>
             </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
-            <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
-              <label className="form-label">Giọng đọc</label>
-              <select className="form-input" value={voice} onChange={e => setVoice(e.target.value)} style={{ appearance: 'auto', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-                <option value="vi-VN-HoaiMyNeural">Nữ - Hoài My</option>
-                <option value="vi-VN-NamMinhNeural">Nam - Nam Minh</option>
-              </select>
-            </div>
-            <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
-              <label className="form-label">Phong cách ảnh</label>
-              <select className="form-input" value={artStyle} onChange={e => setArtStyle(e.target.value)} style={{ appearance: 'auto', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-                {ART_STYLES.map(s => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </select>
-            </div>
           </div>
+        </div>
+      )}
 
-          {/* BGM selector */}
-          <div className="form-group">
-            <label className="form-label"><Music size={12} style={{ verticalAlign: 'middle' }} /> Nhạc nền</label>
-            <select className="form-input" value={bgmTrack} onChange={e => setBgmTrack(e.target.value)} style={{ appearance: 'auto', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-              <option value="">Không dùng nhạc nền</option>
-              {bgmList.map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Advanced toggle */}
-          <button className="advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
-            <SlidersHorizontal size={14} />
-            {showAdvanced ? 'Ẩn nâng cao' : 'Hiện nâng cao'}
-          </button>
-
-          {showAdvanced && (
-            <div className="advanced-section">
-              <div className="form-group">
-                <label className="form-label">Tốc độ đọc (TTS)</label>
-                <select className="form-input" value={speechRate} onChange={e => setSpeechRate(e.target.value)} style={{ appearance: 'auto', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-                  <option value="-20%">Rất chậm (-20%)</option>
-                  <option value="-10%">Chậm (-10%)</option>
-                  <option value="+0%">Bình thường</option>
-                  <option value="+10%">Nhanh (+10%)</option>
-                  <option value="+20%">Rất nhanh (+20%)</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label"><Key size={12} style={{ verticalAlign: 'middle' }} /> Gemini API Key (Tùy chọn)</label>
-                <input
-                  type="password"
-                  className="form-input"
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                  placeholder="Lấy miễn phí tại aistudio.google.com"
-                />
-              </div>
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/* STEP 2: SCRIPT EDITOR */}
+      {/* ═══════════════════════════════════════════════════════ */}
+      {step === 'editor' && (
+        <div className="editor-layout">
+          <div className="editor-toolbar">
+            <button className="btn-outline" onClick={() => setStep('config')}>
+              <RotateCcw size={14} /> Quay lại cài đặt
+            </button>
+            <div className="editor-toolbar-info">
+              <PenLine size={14} /> {scenes.length} cảnh — Chỉnh sửa lời thoại & mô tả ảnh bên dưới
             </div>
-          )}
-
-          <div style={{ marginTop: 24 }}>
-            <button
-              className="btn-generate"
-              onClick={handleGenerate}
-              disabled={!canGenerate()}
-            >
-              {isProcessing ? (
-                <><Loader2 size={20} className="spin" /> Đang xử lý... {progress}%</>
-              ) : isUploading ? (
-                <><Loader2 size={20} className="spin" /> Đang upload ảnh...</>
-              ) : (
-                <><Play size={20} fill="currentColor" /> Sản Xuất Video Ngay</>
-              )}
+            <button className="btn-generate" style={{ width: 'auto', padding: '10px 24px', marginTop: 0 }} onClick={handleRenderVideo}>
+              <Play size={16} /> Render Video (Bước 2)
             </button>
           </div>
 
-          {status === 'error' && (
-            <div className="error-box">⚠ {errorMsg}</div>
-          )}
-        </div>
-
-        {/* RIGHT — Preview Panel */}
-        <div className="preview-panel">
-
-          <div className="card preview-card">
-            <div className="card-top-bar" style={{ background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)' }} />
-
-            {/* IDLE */}
-            {status === 'idle' && (
-              <div className="idle-state">
-                <div className="idle-icon">
-                  <Film size={32} opacity={0.3} />
-                </div>
-                <h3 className="idle-title">Chưa có Video</h3>
-                <p className="idle-desc">Chọn chế độ, nhập nội dung và bấm <strong>Sản Xuất</strong> để bắt đầu.</p>
-              </div>
-            )}
-
-            {/* LOADING */}
-            {isProcessing && (
-              <div className="loading-state">
-                <div className="spinner-ring" />
-                <h3 className="loading-title">{message || 'Đang xử lý...'}</h3>
-                <div style={{ marginTop: 20, width: '100%', background: 'rgba(255,255,255,0.1)', height: 8, borderRadius: 4, overflow: 'hidden' }}>
-                   <div style={{ width: `${progress}%`, background: 'linear-gradient(90deg, #3b82f6, #a855f7)', height: '100%', borderRadius: 4, transition: 'width 0.5s ease' }} />
-                </div>
-                <p style={{ marginTop: 12, fontSize: 13, color: '#aaa', fontWeight: 500 }}>Tiến trình: {progress}%</p>
-              </div>
-            )}
-
-            {/* SUCCESS */}
-            {status === 'done' && (
-              <div className="success-state">
-                <div className="success-badge">
-                  <CheckCircle size={14} />
-                  Kết xuất thành công
-                </div>
-                <div className="video-player-wrap" style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', alignItems: 'center' }}>
-                  {videoUrl && <video src={videoUrl} controls style={{ width: '100%', borderRadius: '8px', maxHeight: '400px' }} />}
-                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                    <a href={videoUrl} download className="download-btn">⬇️ Tải Video</a>
-                    {srtUrl && <a href={srtUrl} download className="download-btn">⬇️ Tải Phụ đề (.srt)</a>}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Script preview */}
-          {script.length > 0 && (
-            <div className="card" style={{ padding: '20px 24px' }}>
-              <div className="section-label" style={{ marginBottom: 14 }}>
-                <div className="step-badge" style={{ color: '#10b981', borderColor: '#10b98140', background: '#10b98110' }}>
-                  <Sparkles size={12} />
-                </div>
-                <span className="section-title" style={{ fontSize: '0.9rem' }}>Kịch bản được tạo ({script.length} cảnh)</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 400, overflowY: 'auto' }}>
-                {script.map((scene, i) => (
-                  <div key={i} className="script-scene-card">
-                    <div className="script-scene-num">Cảnh {scene.scene}</div>
-                    <div className="script-scene-text">{scene.text}</div>
-                  </div>
-                ))}
-              </div>
+          {errorMsg && (
+            <div className="error-box" style={{ marginBottom: 16 }}>
+              <AlertTriangle size={16} /> {errorMsg}
             </div>
           )}
 
+          <div className="scene-list">
+            {scenes.map((scene, idx) => (
+              <div key={idx} className="scene-card">
+                <div className="scene-header">
+                  <div className="scene-number">Cảnh {idx + 1}</div>
+                  <div className="scene-actions">
+                    <button className="btn-icon" onClick={() => moveScene(idx, idx - 1)} disabled={idx === 0} title="Di chuyển lên">
+                      <ChevronUp size={14} />
+                    </button>
+                    <button className="btn-icon" onClick={() => moveScene(idx, idx + 1)} disabled={idx === scenes.length - 1} title="Di chuyển xuống">
+                      <ChevronDown size={14} />
+                    </button>
+                    <button className="btn-icon btn-danger" onClick={() => removeScene(idx)} title="Xóa cảnh" disabled={scenes.length <= 1}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="scene-fields">
+                  <div className="scene-field">
+                    <label className="field-label">LỜI THOẠI (TIẾNG VIỆT)</label>
+                    <textarea
+                      className="form-textarea scene-textarea"
+                      value={scene.text}
+                      onChange={e => updateScene(idx, 'text', e.target.value)}
+                      placeholder="Lời thoại sẽ được đọc bằng TTS..."
+                      rows={3}
+                    />
+                  </div>
+                  <div className="scene-field">
+                    <label className="field-label">MÔ TẢ HÌNH ẢNH (TIẾNG ANH)</label>
+                    <textarea
+                      className="form-textarea scene-textarea"
+                      value={scene.image_prompt}
+                      onChange={e => updateScene(idx, 'image_prompt', e.target.value)}
+                      placeholder="Image prompt for AI image generation..."
+                      rows={2}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button className="btn-add-scene" onClick={addScene}>
+            <Plus size={16} /> Thêm cảnh mới
+          </button>
         </div>
-      </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/* STEP 3: RENDERING */}
+      {/* ═══════════════════════════════════════════════════════ */}
+      {step === 'rendering' && (
+        <div className="render-panel">
+          <div className="render-center">
+            <div style={{ fontSize: 56, marginBottom: 20 }}>🎬</div>
+            <h2 style={{ marginBottom: 8 }}>Đang sản xuất video</h2>
+            <p className="render-message">{jobMessage}</p>
+
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
+            </div>
+            <div className="progress-percent">{progress}%</div>
+
+            {/* Progress log */}
+            <div className="progress-log">
+              {progressLog.map((msg, i) => (
+                <div key={i} className="progress-log-item">
+                  <Check size={12} style={{ color: 'var(--green)', flexShrink: 0 }} />
+                  <span>{msg}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {errorMsg && (
+            <div style={{ padding: '0 40px 24px' }}>
+              <div className="error-box">
+                <AlertTriangle size={16} /> {errorMsg}
+              </div>
+              <button className="btn-outline" style={{ marginTop: 12 }} onClick={() => { setStep('editor'); setErrorMsg(''); setStatus('idle'); }}>
+                <RotateCcw size={14} /> Quay lại chỉnh sửa
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/* STEP 4: DONE */}
+      {/* ═══════════════════════════════════════════════════════ */}
+      {step === 'done' && videoUrl && (
+        <div className="done-panel">
+          <div className="done-video-wrap">
+            <video src={videoUrl} controls autoPlay style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 12 }} />
+          </div>
+          <div className="done-actions">
+            <a href={videoUrl} download className="btn-generate" style={{ flex: 1, textAlign: 'center', textDecoration: 'none' }}>
+              <Download size={18} /> Tải Video MP4
+            </a>
+            {srtUrl && (
+              <a href={srtUrl} download className="btn-outline" style={{ textDecoration: 'none' }}>
+                <Download size={14} /> Tải Phụ đề (.srt)
+              </a>
+            )}
+            <button className="btn-outline" onClick={handleReset}>
+              <RotateCcw size={14} /> Tạo Video Mới
+            </button>
+            <button className="btn-outline" onClick={() => setStep('editor')}>
+              <PenLine size={14} /> Chỉnh sửa & Render lại
+            </button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
