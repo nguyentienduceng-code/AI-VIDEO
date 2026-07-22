@@ -33,17 +33,18 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Retry logic — exponential backoff cho API calls
 # ---------------------------------------------------------------------------
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 BASE_DELAY = 2.0  # giây
 
+import re
 
 def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_manager=None):
     """
     Wrapper: gọi hàm đồng bộ với retry + exponential backoff.
-    Nếu có lỗi 429/RESOURCE_EXHAUSTED và key_manager được cung cấp, tự động xoay vòng key.
-    Lưu ý: func_factory là một hàm không nhận tham số và trả về kết quả gọi API.
+    Nếu có lỗi 429/RESOURCE_EXHAUSTED, tự động xoay vòng key hoặc chờ theo retryDelay.
     """
     last_error = None
+    rotations = 0
     for attempt in range(retries + 1):
         try:
             return func_factory()
@@ -59,15 +60,35 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
                 or "INTERNAL" in error_str
             )
             if not is_retryable or attempt == retries:
+                if "503" in error_str or "UNAVAILABLE" in error_str:
+                    raise RuntimeError("Máy chủ AI của Google hiện đang quá tải do nghẽn mạng toàn cầu (Lỗi 503). Hệ thống đã thử lại nhiều lần nhưng không thành công. Xin vui lòng chờ vài phút rồi thử lại!")
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    raise RuntimeError("API Key của bạn đã cạn kiệt dung lượng (Lỗi 429). Hệ thống đã cố xoay vòng key nhưng không thành công. Vui lòng thêm Key mới hoặc chờ Google reset!")
                 raise
                 
-            # Xoay vòng key nếu lỗi liên quan đến Quota/Rate Limit
-            if key_manager and ("429" in error_str or "RESOURCE_EXHAUSTED" in error_str):
-                new_key = key_manager.rotate()
-                logger.warning(f"Quota Exceeded. Đã tự động xoay vòng API Key.")
-                
             delay = base_delay * (2 ** attempt)
-            logger.warning(f"API lỗi (attempt {attempt+1}/{retries+1}): {e}. Retry sau {delay}s...")
+            
+            # Xử lý riêng cho Quota/Rate Limit (429)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                num_keys = len(key_manager.keys) if key_manager else 1
+                
+                # Nếu còn key dự phòng thì thử xoay vòng trước
+                if key_manager and rotations < num_keys - 1:
+                    key_manager.rotate()
+                    rotations += 1
+                    logger.warning("Quota Exceeded. Đã tự động xoay vòng API Key.")
+                    delay = 0.5
+                else:
+                    # Nếu đã hết key dự phòng hoặc dùng key fix cứng, thì chờ
+                    match = re.search(r"Please retry in (\d+\.?\d*)s", error_str)
+                    if match:
+                        delay = float(match.group(1)) + 1.0 # Cộng thêm 1s bù hao
+                    elif "retryDelay" in error_str:
+                        delay = 20.0 # Mặc định chờ 20s
+                    else:
+                        delay = max(delay, 10.0)
+            
+            logger.warning(f"API lỗi (attempt {attempt+1}/{retries+1}). Retry sau {delay}s... Lỗi: {error_str[:100]}...")
             time.sleep(delay)
     raise last_error
 
@@ -78,24 +99,44 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
 # ---------------------------------------------------------------------------
 class Scene(BaseModel):
     scene: int = Field(description="Số thứ tự phân cảnh, bắt đầu từ 1")
-    text: str = Field(description="Lời thoại tiếng Việt sẽ được đọc bằng TTS")
+    text: str = Field(description="Lời thoại tiếng Việt sẽ được đọc bằng TTS. TUYỆT ĐỐI KHÔNG chèn emoji, icon, hoặc ký tự đặc biệt Unicode vào trường này. Chỉ dùng chữ cái, số, dấu câu tiêu chuẩn.")
     image_prompt: str = Field(
         description="Mô tả hình ảnh bằng tiếng Anh, dùng để sinh ảnh AI (Imagen)"
     )
     sfx: str = Field(
         default="",
-        description="Hiệu ứng âm thanh tại cảnh này (VD: whoosh, pop, punch, laugh, bell, suspense). Bỏ trống nếu không cần."
+        description="Hiệu ứng âm thanh tại cảnh này. CHỈ ĐƯỢC DÙNG 1 trong các giá trị: whoosh, pop, ding, riser, suspense, impact, bell, laugh. Bỏ trống nếu không cần."
     )
     visual_effect: str = Field(
         default="zoom_in",
         description="Hiệu ứng chuyển động Camera (zoom_in, zoom_out, pan_left, pan_right, none)"
+    )
+    emotion: str = Field(
+        default="calm",
+        description="Cảm xúc giọng đọc tại cảnh này: hook, calm, dramatic, excited, suspense, closing"
+    )
+    transition: str = Field(
+        default="crossfade",
+        description="Kiểu chuyển cảnh SAU cảnh này sang cảnh tiếp theo: crossfade, fade_black, zoom_through. Cảnh cuối dùng fade_black."
     )
 
 
 class ScriptResponse(BaseModel):
     sentiment: str = Field(
         default="happy",
-        description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic). Dùng để chọn nhạc nền."
+        description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic)."
+    )
+    recommended_bgm: str = Field(
+        default="moment_of_peace",
+        description="Mã bài nhạc nền phù hợp nhất với cảm xúc kịch bản. CHỈ CHỌN 1 trong các mã sau: afro_pop, black_light_all_good_folks_main, comedy_cartoon, deep_abstract_ambient, fluffy_clouds_fugu_vibes_main_version, hype_drill, lofi_jazzy_love, moment_of_peace, music_promotion, new_age_nature, no_sleep_hiphop, rap_beat, running_night, type_beat"
+    )
+    hook_text: str = Field(
+        default="",
+        description="Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video để thu hút người xem (Ví dụ: 'Sự thật rùng mình...', 'Đừng xem nếu bạn...')."
+    )
+    cta_text: str = Field(
+        default="",
+        description="Câu Call To Action (Kêu gọi hành động) ở cuối video (Ví dụ: 'Comment để nhận link', 'Theo dõi ngay!')."
     )
     scenes: List[Scene]
 
@@ -104,6 +145,7 @@ class ScriptResponse(BaseModel):
 # 2. Shared helper
 # ---------------------------------------------------------------------------
 from services.key_manager import gemini_keys
+from services.cache_service import cache
 
 def _get_client(api_key: Optional[str] = None) -> genai.Client:
     """
@@ -116,18 +158,52 @@ def _get_client(api_key: Optional[str] = None) -> genai.Client:
             "Thiếu Gemini API Key. Hãy nhập trên giao diện hoặc khai báo "
             "GEMINI_API_KEY trong file backend/.env"
         )
-    return genai.Client(api_key=key)
+    return genai.Client(api_key=key, http_options={'retryOptions': {'attempts': 0}})
 
 
 # ---------------------------------------------------------------------------
 # 3. MODE: Storyteller (mặc định) + Quiz/Listicle
 # ---------------------------------------------------------------------------
+# ── Bảng cấu hình thời lượng → số từ + số cảnh đề xuất ──────────────
+DURATION_CONFIG = {
+    "15s":  {"words": "30-40",    "suggested_scenes": 4},
+    "30s":  {"words": "70-80",    "suggested_scenes": 5},
+    "60s":  {"words": "140-160",  "suggested_scenes": 7},
+    "90s":  {"words": "210-240",  "suggested_scenes": 9},
+    "120s": {"words": "280-320",  "suggested_scenes": 12},
+    "180s": {"words": "420-480",  "suggested_scenes": 16},
+}
+
+# ── Bảng tone kể chuyện ─────────────────────────────────────────────
+NARRATION_TONE_PROMPTS = {
+    "viral": (
+        "GIỌNG ĐIỆU: Viral Hook — mở đầu bằng tuyên bố gây sốc hoặc số liệu bất ngờ. "
+        "Nội dung cuốn hút, tạo FOMO (sợ bỏ lỡ). Kết thúc bằng câu hỏi mở khiến người xem PHẢI bình luận."
+    ),
+    "educational": (
+        "GIỌNG ĐIỆU: Giáo dục — giải thích rõ ràng, logic, có dẫn chứng cụ thể. "
+        "Dùng phép so sánh đơn giản để người xem dễ hiểu. Kết thúc bằng bài học thực tế."
+    ),
+    "emotional": (
+        "GIỌNG ĐIỆU: Cảm xúc — storytelling sâu sắc, gợi cảm xúc mạnh. "
+        "Xây dựng nhân vật/tình huống → cao trào → kết thúc lắng đọng. Dùng nhiều dấu chấm lửng (...) tạo kịch tính."
+    ),
+    "humorous": (
+        "GIỌNG ĐIỆU: Hài hước — giọng điệu vui vẻ, dí dỏm, bất ngờ. "
+        "Xen kẽ twist hài giữa các cảnh. Kết thúc bằng punchline hoặc câu hỏi hài hước."
+    ),
+}
+
 async def generate_script(
     topic: str,
     num_scenes: int = 4,
     mode: str = "storyteller",
     art_style: str = "Cinematic",
     api_key: Optional[str] = None,
+    target_duration: str = "30s",
+    narration_tone: str = "viral",
+    character_description: Optional[str] = None,
+    sync_characters: bool = False,
 ) -> List[dict]:
     """
     Gọi Gemini để sinh N phân cảnh từ 1 chủ đề (topic).
@@ -136,31 +212,96 @@ async def generate_script(
     """
     num_scenes = max(4, min(20, num_scenes))
 
+    # ── Master Storyteller Base Prompt ──
+    base_storyteller = (
+        "Bạn là biên kịch video ngắn HÀNG ĐẦU, chuyên tạo nội dung viral trên TikTok/Reels/YouTube Shorts.\n\n"
+        "NGUYÊN TẮC VIẾT:\n"
+        "1. HOOK (Cảnh 1, emotion='hook'): Mở đầu bằng câu hỏi gây sốc, số liệu bất ngờ, hoặc tuyên bố ngược đời. "
+        "VD: '99% mọi người không biết rằng...' / 'Điều này sẽ thay đổi cách bạn nghĩ về...'\n"
+        "2. TENSION (Cảnh 2 trở đi): Xây dựng sự tò mò bằng kỹ thuật 'mở nút - thắt nút'. "
+        "Đưa ra vấn đề → giải thích một phần → để lại câu hỏi mở chuyển sang cảnh tiếp.\n"
+        "3. CLIMAX (Cảnh áp chót, emotion='dramatic' hoặc 'excited'): Tiết lộ thông tin quan trọng nhất, bất ngờ nhất. "
+        "Dùng câu ngắn, dứt khoát, tạo cảm xúc mạnh.\n"
+        "4. CTA (Cảnh cuối, emotion='closing'): Kết thúc bằng câu hỏi mở khiến người xem PHẢI bình luận. "
+        "Không dùng 'follow/like/share' trực tiếp.\n\n"
+        "KỸ THUẬT VĂN NÓI:\n"
+        "- Dùng 'bạn' trực tiếp: 'Bạn có biết...', 'Hãy tưởng tượng...'\n"
+        "- Dấu chấm lửng (...) tại điểm cao trào để tạo kịch tính.\n"
+        "- Câu hỏi tu từ để kéo người xem vào câu chuyện.\n"
+        "- Số liệu cụ thể (nếu có) luôn hấp dẫn hơn nói chung chung.\n"
+        "- TUYỆT ĐỐI KHÔNG dùng ngôn ngữ sách vở, học thuật, ký tự Markdown (*, #).\n\n"
+        "QUY TẮC ĐỒNG NHẤT GIỌNG VĂN (RẤT QUAN TRỌNG):\n"
+        "- Giữ nguyên 1 NGƯỜI KỂ CHUYỆN XUYÊN SUỐT toàn bộ video.\n"
+        "- Tuyệt đối không được đổi ngôi xưng (tôi - bạn - chúng ta) một cách lộn xộn giữa các cảnh.\n"
+        "- Văn phong (tone) phải mạch lạc, cảnh sau phải nối tiếp tự nhiên với cảnh trước, không được viết rời rạc như từng câu độc lập.\n\n"
+        "QUY TẮC EMOTION (bắt buộc):\n"
+        "- Cảnh 1 LUÔN có emotion='hook'\n"
+        "- Cảnh cuối LUÔN có emotion='closing'\n"
+        "- Các cảnh giữa chọn phù hợp: calm, dramatic, excited, suspense\n\n"
+        "QUY TẮC TRANSITION (bắt buộc):\n"
+        "- Chuyển chủ đề/bất ngờ → transition='fade_black'\n"
+        "- Liên tục/kể tiếp → transition='crossfade'\n"
+        "- Cao trào/zoom vào chi tiết → transition='zoom_through'\n"
+        "- Cảnh cuối cùng → transition='fade_black'\n\n"
+        "QUY TẮC NHẤT QUÁN HÌNH ẢNH (IDENTITY & COLOR LOCK):\n"
+        "- BẮT BUỘC tả LẶP LẠI chính xác ngoại hình của nhân vật chính (tuổi, màu tóc, màu da, trang phục) vào TẤT CẢ các cảnh có sự xuất hiện của họ (để giữ Identity Consistency).\n"
+        "- BẮT BUỘC thêm 1 từ khóa tông màu ánh sáng (VD: 'cinematic teal and orange lighting' hoặc 'moody dark lighting') vào TẤT CẢ các image_prompt để đảm bảo Color Grading đồng nhất toàn video.\n\n"
+        "QUY TẮC ÂM THANH (SOUND DESIGN - BẮT BUỘC):\n"
+        "- BẮT BUỘC điền trường 'sfx' cho từng cảnh. CHỈ ĐƯỢC DÙNG 1 TRONG CÁC GIÁ TRỊ SAU: whoosh, pop, ding, riser, suspense, impact, bell, laugh.\n"
+        "- Dùng 'whoosh' cho chuyển cảnh nhanh/bất ngờ, 'pop' khi hiện text quan trọng, 'ding' hoặc 'bell' cho điểm nhấn tích cực.\n"
+        "- Dùng 'riser' hoặc 'suspense' cho cao trào, 'impact' cho sự kiện chấn động, 'laugh' cho tình huống hài hước.\n"
+        "- Cảnh đầu (hook): dùng 'whoosh' hoặc 'riser'. Cảnh cuối (closing): dùng 'ding' hoặc 'bell'.\n"
+    )
+
     if mode == "quiz_listicle":
         system_prompt = (
-            "Bạn là biên kịch video giáo dục/giải trí chuyên nghiệp, "
-            "chuyên làm video dạng 'Top N' hoặc 'Quiz hỏi-đáp' cho TikTok/Reels. "
-            f"Nhiệm vụ: viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh theo dạng listicle hoặc quiz. "
+            base_storyteller +
+            f"\nCHẾ ĐỘ: Quiz/Listicle — viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh theo dạng 'Top N' hoặc hỏi-đáp. "
             "Mỗi cảnh là 1 fact/item hoặc 1 câu hỏi+đáp thú vị. "
-            "Cảnh đầu tiên là intro hook gây tò mò, cảnh cuối là kết thúc ấn tượng. "
-            "Lời thoại (text) viết bằng tiếng Việt, ngắn gọn, hấp dẫn, dùng ngôn ngữ TikTok. "
             f"image_prompt viết bằng tiếng Anh, mô tả cực kỳ chi tiết theo phong cách '{art_style}', "
             "phù hợp để đưa vào mô hình sinh ảnh AI."
         )
     else:  # storyteller (default)
         system_prompt = (
-            "Bạn là một biên kịch video ngắn (TikTok/Reels) chuyên nghiệp. "
-            f"Nhiệm vụ: viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh cho chủ đề được cung cấp. "
-            "Lời thoại (text) viết bằng tiếng Việt, tự nhiên, súc tích, hấp dẫn người xem trong vài giây đầu. "
+            base_storyteller +
+            f"\nNhiệm vụ: viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh cho chủ đề được cung cấp. "
             f"image_prompt viết bằng tiếng Anh, mô tả cực kỳ chi tiết theo phong cách nghệ thuật: '{art_style}', "
             "phù hợp để đưa vào mô hình sinh ảnh AI."
         )
 
+    # ── Inject narration tone ──
+    tone_prompt = NARRATION_TONE_PROMPTS.get(narration_tone, "")
+    if tone_prompt:
+        system_prompt += f"\n\n{tone_prompt}"
+
+    # ── Thêm hướng dẫn về số lượng từ dựa trên thời lượng mục tiêu ──
+    dur_cfg = DURATION_CONFIG.get(target_duration)
+    if dur_cfg:
+        duration_guide = (
+            f"Video dài ~{target_duration}. Bắt buộc: TOÀN BỘ kịch bản gộp lại "
+            f"(tổng chữ của tất cả các cảnh) chỉ được dài khoảng {dur_cfg['words']} từ."
+        )
+        system_prompt += f"\n\nLƯU Ý QUAN TRỌNG: {duration_guide}"
+
+    # ── Inject Character Consistency (Style Guide) ──
+    if sync_characters and character_description:
+        consistency_guide = (
+            f"ĐỒNG NHẤT NHÂN VẬT & PHONG CÁCH:\n"
+            f"BẮT BUỘC chèn ĐÚNG ĐOẠN TEXT SAU vào đầu mọi trường 'image_prompt' của tất cả các cảnh:\n"
+            f"[{character_description}]\n"
+            f"Điều này là bắt buộc để hệ thống vẽ ảnh (Image AI) giữ nguyên nhân vật xuyên suốt video!"
+        )
+        system_prompt += f"\n\n{consistency_guide}"
+
     def _call():
+        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone)
+        if cached_result:
+            logger.info("Using cached result for generate_script")
+            return cached_result
         client = _get_client(api_key)
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-flash-latest",
                 contents=f"Chủ đề video: {topic}",
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
@@ -169,15 +310,21 @@ async def generate_script(
                     temperature=0.9,
                 ),
             )
+            try:
+                from services import quota_service
+                quota_service.increment_quota(1)
+            except Exception:
+                pass
             parsed: ScriptResponse = response.parsed
-            return parsed.model_dump()
+            result = parsed.model_dump()
+            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone)
+            return result
         except Exception as e:
             logger.error(f"Gemini API failed: {e}. Using mock script to bypass rate limits.")
             return {
                 "sentiment": "happy",
                 "scenes": [
                     {
-                        "scene": 1,
                         "text": "Bạn có biết tại sao Python lại là ngôn ngữ đáng học nhất năm 2026 không?",
                         "image_prompt": "A futuristic programmer typing code in a cyberpunk style room.",
                         "sfx": "whoosh",
@@ -207,7 +354,7 @@ async def generate_script(
                 ][:num_scenes]
             }
 
-    return await asyncio.to_thread(_retry_sync, _call)
+    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +379,21 @@ async def generate_script_from_images(
         "Bạn là biên kịch video chuyên nghiệp. "
         f"Người dùng cung cấp {num_images} bức ảnh.{topic_hint} "
         f"Nhiệm vụ: viết CHÍNH XÁC {num_images} phân cảnh (mỗi ảnh = 1 cảnh). "
-        "Phân tích nội dung từng ảnh và viết lời bình luận/kể chuyện tiếng Việt "
-        "thật tự nhiên, hấp dẫn, phù hợp với nội dung ảnh. "
-        "Cảnh đầu nên có hook gây chú ý, cảnh cuối nên có câu kết ấn tượng. "
+        "Phân tích nội dung từng ảnh và viết lời bình luận tiếng Việt dưới dạng 'văn nói'. "
+        "Sử dụng câu ngắn, ngắt nghỉ bằng dấu phẩy hợp lý, KHÔNG dùng các ký tự Markdown (như *, **, #). "
+        "Kịch bản phải tuân theo cấu trúc: [Hook (3s đầu)] -> [Thân bài] -> [Bài học] -> [Call-to-Action kết thúc bằng câu hỏi mở]. "
+        "HÃY chủ động dùng dấu chấm lửng `...` vào phần lời thoại (text) tại những vị trí cần ngắt nghỉ, tạm dừng để tạo cảm xúc sâu lắng. "
         "image_prompt: viết mô tả tiếng Anh ngắn gọn về nội dung ảnh (dùng cho metadata)."
     )
 
     def _call():
+        # image_paths should be relative or basename to ensure deterministic cache key 
+        # But for simplicity, we'll cache based on topic and num_images
+        cached_result = cache.get("gen_script_imgs", topic=topic, num_images=num_images, paths=",".join(os.path.basename(p) for p in image_paths))
+        if cached_result:
+            logger.info("Using cached result for generate_script_from_images")
+            return cached_result
+
         client = _get_client(api_key)
         # Build multimodal content: text instruction + all images
         content_parts = [f"Hãy viết kịch bản narration cho {num_images} ảnh sau:"]
@@ -256,7 +411,7 @@ async def generate_script_from_images(
             content_parts.append(f"(Ảnh {i+1}/{num_images})")
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-flash-latest",
             contents=content_parts,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
@@ -265,10 +420,17 @@ async def generate_script_from_images(
                 temperature=0.8,
             ),
         )
+        try:
+            from services import quota_service
+            quota_service.increment_quota(1)
+        except Exception:
+            pass
         parsed: ScriptResponse = response.parsed
-        return [scene.model_dump() for scene in parsed.scenes]
+        result = [scene.model_dump() for scene in parsed.scenes]
+        cache.set("gen_script_imgs", result, topic=topic, num_images=num_images, paths=",".join(os.path.basename(p) for p in image_paths))
+        return result
 
-    return await asyncio.to_thread(_retry_sync, _call)
+    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -290,29 +452,46 @@ async def split_script_to_scenes(
         "Bạn là biên kịch video chuyên nghiệp. "
         f"Người dùng cung cấp 1 đoạn văn bản/kịch bản viết sẵn. "
         f"Nhiệm vụ: chia nội dung thành CHÍNH XÁC {num_scenes} phân cảnh để làm video. "
-        "Mỗi cảnh (text) chứa 1-3 câu liên tiếp từ script gốc, giữ nguyên nội dung "
-        "nhưng có thể chỉnh sửa nhẹ cho tự nhiên khi đọc thành lời. "
-        "KHÔNG được bịa thêm nội dung mới ngoài script gốc. "
-        f"image_prompt: mô tả hình ảnh tiếng Anh chi tiết theo phong cách '{art_style}', "
-        "phản ánh đúng nội dung đoạn text đó."
+        "QUY TẮC CỰC KỲ QUAN TRỌNG VÀ BẮT BUỘC (GIỮ NGUYÊN 100% Ý NGƯỜI DÙNG): "
+        "1. Nếu kịch bản gốc có phân biệt rõ các phần (như 'Voice-over:', 'Lời thoại:', 'Chuyển động:', 'Text on-screen:'), "
+        "BẮT BUỘC CHỈ TRÍCH XUẤT phần Voice-over/Lời thoại vào trường `text` để hệ thống TTS đọc. "
+        "TUYỆT ĐỐI giữ đúng nguyên văn 100% từng từ ngữ của lời thoại, KHÔNG ĐƯỢC tự ý sửa đổi, paraphrase hay thêm bớt. "
+        "2. Sử dụng các chỉ dẫn đạo diễn (Chuyển động, Hình ảnh) để dịch chuẩn xác 100% sang tiếng Anh thành `image_prompt`. "
+        "KHÔNG được tự phóng tác thêm chi tiết hình ảnh mà người dùng không yêu cầu. "
+        "3. Nếu kịch bản chỉ là văn xuôi bình thường, hãy chia mỗi cảnh 1-3 câu liên tiếp và giữ nguyên văn nhiều nhất có thể. "
+        "4. Tuyệt đối không đưa chỉ dẫn đạo diễn vào trường `text`. "
+        f"image_prompt: luôn mô tả bằng tiếng Anh theo phong cách '{art_style}' nhưng phải trung thành tuyệt đối với mô tả của người dùng."
     )
 
     def _call():
+        # Trim script_text for hashing to avoid too long string issue, or hash it inside _get_key
+        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hash(script_text), num_scenes=num_scenes, art_style=art_style)
+        if cached_result:
+            logger.info("Using cached result for split_script_to_scenes")
+            return cached_result
+
         client = _get_client(api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-flash-latest",
             contents=f"Kịch bản cần chia cảnh:\n\n{script_text}",
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
                 response_schema=ScriptResponse,
-                temperature=0.5,  # Thấp hơn vì cần chính xác với script gốc
+                temperature=0.1,  # Cực kỳ thấp để AI bám sát 100% text gốc, không phóng tác
             ),
         )
+        try:
+            from services import quota_service
+            quota_service.increment_quota(1)
+        except Exception:
+            pass
         parsed: ScriptResponse = response.parsed
-        return [scene.model_dump() for scene in parsed.scenes]
+        result = [scene.model_dump() for scene in parsed.scenes]
+        cache.set("split_script", result, script_len=len(script_text), text_hash=hash(script_text), num_scenes=num_scenes, art_style=art_style)
+        return result
 
-    return await asyncio.to_thread(_retry_sync, _call)
+    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -323,38 +502,73 @@ async def generate_image(
     output_path: str,
     api_key: Optional[str] = None,
     aspect_ratio: str = "9:16",
-    negative_prompt: str = ""
+    negative_prompt: str = "",
+    seed: Optional[int] = None
 ) -> str:
     """
-    Sinh 1 ảnh từ image_prompt bằng Imagen, lưu vào output_path (.png/.jpg).
+    Sinh 1 ảnh từ image_prompt bằng gemini-3.1-flash-image, lưu vào output_path (.png/.jpg).
     Trả về output_path khi thành công.
 
     Lưu ý: nếu lỗi (hết quota, key sai, prompt bị filter an toàn chặn...),
-    hàm sẽ raise Exception để main.py có thể fallback sang ảnh placeholder,
+    hàm sẽ raise Exception để main.py có thể fallback sang ảnh placeholder hoặc Pollinations,
     tránh làm chết toàn bộ pipeline.
     """
     def _call():
         client = _get_client(api_key)
-        kwargs = {
-            "number_of_images": 1,
-            "aspect_ratio": aspect_ratio,  # 9:16 cho video dọc, 16:9 cho ngang
-            "safety_filter_level": "block_low_and_above",
-            "person_generation": "allow_adult",
-        }
+        
+        # Tạo prompt tối ưu cho gemini-3.1-flash-image
+        prompt_with_config = image_prompt
+        if aspect_ratio:
+            prompt_with_config += f", aspect ratio {aspect_ratio}"
         if negative_prompt:
-            kwargs["negative_prompt"] = negative_prompt
+            prompt_with_config += f", avoid: {negative_prompt}"
             
-        result = client.models.generate_images(
-            model="imagen-4.0-generate-001",
-            prompt=image_prompt,
-            config=types.GenerateImagesConfig(**kwargs),
+        result = client.models.generate_content(
+            model="gemini-3.1-flash-image",
+            contents=prompt_with_config,
         )
-        if not result.generated_images:
-            raise RuntimeError("Imagen không trả về ảnh nào (có thể bị Safety Filter chặn).")
+        
+        image_bytes = None
+        for candidate in result.candidates:
+            if candidate.content and candidate.content.parts:
+                for part in candidate.content.parts:
+                    if getattr(part, "inline_data", None) is not None:
+                        image_bytes = part.inline_data.data
+                        break
+                    if hasattr(part, "image_bytes") and part.image_bytes:
+                        image_bytes = part.image_bytes
+                        break
+                if image_bytes:
+                    break
+                    
+        if not image_bytes:
+            raise RuntimeError("Gemini không trả về dữ liệu ảnh nào.")
 
-        image_bytes = result.generated_images[0].image.image_bytes
         with open(output_path, "wb") as f:
             f.write(image_bytes)
         return output_path
 
-    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
+    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys, retries=1)
+
+async def extract_search_keyword(image_prompt: str, api_key: Optional[str] = None) -> str:
+    """
+    Trích xuất từ khóa ngắn (1-3 từ) từ image_prompt dài để tìm kiếm trên Pexels/Pixabay (Offline, không dùng Gemini để tiết kiệm Quota).
+    """
+    # Xóa các từ thông dụng không mang ý nghĩa chính
+    stopwords = {"a", "an", "the", "in", "on", "at", "with", "and", "or", "of", "to", "for", "is", "are", "cinematic", "style", "lighting", "photo", "image", "picture", "realistic", "4k", "8k"}
+    
+    # Chuẩn hóa chuỗi, bỏ dấu câu cơ bản
+    clean_prompt = image_prompt.replace(",", " ").replace(".", " ").replace("!", " ").replace("?", " ").lower()
+    words = clean_prompt.split()
+    
+    # Lọc stopwords
+    filtered_words = [w for w in words if w not in stopwords]
+    
+    # Lấy 2-3 từ đầu tiên mang ý nghĩa (chủ thể)
+    if len(filtered_words) >= 2:
+        return " ".join(filtered_words[:2])
+    elif len(filtered_words) == 1:
+        return filtered_words[0]
+    else:
+        # Fallback an toàn
+        return "nature"

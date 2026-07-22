@@ -12,13 +12,13 @@ NÂNG CẤP V2:
 from __future__ import annotations
 
 import os
+import re
 from typing import List, Optional, TypedDict
-
-import srt
 import datetime as dt
 
 from moviepy import (
     AudioFileClip,
+    VideoFileClip,
     ImageClip,
     CompositeVideoClip,
     CompositeAudioClip,
@@ -35,8 +35,9 @@ ASPECT_RATIO_SIZES = {
 }
 
 FPS = 30
-CROSSFADE_DURATION = 0.2       # giây — crossfade nhanh giữa 2 cảnh cho video ngắn (Tiktok style)
+CROSSFADE_DURATION = 0.4       # giây — crossfade mượt giữa 2 cảnh (tăng từ 0.2 lên 0.4 cho tự nhiên hơn)
 SLIDESHOW_CROSSFADE = 0.8      # giây — crossfade dài hơn cho slideshow
+AUDIO_FADEOUT_DURATION = 0.3   # giây — audio fade-out cuối mỗi cảnh để tránh ngắt đột ngột
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
 
 # QUAN TRỌNG: font hỗ trợ dấu tiếng Việt (Unicode Latin Extended).
@@ -69,134 +70,67 @@ def _build_scene_clip(
     show_subtitle: bool = True,
     subtitle_font_size: int = 52,
     subtitle_color: str = "white",
+    transition: str = "crossfade",
 ) -> CompositeVideoClip:
     """Ghép 1 ảnh + 1 audio + phụ đề burn-in thành 1 clip hoàn chỉnh."""
     duration = asset["duration"]
     visual_effect = asset.get("visual_effect", "zoom_in")
 
-    # ── Image clip ──
-    image_clip = (
-        ImageClip(asset["image_path"])
-        .with_duration(duration)
-        .resized(height=video_height)
-    )
-    # Cắt để tỷ lệ luôn đúng trước khi zoom
-    if image_clip.w < video_width:
-        image_clip = image_clip.resized(width=video_width)
-
-    # Hiệu ứng chuyển động (Dynamic VFX)
-    def get_zoom_factor(t):
-        if visual_effect == "zoom_out":
-            return 1.1 - 0.1 * (t / duration)
-        elif visual_effect == "none":
-            return 1.0
-        return 1.0 + 0.1 * (t / duration) # zoom_in default
-
-    image_clip = image_clip.resized(get_zoom_factor)
-
-    if visual_effect == "pan_left":
-        # Make it wider so we can pan
-        pan_width = int(video_width * 1.1)
-        image_clip = image_clip.resized(width=pan_width)
-        image_clip = image_clip.with_position(lambda t: ('center' if duration == 0 else int(-0.1 * video_width * (t / duration)), 'center'))
-    elif visual_effect == "pan_right":
-        pan_width = int(video_width * 1.1)
-        image_clip = image_clip.resized(width=pan_width)
-        image_clip = image_clip.with_position(lambda t: ('center' if duration == 0 else int(-0.1 * video_width * (1 - t / duration)), 'center'))
+    # ── Media clip (Video/Image) ──
+    is_video = asset["image_path"].lower().endswith((".mp4", ".mov"))
+    if is_video:
+        media_clip = VideoFileClip(asset["image_path"])
+        # Loop video nếu ngắn hơn duration
+        if media_clip.duration < duration:
+            import math
+            from moviepy import concatenate_videoclips
+            loops = math.ceil(duration / media_clip.duration)
+            media_clip = concatenate_videoclips([media_clip] * loops)
+        media_clip = media_clip.subclipped(0, duration)
+        media_clip = media_clip.resized(height=video_height)
     else:
-        image_clip = image_clip.with_position("center")
+        media_clip = (
+            ImageClip(asset["image_path"])
+            .with_duration(duration)
+            .resized(height=video_height)
+        )
+        
+    # Cắt để tỷ lệ luôn đúng trước khi zoom
+    if media_clip.w < video_width:
+        media_clip = media_clip.resized(width=video_width)
 
-    layers = [image_clip]
+    # Hiệu ứng chuyển động (Ken Burns) đã được xử lý bằng FFmpeg trong motion_effects.py trước đó
+    # Nên media_clip ở đây (dù là ảnh tĩnh hay video .mp4) chỉ cần giữ đúng tỷ lệ và center
+    media_clip = media_clip.with_position("center")
 
-    # ── Audio clip (nếu có) ──
-    audio_clip = None
-    audio_clips = []
-    
-    if asset.get("audio_path") and os.path.isfile(asset["audio_path"]):
-        audio_clips.append(AudioFileClip(asset["audio_path"]))
+    layers = [media_clip]
 
-    # ── SFX ──
-    sfx_name = asset.get("sfx", "")
-    if sfx_name:
-        sfx_path = os.path.join(BASE_DIR, "assets", "sfx", f"{sfx_name}.mp3")
-        if os.path.isfile(sfx_path):
-            sfx_clip = AudioFileClip(sfx_path).with_volume_scaled(0.5)
-            audio_clips.append(sfx_clip)
-
-    if audio_clips:
-        if len(audio_clips) > 1:
-            audio_clip = CompositeAudioClip(audio_clips)
-        else:
-            audio_clip = audio_clips[0]
+    # ── Audio KHÔNG được gắn vào clip video ──
+    # LÝ DO: Khi concatenate_videoclips dùng padding âm (crossfade), 
+    # MoviePy sẽ mix audio của 2 clip chồng lấp → giọng đọc bị trùng.
+    # Audio sẽ được xây dựng thành track riêng biệt trong render_final_video().
 
     scene = CompositeVideoClip(layers, size=(video_width, video_height))
 
-    if audio_clip:
-        scene = scene.with_audio(audio_clip)
-
-    if add_crossfade_in:
-        scene = scene.with_effects([CrossFadeIn(crossfade_dur)])
-    scene = scene.with_effects([CrossFadeOut(crossfade_dur)])
+    # ── Transition effects theo loại (chỉ ảnh hưởng video, không audio) ──
+    if transition == "fade_black":
+        from moviepy.video.fx import FadeIn, FadeOut
+        if add_crossfade_in:
+            scene = scene.with_effects([FadeIn(crossfade_dur)])
+        scene = scene.with_effects([FadeOut(crossfade_dur)])
+    elif transition == "zoom_through":
+        if add_crossfade_in:
+            scene = scene.with_effects([CrossFadeIn(crossfade_dur * 0.8)])
+        scene = scene.with_effects([CrossFadeOut(crossfade_dur * 0.8)])
+    else:
+        if add_crossfade_in:
+            scene = scene.with_effects([CrossFadeIn(crossfade_dur)])
+        scene = scene.with_effects([CrossFadeOut(crossfade_dur)])
 
     return scene
 
 
-# ─────────────────────────────────────────────────────────────────────
-# BGM helper
-# ─────────────────────────────────────────────────────────────────────
-def _mix_bgm(final_clip, bgm_path: str, bgm_volume: float = 0.15, speech_segments: list = None):
-    """
-    Mix nhạc nền dưới audio chính của video.
-    BGM được loop nếu ngắn hơn video, fade in/out, và auto-ducking (hạ âm lượng khi có giọng nói).
-    """
-    if not bgm_path or not os.path.isfile(bgm_path):
-        return final_clip
-
-    bgm = AudioFileClip(bgm_path)
-    video_duration = final_clip.duration
-
-    # Loop BGM nếu ngắn hơn video
-    if bgm.duration < video_duration:
-        loops_needed = int(video_duration / bgm.duration) + 1
-        from moviepy import concatenate_audioclips
-        bgm = concatenate_audioclips([bgm] * loops_needed)
-
-    bgm = bgm.subclipped(0, video_duration)
-    bgm = bgm.with_volume_scaled(bgm_volume)
-
-    # Auto-ducking: hạ volume xuống 30% mức bgm_volume trong các đoạn có speech
-    if speech_segments:
-        import numpy as np
-        def make_duck_frame(get_frame):
-            def duck_frame(t):
-                frame = get_frame(t)
-                vol = np.ones_like(t) if isinstance(t, np.ndarray) else 1.0
-                if isinstance(t, np.ndarray):
-                    for start, end in speech_segments:
-                        mask = (t >= (start - 0.5)) & (t <= (end + 0.5))
-                        vol = np.where(mask, 0.3, vol)
-                    # Expand dims to match frame shape N x 2
-                    vol = vol[:, np.newaxis] if frame.ndim == 2 else vol
-                else:
-                    for start, end in speech_segments:
-                        if (start - 0.5) <= t <= (end + 0.5):
-                            vol = 0.3
-                            break
-                return frame * vol
-            return duck_frame
-        bgm = bgm.with_updated_frame_function(make_duck_frame(bgm.get_frame))
-
-    # Fade in / Fade out
-    from moviepy.audio.fx.CrossFadeIn import CrossFadeIn
-    from moviepy.audio.fx.CrossFadeOut import CrossFadeOut
-    bgm = bgm.with_effects([CrossFadeIn(2.0), CrossFadeOut(2.0)])
-
-    # Mix: nếu video đã có audio (narration), composite cả 2
-    if final_clip.audio is not None:
-        mixed = CompositeAudioClip([final_clip.audio, bgm])
-        return final_clip.with_audio(mixed)
-    else:
-        return final_clip.with_audio(bgm)
+# BGM Mix and Mastering are now delegated to FFmpeg in audio_mix_service.py
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -209,6 +143,9 @@ def render_final_video(
     bgm_path: Optional[str] = None,
     mode: str = "storyteller",
     bgm_volume: float = 0.15,
+    master_audio_path: Optional[str] = None,
+    use_sfx: bool = True,
+    sfx_volume: float = 0.5,
     **kwargs
 ) -> str:
     """
@@ -230,16 +167,50 @@ def render_final_video(
         bgm_volume = 0.8
 
     clips = []
+    audio_tracks = []
     speech_segments = []
-    current_time = 0.0
+    final_duration = 0.0
 
     for i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
+        start_time = asset.get("start_time", 0.0)
         has_audio = bool(asset.get("audio_path"))
         
         # Audio ducking tracking
         if has_audio:
-            speech_segments.append((current_time, current_time + dur))
+            speech_segments.append((start_time, start_time + dur))
+            
+        # ── Build Audio Track (Đảm bảo các file âm thanh KHÔNG chồng lên nhau) ──
+        scene_audio_clips = []
+        if has_audio and os.path.isfile(asset["audio_path"]):
+            from moviepy.audio.io.AudioFileClip import AudioFileClip
+            scene_audio_clips.append(AudioFileClip(asset["audio_path"]))
+            
+        sfx_name = asset.get("sfx", "")
+        if use_sfx and sfx_name:
+            sfx_path = os.path.join(BASE_DIR, "assets", "sfx", f"{sfx_name}.wav")
+            if os.path.isfile(sfx_path):
+                from moviepy.audio.io.AudioFileClip import AudioFileClip
+                scene_audio_clips.append(AudioFileClip(sfx_path).with_volume_scaled(sfx_volume))
+                
+        if scene_audio_clips:
+            from moviepy.audio.AudioClip import CompositeAudioClip
+            from moviepy.audio.fx.AudioFadeOut import AudioFadeOut
+            
+            if len(scene_audio_clips) > 1:
+                ac = CompositeAudioClip(scene_audio_clips)
+            else:
+                ac = scene_audio_clips[0]
+                
+            # Đảm bảo audio không tràn sang cảnh tiếp theo (cắt bỏ phần overlap)
+            safe_dur = dur - crossfade_dur if i < len(scene_assets) - 1 else dur
+            ac = ac.subclipped(0, min(ac.duration, safe_dur))
+            ac = ac.with_effects([AudioFadeOut(AUDIO_FADEOUT_DURATION)])
+            
+            # Đặt đúng vị trí trên timeline tổng
+            ac = ac.with_start(start_time)
+            audio_tracks.append(ac)
+
         
         c = _build_scene_clip(
             asset,
@@ -250,22 +221,69 @@ def render_final_video(
             show_subtitle=show_subtitle,
             subtitle_font_size=subtitle_font_size,
             subtitle_color=subtitle_color,
+            transition=asset.get("transition", "crossfade"),
         )
-        clips.append(c)
         
-        # Move timeline forward (considering overlap padding for the next clip)
-        if i < len(scene_assets) - 1:
-            current_time += (dur - crossfade_dur)
-        else:
-            current_time += dur
+        c = c.with_start(start_time)
+        clips.append(c)
+        final_duration = max(final_duration, start_time + dur)
+        
+    final = CompositeVideoClip(clips, size=(video_width, video_height)).with_duration(final_duration)
 
-    # padding âm = các clip overlap nhau đúng bằng thời gian crossfade,
-    # tạo hiệu ứng tan-vào-nhau thay vì cắt cứng giữa 2 cảnh
-    final = concatenate_videoclips(clips, method="compose", padding=-crossfade_dur)
+    # Gắn track âm thanh tuần tự vào video
+    if audio_tracks:
+        from moviepy.audio.AudioClip import CompositeAudioClip
+        final_audio = CompositeAudioClip(audio_tracks)
+        final = final.with_audio(final_audio)
 
-    # ── Mix BGM (nếu có) ──
-    if bgm_path:
-        final = _mix_bgm(final, bgm_path, bgm_volume, speech_segments=speech_segments)
+    # Nếu dùng Continuous TTS (có master_audio_path)
+    if master_audio_path and os.path.exists(master_audio_path):
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        master_audio = AudioFileClip(master_audio_path)
+        
+        # Audio gốc dài hơn video do padding, ta cắt lại cho khớp với video final
+        master_audio = master_audio.subclipped(0, min(final.duration, master_audio.duration))
+        final = final.with_audio(master_audio)
+        
+        # Vì giọng nói liền mạch, ducking BGM toàn bộ video
+        speech_segments = [(0.0, final.duration)]
+
+    # BGM mixing now happens via FFmpeg in audio_mix_service.py
+
+    # ── Thêm Hiệu ứng Hình ảnh (Vignette & Progress Bar) ──
+    import numpy as np
+    from moviepy.video.VideoClip import ImageClip, VideoClip
+    
+    overlays = [final]
+    
+    # 1. Vignette (Làm tối 4 góc)
+    x = np.linspace(-1, 1, video_width)
+    y = np.linspace(-1, 1, video_height)
+    X, Y = np.meshgrid(x, y)
+    radius = np.sqrt(X**2 + Y**2)
+    opacity = np.clip(radius - 0.6, 0, 1) * 0.7
+    vig_img = np.zeros((video_height, video_width, 4), dtype=np.uint8)
+    vig_img[:, :, 3] = (opacity * 255).astype(np.uint8)
+    vig_clip = ImageClip(vig_img, is_mask=False).with_duration(final.duration)
+    overlays.append(vig_clip)
+    
+    # 2. Progress Bar (Dưới cùng)
+    bar_height = 12
+    def make_progress_frame(t):
+        w = int(video_width * (t / final.duration))
+        if w == 0: w = 1
+        frame = np.zeros((bar_height, video_width, 4), dtype=np.uint8)
+        frame[:, :w, 0] = 255
+        frame[:, :w, 1] = 215
+        frame[:, :w, 2] = 0
+        frame[:, :w, 3] = 255
+        return frame
+        
+    progress_clip = VideoClip(make_progress_frame, is_mask=False, has_constant_size=True).with_duration(final.duration).with_position(("left", "bottom"))
+    overlays.append(progress_clip)
+    
+    final = CompositeVideoClip(overlays, size=(video_width, video_height)).with_audio(final.audio)
+
 
     final.write_videofile(
         output_path,
@@ -287,12 +305,22 @@ def render_final_video(
 # ─────────────────────────────────────────────────────────────────────
 # SRT generation
 # ─────────────────────────────────────────────────────────────────────
-def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: str = "storyteller") -> str:
+def _strip_emoji_for_subtitle(text: str) -> str:
+    """Xóa triệt để emoji/icons khỏi text phụ đề để tránh hiện ký tự lạ trong video."""
+    # Dải chính: Supplementary Multilingual Plane (hầu hết emoji hiện đại)
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
+    # Dải phụ: Miscellaneous Symbols, Dingbats, Misc Technical, Arrows, etc.
+    text = re.sub(r'[\u2600-\u27ff\u2300-\u23ff\u2B50-\u2B55\u2B06\u2934\u2935\u200d\ufe0f\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u21aa\u231a-\u231b\u25aa-\u25fe\u2702-\u27b0\u3030\u303d\u3297\u3299]', '', text)
+    return text.strip()
+
+
+def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: str = "storyteller", subtitle_style: str = "karaoke_bold", hook_text: str = None, hook_effect: str = "word_by_word") -> str:
     """
-    Sinh file phụ đề .ass (Advanced SubStation Alpha) để có hiệu ứng chữ nảy (pop-in),
-    viền đen dày và font Impact bắt mắt theo chuẩn video Tiktok/Reels.
+    Sinh file phụ đề .ass (Advanced SubStation Alpha).
+    Hỗ trợ 2 phong cách:
+    - karaoke_bold: Viền dày, hiệu ứng nảy (pop-in), màu vàng nổi bật, tự động in hoa.
+    - cinematic_box: Chữ trắng trên nền hộp mờ (box/backdrop) kéo ngang, tĩnh, chữ thường.
     """
-    # Header ASS
     ass_content = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -303,55 +331,209 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ]
     
-    # Định nghĩa Style
-    font_name = "Impact"
-    font_size = 65 if mode == "quiz_listicle" else 75
-    primary_color = "&H0000FFFF" if mode == "quiz_listicle" else "&H00FFFFFF" # BGR format: Vàng / Trắng
-    
-    # Cấu trúc: 1=Border, 5=Outline width, 0=Shadow, 2=Bottom center alignment, 180=MarginV
-    style_line = f"Style: Default,{font_name},{font_size},{primary_color},&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,40,40,250,1"
+    # ── ĐỊNH NGHĨA STYLE DỰA TRÊN USER SETTING ──
+    if subtitle_style == "cinematic_box":
+        font_name = "Arial"  # Font hiện đại, sạch sẽ
+        font_size = 55
+        primary_color = "&H00FFFFFF"     # White
+        secondary_color = "&H00FFFFFF"
+        outline_color = "&H00000000"     # No outline needed
+        back_color = "&H99000000"        # Semi-transparent black (99 is alpha)
+        # BorderStyle=3 (Opaque box), Outline=8 (Box padding/margin)
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,3,8,0,2,60,60,250,1"
+    elif subtitle_style == "minimal_white":
+        font_name = "Arial"
+        font_size = 50
+        primary_color = "&H00FFFFFF"     # White
+        secondary_color = "&H00FFFFFF"
+        outline_color = "&H00000000"
+        back_color = "&H66000000"        # Soft shadow (alpha 66)
+        # BorderStyle=1 (Outline), Outline=0, Shadow=3
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},0,0,0,0,100,100,0,0,1,0,3,2,40,40,250,1"
+    else: # karaoke_bold & hormozi_bold (Default)
+        # Sửa lỗi font chữ: Đổi từ 'Impact' (thiếu dấu tiếng Việt) sang 'Arial'
+        # Do Style bên dưới có tham số Bold=-1 (tức là True), nên font thực tế sẽ là Arial Bold (hỗ trợ 100% tiếng Việt).
+        font_name = "Arial"
+        font_size = 55 if mode == "quiz_listicle" else 65
+        primary_color = "&H0000FFFF"     # Yellow highlight
+        secondary_color = "&H00FFFFFF"   # White base
+        outline_color = "&H00000000"     # Black outline
+        back_color = "&H00000000"        # Black shadow
+        # BorderStyle=1 (Outline), Outline=6, Shadow=4
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,1,6,4,2,40,40,350,1"
+        
     ass_content.append(style_line)
+    
+    # ── HOOK STYLE (cho Tiêu đề 3s đầu) ──
+    # Chữ to, vàng, nằm ở top (MarginV=150)
+    hook_style_line = f"Style: HookTitle,Arial,75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
+    ass_content.append(hook_style_line)
+    
     ass_content.append("")
     ass_content.append("[Events]")
     ass_content.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+
+    def format_ass_time(td):
+        total_seconds = int(td.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        centiseconds = int(td.microseconds / 10000)
+        return f"{hours:01d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+
+    # Add hook_text (duration 3 seconds max)
+    if hook_text and hook_text.strip():
+        import textwrap
+        wrapped_hook = "\\N".join(textwrap.wrap(hook_text.strip().upper(), width=16))
+        
+        if hook_effect == "full_shake":
+            # Effect: fade in 200ms, fade out 500ms, start large and scale down (bounce)
+            hook_ass = f"{{\\fad(200,500)\\fscx130\\fscy130\\t(0,200,\\fscx100\\fscy100)}}{wrapped_hook}"
+            ass_content.append(f"Dialogue: 1,0:00:00.00,0:00:03.00,HookTitle,,0,0,0,,{hook_ass}")
+        else: # word_by_word
+            # Generate cumulative lines for word-by-word pop-in
+            words = hook_text.strip().upper().split()
+            cursor_s = 0.0
+            word_dur = 0.25 # pop a new word every 0.25s
+            
+            # Since ASS requires manual positioning if we pop word by word, the easiest way 
+            # to do word-by-word popping without changing position is to use \alpha
+            # But standard ASS supports {\alpha&HFF&} for transparent text.
+            # We can write the FULL string, but set the upcoming words to transparent!
+            
+            for i in range(len(words)):
+                start_s = i * word_dur
+                if start_s >= 2.5: break # don't start appearing too late
+                end_s = 3.0
+                
+                start_td = dt.timedelta(seconds=start_s)
+                end_td = dt.timedelta(seconds=end_s)
+                
+                # Cắt chuỗi làm 2 phần: phần đã hiện (từ 0 đến i), phần chưa hiện (từ i+1 trở đi)
+                # Phần đã hiện thì giữ nguyên. Từ đang hiện thì nảy to. Phần chưa hiện thì ẩn (alpha FF).
+                
+                text_parts = []
+                for j, w in enumerate(words):
+                    if j < i:
+                        text_parts.append(w)
+                    elif j == i:
+                        text_parts.append(f"{{\\fscx150\\fscy150\\t(0,100,\\fscx100\\fscy100)}}{w}{{\\fscx100\\fscy100}}")
+                    else:
+                        text_parts.append(f"{{\\alpha&HFF&}}{w}{{\\alpha}}")
+                
+                full_text = " ".join(text_parts)
+                # Apply word wrapping (we should replace space with \N manually based on length, or just keep it simple)
+                import textwrap
+                # Tricky to textwrap when there are tags. Let's just do a simple replacement.
+                # Since hook text is short, we can rely on standard spacing or manual break
+                
+                fad_tag = r"{\fad(100,500)}" if i == 0 else r"{\fad(0,500)}"
+                full_text_formatted = full_text.replace(r"{\alpha}", r"{\alpha&H00&}")
+                
+                event_line = f"Dialogue: 1,{format_ass_time(start_td)},{format_ass_time(end_td)},HookTitle,,0,0,0,,{fad_tag}{full_text_formatted}"
+                ass_content.append(event_line)
 
     cursor = 0.0
     for asset in scene_assets:
         duration = asset["duration"]
         if asset.get("text") and asset["text"].strip():
-            # Format time HH:MM:SS.cs
             start_td = dt.timedelta(seconds=cursor)
             end_td = dt.timedelta(seconds=cursor + duration)
             
-            def format_ass_time(td):
-                total_seconds = int(td.total_seconds())
-                hours = total_seconds // 3600
-                minutes = (total_seconds % 3600) // 60
-                seconds = total_seconds % 60
-                centiseconds = int(td.microseconds / 10000)
-                return f"{hours:01d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
-
             start_str = format_ass_time(start_td)
             end_str = format_ass_time(end_td)
             
-            # Xử lý text (break dòng)
-            import textwrap
-            text = asset["text"].replace('\n', ' ')
-            wrapped = "\\N".join(textwrap.wrap(text, width=28))
+            # Xử lý Text & Effect
+            pop_effect = r"{\fscx50\fscy50\t(0,150,\fscx120\fscy120)\t(150,250,\fscx100\fscy100)}"
+            word_boundaries = asset.get("word_boundaries", [])
             
-            # Hiệu ứng nảy (pop-in) bằng cách scale từ 30% lên 110% rồi về 100%
-            # \fscx30\fscy30 : Bắt đầu ở 30%
-            # \t(0,100,\fscx110\fscy110) : Trong 100ms đầu scale lên 110%
-            # \t(100,200,\fscx100\fscy100) : 100ms tiếp theo về 100%
-            pop_effect = r"{\fscx30\fscy30\t(0,150,\fscx110\fscy110)\t(150,250,\fscx100\fscy100)}"
-            ass_text = f"{pop_effect}{wrapped}"
+            if subtitle_style == "cinematic_box":
+                # Tĩnh, không pop-in, không highlight từng từ
+                import textwrap
+                raw_text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ')
+                wrapped = "\\N".join(textwrap.wrap(raw_text, width=32))
+                ass_text = wrapped
+            elif subtitle_style == "minimal_white":
+                # Tĩnh chữ trắng nhỏ, có hiệu ứng fade nhẹ 200ms
+                import textwrap
+                raw_text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ')
+                wrapped = "\\N".join(textwrap.wrap(raw_text, width=35))
+                ass_text = f"{{\\fad(200,200)}}{wrapped}"
+            else:
+                # Karaoke & Hormozi Style (có highlight, pop-in)
+                if word_boundaries:
+                    def _chunk_word_boundaries(wbs, max_chars=14):
+                        chunks = []
+                        curr = []
+                        curr_len = 0
+                        for w in wbs:
+                            if curr_len + len(w["text"]) > max_chars and curr:
+                                chunks.append(curr)
+                                curr = []
+                                curr_len = 0
+                            curr.append(w)
+                            curr_len += len(w["text"]) + 1
+                        if curr:
+                            chunks.append(curr)
+                        return chunks
+
+                    chunks = _chunk_word_boundaries(word_boundaries, max_chars=14)
+                    import random
+                    hormozi_colors = ["&H0000FF00", "&H000000FF", "&H0000A5FF"]
+                    _VN_STOPWORDS = {
+                        "CỦA", "VÀ", "LÀ", "CÓ", "CHO", "ĐỂ", "MỘT", "CÁC", "NHỮNG",
+                        "TRONG", "KHÔNG", "ĐƯỢC", "NÀY", "ĐÓ", "VỚI", "TRÊN", "THEO",
+                        "NHƯ", "HAY", "HOẶC", "NHƯNG", "TỪ", "ĐẾN", "VỀ", "BỞI",
+                        "CŨNG", "ĐÃ", "SẼ", "ĐANG", "VẪN", "MÀ", "THÌ", "KHI",
+                        "NẾU", "HƠN", "RẤT", "QUÁ", "BẠN", "TÔI", "ĐI", "LẠI",
+                        "RA", "LÊN", "XUỐNG", "VÀO", "SAU", "TRƯỚC", "NÊN", "CHỈ",
+                        "CÒN", "HAI", "BA", "BỐN", "NĂM",
+                    }
+
+                    for chunk in chunks:
+                        # chunk_start = offset of first word, chunk_end = offset + duration of last word
+                        chunk_start_td = dt.timedelta(seconds=cursor + chunk[0]["offset"])
+                        chunk_end_td = dt.timedelta(seconds=cursor + chunk[-1]["offset"] + chunk[-1]["duration"])
+                        chunk_start_str = format_ass_time(chunk_start_td)
+                        chunk_end_str = format_ass_time(chunk_end_td)
+
+                        ass_text = pop_effect
+                        for i, wb in enumerate(chunk):
+                            dur_cs = max(1, int(wb["duration"] * 100))
+                            text = wb["text"].upper()
+                            prefix = " " if i > 0 else ""
+                            if text.startswith(" "):
+                                prefix = " "
+                                text = text.strip()
+
+                            is_strong = (
+                                len(text) > 2
+                                and text not in _VN_STOPWORDS
+                            ) or any(p in text for p in ['!', '?'])
+                            
+                            if is_strong:
+                                color = random.choice(hormozi_colors) if subtitle_style == "hormozi_bold" else "&H0000FFFF"
+                                ass_text += f"{prefix}{{\\K{dur_cs}\\c{color}\\fscx130\\fscy130\\t(0,{dur_cs*10},\\fscx100\\fscy100)}}{text}{{\\c&H0000FFFF\\fscx100\\fscy100}}"
+                            else:
+                                ass_text += f"{prefix}{{\\K{dur_cs}}}{text}"
+                        
+                        event_line = f"Dialogue: 0,{chunk_start_str},{chunk_end_str},Default,,0,0,0,,{ass_text}"
+                        ass_content.append(event_line)
+                else:
+                    import textwrap
+                    text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ').upper()
+                    wrapped = "\\N".join(textwrap.wrap(text, width=28))
+                    ass_text = f"{pop_effect}{wrapped}"
+                    event_line = f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}"
+                    ass_content.append(event_line)
             
-            event_line = f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}"
-            ass_content.append(event_line)
+            if subtitle_style in ("cinematic_box", "minimal_white"):
+                event_line = f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}"
+                ass_content.append(event_line)
             
         cursor += duration
 
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(ass_content))
 
     return output_path

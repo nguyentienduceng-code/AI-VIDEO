@@ -9,3 +9,7 @@ pillow>=10.4.0
 srt>=3.5.3
 python-multipart>=0.0.9
 mutagen>=1.47.0
+ffmpeg-python>=0.2.0
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy>=1.26.0

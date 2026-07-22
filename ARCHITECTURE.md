@@ -1,15 +1,15 @@
-# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO
+# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.0)
 
-Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker, phục vụ cho việc kiểm soát, bảo trì và phát triển tính năng về sau.
+Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.0 - Đã tích hợp các tính năng điện ảnh nâng cao).
 
 ---
 
 ## 1. Tổng quan Hệ thống (System Overview)
 
 Hệ thống được thiết kế theo kiến trúc Client-Server:
-- **Frontend (React + Vite):** Giao diện người dùng đơn trang (SPA) cho phép nhập ý tưởng kịch bản, cấu hình API Key và xem trực tiếp trạng thái tiến trình xử lý cũng như kết quả video.
-- **Backend (FastAPI - Python):** Xử lý logic lõi, điều phối các luồng gọi API bên ngoài (LLM, TTS) và tiến hành render video tự động thông qua công cụ MoviePy.
-- **Communication:** Giao tiếp qua REST API tại endpoint `/api/generate-video` với định dạng dữ liệu trao đổi là JSON.
+- **Frontend (React + Vite):** Giao diện người dùng đơn trang (SPA) cho phép nhập ý tưởng kịch bản, cấu hình nhân vật (Character Reference), tuỳ chỉnh giọng đọc/âm nhạc, bật/tắt các hiệu ứng (Veo 3, Beat Sync, Ken Burns, GPU Encode) và theo dõi tiến trình qua WebSocket.
+- **Backend (FastAPI - Python):** Xử lý logic lõi, điều phối các luồng gọi API bên ngoài (Gemini 2.5, Imagen 3, Veo 3.1, Edge-TTS) và tiến hành render video tự động thông qua MoviePy.
+- **Communication:** Giao tiếp qua REST API tại endpoint `/api/generate-video` (hoặc `/api/render-video`) kết hợp với WebSockets để push trạng thái real-time.
 
 ---
 
@@ -18,22 +18,23 @@ Hệ thống được thiết kế theo kiến trúc Client-Server:
 Quy trình từ ý tưởng thành video hoàn chỉnh diễn ra hoàn toàn tự động qua 4 bước:
 
 ### Bước 1: Tiếp nhận yêu cầu (Frontend → Backend)
-- Người dùng nhập *Chủ đề (Topic)* và tuỳ chọn *Gemini API Key* vào giao diện.
-- Payload được gửi qua HTTP POST tới `http://localhost:8000/api/generate-video`.
+- Người dùng nhập *Chủ đề (Topic)*, *Mô tả Nhân vật (Character Reference)* và các tuỳ chọn hiệu ứng (Ken Burns, Veo, GPU Encode, Beat Sync).
+- Payload được gửi qua HTTP POST tới `/api/generate-script` hoặc `/api/render-video`.
 
 ### Bước 2: Sinh Kịch bản & Phân cảnh (Gemini Service)
-- Dịch vụ `gemini_service.py` gọi **Gemini 1.5 Pro**.
-- Hệ thống phân tích chủ đề và trả về 1 mảng JSON chứa 4 phân cảnh.
-- Mỗi phân cảnh gồm: số thứ tự cảnh (`scene`), lời thoại (`text`) và mô tả hình ảnh tiếng Anh (`image_prompt`).
+- Dịch vụ `gemini_service.py` gọi **Gemini 2.5 Flash/Pro** với cơ chế **Structured Outputs** (Pydantic Schema) để đảm bảo trả về JSON chuẩn xác 100%.
+- Hệ thống phân tích chủ đề và trả về các phân cảnh chi tiết (lời thoại, mô tả hình ảnh).
 
-### Bước 3: Tạo Âm thanh & Hình ảnh (TTS Service)
-- Dịch vụ `tts_service.py` dùng thư viện **Edge-TTS** (Microsoft) để tổng hợp giọng nói Tiếng Việt (mặc định nữ: `vi-VN-HoaiMyNeural`). 
-- Đồng thời, tải hoặc sinh hình ảnh tương ứng (hiện tại dùng placeholder ngẫu nhiên, cấu trúc đã mở sẵn để cắm API sinh ảnh chuyên dụng như Imagen 3).
+### Bước 3: Tạo Âm thanh & Hình ảnh tĩnh/động (TTS & AI Generation)
+- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.2** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) nếu GPU quá tải.
+- **Images:** `image_router.py` gọi **Google Imagen 3** để sinh ảnh minh hoạ có độ nhất quán cao dựa trên mô tả nhân vật.
+- **Video (Tuỳ chọn):** `veo_service.py` gọi **Google Veo 3.1** để biến ảnh tĩnh thành video clip ngắn chuyển động chân thực.
 
 ### Bước 4: Render Video (Video Service)
-- Dịch vụ `video_service.py` sử dụng thư viện **MoviePy**.
-- Cắt/ghép (concatenate) các chuỗi Audio và Hình ảnh đã sinh; tự động căn chỉnh thời lượng hiển thị hình ảnh khớp chính xác với độ dài đoạn audio tương ứng.
-- Xuất file `.mp4` (codec libx264/aac) ở định dạng khung hình dọc (Tiktok/Reels) về thư mục `assets/output`.
+- Dịch vụ `video_service.py` sử dụng thư viện **MoviePy v2.x**.
+- **Hiệu ứng & Chuyển cảnh:** Áp dụng Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining (chuyển cảnh mượt), và Beat Sync (giật theo nhịp nhạc nền).
+- **Subtitles & BGM:** Tự động Auto-ducking nhạc nền khi có giọng đọc, render phụ đề động (Karaoke effect).
+- Xuất file `.mp4` (hỗ trợ tăng tốc GPU NVENC) ở định dạng khung hình dọc (Tiktok/Reels) về thư mục `assets/output`.
 
 ---
 
@@ -42,43 +43,52 @@ Quy trình từ ý tưởng thành video hoàn chỉnh diễn ra hoàn toàn t�
 ```text
 AI-VIDEO-MAKER/
 ├── frontend/                     # UI Application (React + Vite)
-│   ├── src/App.jsx               # Logic tương tác, gọi API và hiển thị
+│   ├── src/App.jsx               # Logic tương tác, tuỳ chỉnh nâng cao
 │   ├── src/index.css             # Định dạng, hiệu ứng UI
 │   └── vite.config.js
 ├── backend/                      # API Server (FastAPI)
-│   ├── main.py                   # Điểm đầu vào, khai báo Endpoint và CORS
+│   ├── main.py                   # Điểm đầu vào, khai báo Endpoint & Background Tasks
 │   ├── services/
-│   │   ├── gemini_service.py     # Prompt kỹ thuật sư cho LLM
-│   │   ├── tts_service.py        # Logic chuyển văn bản thành giọng nói async
-│   │   └── video_service.py      # Logic ghép media bằng MoviePy
-│   ├── assets/                   # Nơi lưu trữ tài nguyên máy tạo ra
-│   │   ├── audio/                # Chứa file .mp3 từng phân cảnh
-│   │   ├── images/               # Chứa file .jpg/.png từng phân cảnh
-│   │   └── output/               # Chứa file final_video.mp4 
-│   └── .env                      # Lưu GEMINI_API_KEY, TTS_VOICE
-├── start.bat                     # Script khởi chạy đồng thời FE/BE
-└── stop.bat                      # Script tắt sạch các tiến trình ngầm
+│   │   ├── gemini_service.py     # Gọi LLM với Structured Outputs
+│   │   ├── image_router.py       # Tích hợp Imagen 3 sinh ảnh
+│   │   ├── veo_service.py        # Tích hợp Veo 3.1 sinh video
+│   │   ├── tts_service.py        # Tích hợp lõi OmniVoice V3.2 chạy GPU và cơ chế Fallback Edge-TTS (async/await)
+│   │   ├── audio_mix_service.py  # Xử lý Smart Audio Mixing (Auto-ducking)
+│   │   ├── beat_sync.py          # Logic đồng bộ hình ảnh/video theo nhịp bass (Beat Sync)
+│   │   ├── motion_effects.py     # Hiệu ứng chuyển động (Ken Burns, Zoom Boost)
+│   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
+│   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
+│   ├── assets/                   # Nơi lưu trữ tài nguyên
+│   │   ├── audio/, images/, bgm/, output/, voices_preview/
+│   └── .env                      # Lưu API Keys
+├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình
+└── export_context.py             # Script tự động trích xuất mã nguồn cho AI
 ```
 
 ---
 
-## 4. Định hướng phát triển và mở rộng (Future Roadmap)
+## 4. Các tính năng Nâng cao (Advanced Features)
 
-Tài liệu cung cấp sẵn các "điểm neo" (hook points) để nhà phát triển mở rộng trong tương lai:
-
-1. **Image Generation API:** Thay thế logic placeholder tại `main.py` bằng thư viện gọi API Google Imagen 3, Midjourney hoặc DALL-E thông qua trường `image_prompt`.
-2. **Hiệu ứng chữ (Subtitles):** Thêm module sinh file `.srt` từ text hoặc chèn TextClip trong `video_service.py` để tạo phụ đề động (karaoke effect) giúp video hấp dẫn hơn.
-3. **Chuyển cảnh (Transitions):** Bổ sung các hiệu ứng chuyển cảnh mượt mà (Fade in/Fade out, Slide) giữa các phân đoạn hình ảnh trong quá trình render.
-4. **Tối ưu Pipeline & Scale:** Sử dụng cơ chế hàng đợi (Celery/Redis) hoặc WebSockets để frontend có thể nhận real-time status thay vì HTTP Request chặn (blocking) nếu thời gian render video quá lớn/dài.
+Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiên tiến:
+1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường).
+2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence dựa trên ngữ cảnh câu), và Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác. Emotion Profiles V2 kích hoạt pitch_delta ±3-5Hz cho giọng Edge-TTS diễn cảm hơn.
+3. **Beat Sync & Audio Mixing:** Phân tích Peak âm thanh của BGM để giật hình/chuyển cảnh khớp nhịp nhạc (Hype Drill, Phonk).
+4. **Motion Dynamics:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video để giữ chân người xem).
+5. **Hardware Acceleration:** Hỗ trợ render tốc độ cao qua GPU NVENC.
+6. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
 
 ---
 
-## 5. Nợ kỹ thuật & Rủi ro hệ thống (Technical Debt & Limitations)
+## 5. Nợ kỹ thuật & Định hướng tiếp theo (Technical Debt & Future)
 
-Hiện tại hệ thống đang ở giai đoạn MVP (Minimum Viable Product). Dưới đây là các rủi ro hệ thống và khoản nợ kỹ thuật cần ưu tiên xử lý để đảm bảo ứng dụng đạt chuẩn Production:
+Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đứt gãy Event Loop, HTTP Timeout, rò rỉ bộ nhớ), vẫn còn một số điểm cần tối ưu:
 
-1. **Lỗi Event Loop (FastAPI vs Edge-TTS):** `tts_service.py` đang dùng `asyncio.get_event_loop().run_until_complete()` bên trong môi trường FastAPI vốn đã chạy sẵn một event loop, có thể gây lỗi `RuntimeError: This event loop is already running`. *Khắc phục: Dùng endpoint `async def` và gọi `await` trực tiếp.*
-2. **Thư viện Gemini bị Deprecated:** Thư viện `google.generativeai` đang bị Google ngừng hỗ trợ (End-of-life). *Khắc phục: Cần migrate sang package mới `google.genai` và dùng **Structured Outputs** (Pydantic Schema) để đảm bảo LLM trả về chuẩn JSON 100%, tránh parse lỗi.*
-3. **Nguy cơ Timeout (Kiến trúc HTTP):** Render video bằng `MoviePy` rất nặng. Việc bắt HTTP Request chờ (blocking) có thể gây lỗi 504 Gateway Timeout. *Khắc phục: Áp dụng Hàng đợi (Queue) hoặc WebSocket như đề cập ở phần Định hướng.*
-4. **Tràn bộ nhớ do Quản lý File:** Các tài nguyên sinh ra (ảnh, âm thanh, video) lưu trong thư mục `assets/` không được xóa đi sau mỗi chu kỳ chạy, dẫn tới rác bộ nhớ ổ cứng. *Khắc phục: Cần thiết lập cơ chế Cleanup (xóa file temp) tự động sau khi video render xong.*
-5. **Đứt gãy Audio-Video (MoviePy):** Việc nối thẳng các clip mà không có crossfade hoặc xử lý audio tĩnh khiến luồng chuyển động hình ảnh trở nên thô và giật cục. *Khắc phục: Áp dụng hiệu ứng âm thanh/hình ảnh khi chuyển đổi (Transition/Crossfade).*
+### ✅ Đã xử lý (v2.1 — 2026-07-23):
+1. **~~Tách Component Frontend~~:** `App.jsx` đã được tái cấu trúc thành 9 components riêng biệt + `AppContext.jsx` quản lý state tập trung.
+2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con. FastAPI poll file status JSON để broadcast WebSocket, không bị block event loop. Fallback inline nếu đạt giới hạn worker.
+3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt. Tích hợp vào `image_router.py` và `veo_service.py`. Auto-cleanup khi cache > 5GB.
+
+### 🟢 Định hướng tiếp theo:
+1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.
+2. **Distributed Cache:** Cache hiện tại lưu trên disk local. Cần chuyển sang Redis/Memcached khi deploy multi-server.
+3. **Auto-publish:** Tích hợp API đăng video tự động lên TikTok/YouTube Shorts.

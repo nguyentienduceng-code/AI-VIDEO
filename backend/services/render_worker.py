@@ -1,0 +1,221 @@
+"""
+render_worker.py
+----------------
+Module chạy tác vụ render video nặng (MoviePy + FFmpeg) trong process con
+riêng biệt, giải phóng FastAPI event loop khỏi CPU-bound blocking.
+
+Cơ chế hoạt động:
+  1. FastAPI gọi spawn_render() → tạo multiprocessing.Process chạy _worker_main()
+  2. Worker process thực hiện toàn bộ render (MoviePy ghép video + FFmpeg mastering)
+  3. Trạng thái (progress %, message) được ghi vào file JSON (status_file)
+  4. FastAPI poll file JSON này để broadcast qua WebSocket cho Frontend
+
+Ưu điểm so với BackgroundTasks:
+  - Process con có GIL riêng → MoviePy render không block FastAPI I/O
+  - Nếu worker crash → FastAPI vẫn sống, chỉ job đó báo lỗi
+  - Có thể giới hạn số worker đồng thời (MAX_CONCURRENT_RENDERS)
+"""
+
+from __future__ import annotations
+
+import json
+import multiprocessing
+import os
+import time
+import traceback
+from typing import Any, Dict, Optional
+
+# ---------------------------------------------------------------------------
+# Cấu hình
+# ---------------------------------------------------------------------------
+MAX_CONCURRENT_RENDERS = 2  # Số lượng render đồng thời tối đa
+_active_processes: Dict[str, multiprocessing.Process] = {}
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATUS_DIR = os.path.join(BASE_DIR, "assets", "render_status")
+os.makedirs(STATUS_DIR, exist_ok=True)
+
+
+def _status_path(job_id: str) -> str:
+    return os.path.join(STATUS_DIR, f"{job_id}.json")
+
+
+def write_status(job_id: str, **kwargs):
+    """Ghi trạng thái render vào file JSON (gọi từ worker process)."""
+    path = _status_path(job_id)
+    data = {"job_id": job_id, "updated_at": time.time()}
+    # Đọc data cũ nếu có
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data.update(kwargs)
+    data["updated_at"] = time.time()
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    # Atomic rename để tránh đọc file đang ghi dở
+    os.replace(tmp_path, path)
+
+
+def read_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """Đọc trạng thái render từ file JSON (gọi từ FastAPI process)."""
+    path = _status_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def cleanup_status(job_id: str):
+    """Xóa file status sau khi job hoàn tất."""
+    path = _status_path(job_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Worker function — chạy trong process con
+# ---------------------------------------------------------------------------
+def _worker_main(
+    job_id: str,
+    scene_assets: list,
+    raw_video_path: str,
+    output_video_path: str,
+    output_srt_path: str,
+    render_kwargs: Dict[str, Any],
+    master_kwargs: Dict[str, Any],
+):
+    """
+    Hàm chạy trong process con, thực hiện:
+      1. MoviePy render RAW video
+      2. FFmpeg Audio Mastering & Subtitle Burn
+      3. Dọn file thô
+    """
+    try:
+        write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")
+
+        # ── Phase 1: MoviePy render RAW ──
+        from services.video_service import render_final_video
+        render_final_video(scene_assets, raw_video_path, **render_kwargs)
+
+        write_status(job_id, progress=85, message="[Worker] Render RAW hoàn tất. Đang tạo phụ đề...")
+
+        # ── Phase 1b: Tạo ASS subtitle ──
+        mode = render_kwargs.get("mode", "storyteller")
+        if mode != "photo_slideshow" and os.path.exists(raw_video_path):
+            from services.video_service import generate_ass_file
+            generate_ass_file(
+                scene_assets, output_srt_path, mode,
+                subtitle_style=master_kwargs.get("subtitle_style", "karaoke_bold"),
+                hook_text=render_kwargs.get("hook_text"),
+                hook_effect=master_kwargs.get("hook_effect", "word_by_word"),
+            )
+
+        # ── Phase 2: FFmpeg Audio Mastering & Burn Subtitle ──
+        write_status(job_id, progress=90, message="[Worker] Đang Mastering Âm thanh & Tối ưu Video...")
+        from services.audio_mix_service import master_audio_and_export
+        
+        ass_path = output_srt_path if os.path.isfile(output_srt_path) else None
+        master_audio_and_export(
+            input_video_path=raw_video_path,
+            output_path=output_video_path,
+            bgm_path=master_kwargs.get("bgm_path"),
+            ass_subtitle_path=ass_path,
+            use_gpu=master_kwargs.get("use_gpu", True),
+            bgm_volume=master_kwargs.get("bgm_volume", 0.15),
+            watermark_text=master_kwargs.get("watermark_text"),
+            color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
+        )
+
+        # Dọn file thô
+        if os.path.isfile(raw_video_path):
+            os.remove(raw_video_path)
+
+        write_status(
+            job_id, status="done", progress=100,
+            message="Hoàn tất!",
+            video_url=f"/api/download/{job_id}.mp4",
+            srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
+        )
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[RenderWorker] Error for job {job_id}: {e}\n{tb}")
+        
+        # Fallback: nếu FFmpeg lỗi nhưng RAW video tồn tại → dùng RAW
+        if os.path.isfile(raw_video_path) and not os.path.isfile(output_video_path):
+            try:
+                os.rename(raw_video_path, output_video_path)
+            except OSError:
+                pass
+
+        write_status(
+            job_id, status="error",
+            error=str(e), message=f"Lỗi render: {e}",
+            # Vẫn cung cấp URL nếu fallback thành công
+            video_url=f"/api/download/{job_id}.mp4" if os.path.isfile(output_video_path) else None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Public API — gọi từ FastAPI
+# ---------------------------------------------------------------------------
+def spawn_render(
+    job_id: str,
+    scene_assets: list,
+    raw_video_path: str,
+    output_video_path: str,
+    output_srt_path: str,
+    render_kwargs: Dict[str, Any],
+    master_kwargs: Dict[str, Any],
+) -> bool:
+    """
+    Khởi chạy render trong process con. Trả về True nếu spawn thành công,
+    False nếu đã đạt giới hạn MAX_CONCURRENT_RENDERS.
+    """
+    # Dọn các process đã kết thúc
+    finished = [jid for jid, p in _active_processes.items() if not p.is_alive()]
+    for jid in finished:
+        _active_processes[jid].join(timeout=1)
+        del _active_processes[jid]
+
+    if len(_active_processes) >= MAX_CONCURRENT_RENDERS:
+        return False
+
+    write_status(job_id, status="rendering", progress=80, message="Đang khởi tạo Render Worker...")
+
+    p = multiprocessing.Process(
+        target=_worker_main,
+        args=(job_id, scene_assets, raw_video_path, output_video_path,
+              output_srt_path, render_kwargs, master_kwargs),
+        daemon=True,
+        name=f"RenderWorker-{job_id[:8]}",
+    )
+    p.start()
+    _active_processes[job_id] = p
+    return True
+
+
+def is_render_active(job_id: str) -> bool:
+    """Kiểm tra xem render worker của job_id có đang chạy không."""
+    p = _active_processes.get(job_id)
+    return p is not None and p.is_alive()
+
+
+def get_active_render_count() -> int:
+    """Số lượng render đang chạy."""
+    # Dọn zombie
+    finished = [jid for jid, p in _active_processes.items() if not p.is_alive()]
+    for jid in finished:
+        _active_processes[jid].join(timeout=1)
+        del _active_processes[jid]
+    return len(_active_processes)

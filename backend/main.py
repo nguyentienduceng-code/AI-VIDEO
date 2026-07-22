@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime
@@ -112,24 +113,71 @@ manager = ConnectionManager()
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
-class GenerateVideoRequest(BaseModel):
+class GenerateScriptRequest(BaseModel):
     topic: Optional[str] = ""
-    mode: str = "storyteller"  # storyteller | photo_narration | photo_slideshow | script_video | quiz_listicle
-    num_scenes: int = 4  # 4-20
-    aspect_ratio: str = "9:16"  # 9:16 | 16:9 | 1:1
-    gemini_api_key: Optional[str] = None
-    voice: Optional[str] = None
+    mode: str = "storyteller"
+    num_scenes: int = 4
     art_style: Optional[str] = "Cinematic"
-    bgm_track: Optional[str] = None  # filename from bgm/ dir, or None
-    script_text: Optional[str] = None  # for script_video mode
-    upload_session_id: Optional[str] = None  # for photo_narration / photo_slideshow
-    speech_rate: Optional[str] = "+0%"  # TTS speed: "-10%", "+0%", "+15%"
-    speech_pitch: Optional[str] = "+0Hz" # TTS pitch: "-5Hz", "+10Hz"
-    bgm_volume: Optional[float] = 0.15   # Volume control
-    negative_prompt: Optional[str] = ""  # For image generation avoidance
+    script_text: Optional[str] = None
+    upload_session_id: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    character_description: Optional[str] = None
+    target_duration: Optional[str] = "30s"
+    narration_tone: Optional[str] = "viral"
+    sync_characters: bool = False
 
+class RenderVideoRequest(BaseModel):
+    scenes: List[dict]
+    mode: str = "storyteller"
+    aspect_ratio: str = "9:16"
+    art_style: Optional[str] = "Cinematic"
+    voice: Optional[str] = None
+    bgm_track: Optional[str] = None
+    upload_session_id: Optional[str] = None
+    speech_rate: Optional[str] = "+0%"
+    speech_pitch: Optional[str] = "+0Hz"
+    bgm_volume: Optional[float] = 0.15
+    negative_prompt: Optional[str] = ""
+    use_veo: bool = False
+    use_animated_captions: bool = True
+    cta_text: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    character_description: Optional[str] = None
+    use_frame_chaining: bool = True
+    use_ken_burns: bool = True
+    use_beat_sync: bool = False
+    use_veo_ambient_audio: bool = True
+    use_gpu_encode: bool = True
+    hook_zoom_boost: bool = True
+    use_fixed_seed: bool = False
+    subtitle_style: str = "karaoke_bold"
+    watermark_text: Optional[str] = None
+    hook_text: Optional[str] = None
+    cover_image_session_id: Optional[str] = None
+    cover_image_position: str = "start"  # "start", "end", "both"
+    use_sfx: bool = True
+    sfx_volume: float = 0.5
+    color_grading: str = "warm_cinematic"
+    topic: Optional[str] = None
+    use_breathing: bool = False
+    hook_effect: str = "word_by_word"
 
-VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle"}
+class PresetRequest(BaseModel):
+    name: str
+    aspect_ratio: str = "9:16"
+    voice: str = "vi-VN-NamMinhNeural"
+    art_style: str = "Anime illustration, vibrant colors, Studio Ghibli inspired"
+    bgm_track: Optional[str] = "auto"
+    target_duration: str = "30s"
+    narration_tone: str = "viral"
+    speech_rate: str = "+0%"
+    speech_pitch: str = "+0Hz"
+    bgm_volume: float = 15
+    subtitle_style: str = "karaoke_bold"
+    use_sfx: bool = True
+    sfx_volume: float = 50
+
+VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle", "manual"}
 VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
 
 
@@ -143,13 +191,13 @@ async def _update_job(job_id: str, **kwargs):
         return
     for k, v in kwargs.items():
         setattr(job, k, v)
-    await manager.broadcast(job_id, job.model_dump())
+    await manager.broadcast(job_id, job.model_dump(mode='json'))
 
 
 # ---------------------------------------------------------------------------
 # Pipeline chạy nền — đa chế độ
 # ---------------------------------------------------------------------------
-async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
+async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
     job_dir_audio = os.path.join(AUDIO_DIR, job_id)
     job_dir_images = os.path.join(IMAGES_DIR, job_id)
     os.makedirs(job_dir_audio, exist_ok=True)
@@ -158,191 +206,359 @@ async def _run_pipeline(job_id: str, req: GenerateVideoRequest):
     mode = req.mode
     api_key = req.gemini_api_key
     voice = req.voice or tts_service.DEFAULT_VOICE
-    art_style = req.art_style or "Cinematic"
     speech_rate = req.speech_rate or "+0%"
-    num_scenes = max(4, min(20, req.num_scenes))
     aspect_ratio = req.aspect_ratio if req.aspect_ratio in VALID_ASPECT_RATIOS else "9:16"
+    imagen_aspect = aspect_ratio.replace(":", ":")
 
-    # Map aspect ratio cho Imagen
-    imagen_aspect = aspect_ratio.replace(":", ":")  # already fine for Imagen
+    video_seed = None
+    if req.use_fixed_seed or req.use_frame_chaining:
+        import uuid
+        video_seed = uuid.uuid4().int % 100000
 
-    # BGM path (nếu user chọn)
     bgm_path = None
     if req.bgm_track:
-        candidate = os.path.join(BGM_DIR, req.bgm_track)
-        if os.path.isfile(candidate):
-            bgm_path = candidate
+        if req.bgm_track == "auto":
+            import random
+            available = [f for f in os.listdir(BGM_DIR) if f.endswith((".mp3", ".wav", ".ogg"))]
+            if available:
+                bgm_path = os.path.join(BGM_DIR, random.choice(available))
+        else:
+            candidate = os.path.join(BGM_DIR, req.bgm_track)
+            if not candidate.endswith(".mp3"):
+                candidate += ".mp3"
+            if os.path.isfile(candidate):
+                bgm_path = candidate
 
     try:
-        # ══════════════════════════════════════════════════════════════
-        # BƯỚC 1: SINH KỊCH BẢN — tuỳ theo mode
-        # ══════════════════════════════════════════════════════════════
-        await _update_job(job_id, status="generating_script", message="Đang sinh kịch bản...", progress=10)
-
-        scenes: List[dict] = []
-
-        if mode == "storyteller" or mode == "quiz_listicle":
-            if not req.topic or not req.topic.strip():
-                raise ValueError("Thiếu chủ đề (topic) cho mode này.")
-            scenes = await gemini_service.generate_script(
-                topic=req.topic, num_scenes=num_scenes, mode=mode,
-                art_style=art_style, api_key=api_key,
-            )
-
-        elif mode == "script_video":
-            if not req.script_text or not req.script_text.strip():
-                raise ValueError("Thiếu script text cho mode Script → Video.")
-            scenes = await gemini_service.split_script_to_scenes(
-                script_text=req.script_text, num_scenes=num_scenes,
-                art_style=art_style, api_key=api_key,
-            )
-
-        elif mode == "photo_narration":
-            if not req.upload_session_id:
-                raise ValueError("Thiếu ảnh upload cho mode Photo Narration.")
-            user_images = get_upload_paths(req.upload_session_id)
-            if not user_images:
-                raise ValueError("Không tìm thấy ảnh upload. Vui lòng upload lại.")
-            scenes = await gemini_service.generate_script_from_images(
-                image_paths=user_images, topic=req.topic, api_key=api_key,
-            )
-
-        elif mode == "photo_slideshow":
-            if not req.upload_session_id:
-                raise ValueError("Thiếu ảnh upload cho mode Photo Slideshow.")
-            user_images = get_upload_paths(req.upload_session_id)
-            if not user_images:
-                raise ValueError("Không tìm thấy ảnh upload. Vui lòng upload lại.")
-            # Slideshow: không cần Gemini, mỗi ảnh là 1 scene không có text
-            scenes = [
-                {"scene": i + 1, "text": "", "image_prompt": ""}
-                for i in range(len(user_images))
-            ]
-
-        await _update_job(job_id, scenes=scenes, progress=25)
-
-        # ══════════════════════════════════════════════════════════════
-        # BƯỚC 2: TẠO ASSETS — Audio (TTS) + Hình ảnh
-        # ══════════════════════════════════════════════════════════════
-        # Cập nhật Schema V2 (dict)
-        sentiment = "happy"
-        if isinstance(scenes, dict):
-            sentiment = scenes.get("sentiment", "happy")
-            scenes = scenes.get("scenes", [])
-            
         await _update_job(job_id, status="generating_assets")
-
-        scene_assets = []
+        scenes = req.scenes
         total = len(scenes)
 
-        # Lấy ảnh user upload (nếu mode photo)
         user_images = []
         if mode in ("photo_narration", "photo_slideshow") and req.upload_session_id:
             user_images = get_upload_paths(req.upload_session_id)
 
-        # Dynamic BGM (Nạp từ sentiment)
-        if not req.bgm_track:
-            bgm_path = os.path.join(BGM_DIR, f"{sentiment}.mp3")
-            if not os.path.isfile(bgm_path):
-                bgm_path = os.path.join(BGM_DIR, "background.mp3")
-
         from services import image_router
+        import subprocess
+
         for i, scene in enumerate(scenes):
-            audio_path = os.path.join(job_dir_audio, f"scene_{i+1}.mp3")
             image_path = os.path.join(job_dir_images, f"scene_{i+1}.png")
-
             text = scene.get("text", "")
+            
+            # Loại bỏ các thẻ SSML <break> (nếu còn sót từ bộ đệm cũ) thay bằng dấu chấm lửng
+            if "<break" in text:
+                text = re.sub(r'<break[^>]*>', '...', text).strip()
+            
+            # Lọc emoji/icons tại nguồn — đảm bảo TẤT CẢ downstream (TTS, Subtitle, Checkpoint)
+            # đều nhận text sạch, không cần lọc lại nhiều lần
+            text = tts_service._strip_emoji(text).strip()
+            text = re.sub(r'  +', ' ', text)  # Dọn khoảng trắng đôi
+            scene["text"] = text
+
             img_prompt = scene.get("image_prompt", "")
-            sfx = scene.get("sfx", "")
-            visual_effect = scene.get("visual_effect", "zoom_in")
 
-            # ── Audio: TTS nếu có text ──
-            duration = video_service.SLIDESHOW_SCENE_DURATION  # default cho slideshow
-            if text.strip() and mode != "photo_slideshow":
-                await _update_job(job_id, message=f"Đang tạo giọng đọc cảnh {i+1}/{total}...")
-                try:
-                    dur = await tts_service.synthesize_speech(
-                        text, audio_path, voice=voice, rate=speech_rate, pitch=req.speech_pitch, mode=mode
-                    )
-                    duration = max(1.0, dur)
-                except Exception as audio_err:
-                    print(f"TTS Error: {audio_err}")
-                    audio_path = ""
-                    duration = 3.0
-            else:
-                audio_path = ""  # slideshow: không có audio per-scene
+            async def _do_tts():
+                if mode != "photo_slideshow" and text.strip():
+                    a_path = os.path.join(job_dir_audio, f"scene_{i+1}.mp3")
+                    wav_alt = a_path.replace(".mp3", ".wav")
+                    # Check cache audio cũ
+                    if os.path.exists(a_path) and os.path.getsize(a_path) > 0:
+                        from mutagen.mp3 import MP3
+                        try:
+                            dur = MP3(a_path).info.length
+                            return dur, scene.get("word_boundaries", []), a_path
+                        except Exception: pass
+                    if os.path.exists(wav_alt) and os.path.getsize(wav_alt) > 0:
+                        import soundfile as sf
+                        try:
+                            info = sf.info(wav_alt)
+                            return info.duration, scene.get("word_boundaries", []), wav_alt
+                        except Exception: pass
 
-            # ── Image: dùng ảnh user hoặc sinh bằng Imagen ──
-            if mode in ("photo_narration", "photo_slideshow") and i < len(user_images):
-                # Dùng ảnh gốc của user
-                shutil.copy(user_images[i], image_path)
-            else:
-                await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
-                try:
-                    await image_router.generate_image_with_fallback(
-                        image_prompt=img_prompt,
-                        output_path=image_path,
-                        aspect_ratio=imagen_aspect,
-                        google_api_key=api_key,
-                        banana_mode=getattr(req, "banana_mode", False),
-                        negative_prompt=req.negative_prompt
-                    )
-                except Exception as img_err:
-                    await _update_job(
-                        job_id,
-                        message=f"Cảnh {i+1}: sinh ảnh AI lỗi ({img_err}), dùng ảnh placeholder.",
-                    )
-                    _create_placeholder_image(image_path)
+                    await _update_job(job_id, message=f"Đang tạo giọng đọc cảnh {i+1}/{total}...")
+                    
+                    # Tạo callback để broadcast cảnh báo OmniVoice fallback qua WebSocket
+                    async def _voice_warning(msg: str):
+                        await _update_job(job_id, message=msg)
+                    
+                    try:
+                        dur, wbs = await tts_service.synthesize_speech(
+                            text, a_path, voice=voice, rate=speech_rate, pitch=req.speech_pitch, mode=mode,
+                            emotion=scene.get("emotion", ""),
+                            warning_callback=_voice_warning,
+                            use_breathing=req.use_breathing
+                        )
+                        if os.path.exists(a_path) and os.path.getsize(a_path) > 0:
+                            return dur, wbs, a_path
+                        if os.path.exists(wav_alt) and os.path.getsize(wav_alt) > 0:
+                            return dur, wbs, wav_alt
+                    except Exception as e:
+                        print(f"TTS Error for scene {i+1}: {e}")
+                return 3.0, [], None
 
-            scene_assets.append({
-                "image_path": image_path,
-                "audio_path": audio_path,
-                "text": text,
-                "duration": duration,
-                "sfx": sfx,
-                "visual_effect": visual_effect
+            async def _do_visuals():
+                final_img_path = image_path
+                mp4_alt = final_img_path.replace(".png", ".mp4")
+                # Check cache visual cũ
+                if os.path.exists(mp4_alt) and os.path.getsize(mp4_alt) > 0:
+                    return mp4_alt
+                if os.path.exists(final_img_path) and os.path.getsize(final_img_path) > 1000:
+                    return final_img_path
+
+                if mode in ("photo_narration", "photo_slideshow") and i < len(user_images):
+                    import shutil
+                    shutil.copy(user_images[i], final_img_path)
+                    return final_img_path
+                elif req.cover_image_session_id and (
+                    (req.cover_image_position in ("start", "both") and i == 0) or
+                    (req.cover_image_position in ("end", "both") and i == len(req.scenes) - 1)
+                ):
+                    cover_images = get_upload_paths(req.cover_image_session_id)
+                    if cover_images:
+                        import shutil
+                        shutil.copy(cover_images[0], final_img_path)
+                        return final_img_path
+                    else:
+                        await image_router.generate_image_with_fallback(
+                            image_prompt=img_prompt, output_path=final_img_path,
+                            aspect_ratio=imagen_aspect, google_api_key=api_key,
+                            banana_mode=getattr(req, "banana_mode", False),
+                            negative_prompt=req.negative_prompt, seed=video_seed,
+                            art_style=req.art_style
+                        )
+                        return final_img_path
+                elif req.use_veo:
+                    await _update_job(job_id, message=f"Đang sinh Video AI (Veo) cho cảnh {i+1}/{total}...")
+                    try:
+                        from services.veo_service import generate_scene_video
+                        video_path = await generate_scene_video(
+                            scene_prompt=img_prompt, aspect_ratio=aspect_ratio,
+                            use_fast_model=True, negative_prompt=req.negative_prompt or ""
+                        )
+                        return video_path
+                    except Exception as veo_err:
+                        print(f"Veo Error for scene {i+1}: {veo_err}. Tự động fallback sang Pexels Video / Image Router...")
+                        pexels_key = os.getenv("PEXELS_API_KEY")
+                        if pexels_key:
+                            try:
+                                return await image_router.fetch_pexels_video(img_prompt, final_img_path, aspect_ratio, pexels_key)
+                            except Exception as pex_v_err:
+                                print(f"Pexels Video fallback failed: {pex_v_err}")
+                        return await image_router.generate_image_with_fallback(
+                            image_prompt=img_prompt, output_path=final_img_path,
+                            aspect_ratio=imagen_aspect, google_api_key=api_key,
+                            banana_mode=getattr(req, "banana_mode", False),
+                            negative_prompt=req.negative_prompt, seed=video_seed,
+                            art_style=req.art_style
+                        )
+                else:
+                    is_realistic = False
+                    if req.art_style:
+                        is_realistic = any(kw in req.art_style.lower() for kw in ["realistic", "photorealistic", "photography", "photo"])
+                    if not is_realistic:
+                        is_realistic = any(kw in img_prompt.lower() for kw in ["realistic", "photography", "photoreal", "real-life", "photo of", "dslr"])
+
+                    pexels_key = os.getenv("PEXELS_API_KEY")
+                    if is_realistic and pexels_key:
+                        await _update_job(job_id, message=f"Đang tìm video Pexels cho cảnh {i+1}/{total}...")
+                        try:
+                            from services.gemini_service import extract_search_keyword
+                            query = await extract_search_keyword(img_prompt, api_key)
+                            pexels_vid = await image_router.fetch_pexels_video(query, final_img_path, imagen_aspect, pexels_key)
+                            return pexels_vid
+                        except Exception as pexels_err:
+                            print(f"Pexels fallback for scene {i+1}: {pexels_err}")
+
+                    await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
+                    try:
+                        await image_router.generate_image_with_fallback(
+                            image_prompt=img_prompt, output_path=final_img_path,
+                            aspect_ratio=imagen_aspect, google_api_key=api_key,
+                            banana_mode=getattr(req, "banana_mode", False),
+                            negative_prompt=req.negative_prompt, seed=video_seed,
+                            art_style=req.art_style
+                        )
+                    except Exception as img_err:
+                        _create_placeholder_image(final_img_path)
+                    return final_img_path
+
+            # Chạy song song TTS và Sinh ảnh (Giảm 50% thời gian!)
+            (scene_duration, scene_wbs, audio_path), image_path = await asyncio.gather(_do_tts(), _do_visuals())
+            
+            scene["image_path"] = image_path
+            scene["audio_path"] = audio_path
+            # computed_duration sẽ được tính lại chính xác hơn trong build_scene_timeline (motion_effects)
+            scene["computed_duration"] = scene_duration
+            scene["word_boundaries"] = scene_wbs
+
+            # Checkpoint tự động lưu project state sau từng scene
+            from services import project_service
+            import time
+            project_service.save_project_state(job_id, {
+                "job_id": job_id,
+                "title": getattr(req, "topic", None) or f"Dự án {job_id[:8]}",
+                "mode": mode,
+                "scenes": scenes,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "generating_assets",
+                "req": req.model_dump(mode='json')
             })
-            await _update_job(job_id, progress=25 + int(50 * (i + 1) / total))
 
-        # ══════════════════════════════════════════════════════════════
-        # BƯỚC 3: RENDER VIDEO (MoviePy v2)
-        # ══════════════════════════════════════════════════════════════
-        await _update_job(
-            job_id, status="rendering", message="Đang render video cuối cùng...", progress=80,
-        )
+        # ── Tính toán Timeline chính xác theo word_boundaries ──
+        await _update_job(job_id, message="Tính toán Timeline & Sync...")
+        from services.motion_effects import build_scene_timeline, pick_pan_direction
+        from services.video_service import CROSSFADE_DURATION, SLIDESHOW_CROSSFADE
+        cf_dur = SLIDESHOW_CROSSFADE if mode == "photo_slideshow" else CROSSFADE_DURATION
+        scenes = build_scene_timeline(scenes, overlap_dur=cf_dur)
+
+        # ── Beat Sync: snap điểm cắt cảnh theo nhịp nhạc (nếu user bật) ──
+        if req.use_beat_sync and bgm_path and os.path.isfile(bgm_path):
+            try:
+                await _update_job(job_id, message="Đồng bộ nhịp nhạc (Beat Sync)...")
+                from services.beat_sync import apply_beat_sync_to_timeline
+                scenes = await asyncio.to_thread(apply_beat_sync_to_timeline, scenes, bgm_path)
+            except Exception as bs_err:
+                print(f"Beat Sync warning (non-fatal): {bs_err}")
+
+        scene_assets = []
+        from services.motion_effects import apply_ken_burns
+        for i, s in enumerate(scenes):
+            # Xen kẽ hướng pan giữa các cảnh để tránh lặp nhàm chán
+            default_effect = s.get("visual_effect", "") or pick_pan_direction(i)
+            
+            img_path = s["image_path"]
+            duration = s.get("computed_duration", 3.0)
+            start_time = s.get("start_time", 0.0)
+            
+            # Apply Ken Burns via FFmpeg if it's an image
+            if not img_path.lower().endswith((".mp4", ".mov")):
+                await _update_job(job_id, message=f"Đang xử lý chuyển động (Ken Burns) cho cảnh {i+1}...")
+                out_mp4 = img_path + f"_{i}.mp4"
+                await asyncio.to_thread(
+                    apply_ken_burns,
+                    image_path=img_path, output_path=out_mp4, duration=duration, fps=30, pan_direction=default_effect
+                )
+                img_path = out_mp4
+                
+            scene_assets.append({
+                "image_path": img_path,
+                "audio_path": s.get("audio_path"),
+                "text": s.get("text", ""),
+                "duration": duration,
+                "sfx": s.get("sfx", ""),
+                "visual_effect": default_effect,
+                "word_boundaries": s.get("word_boundaries", []),
+                "transition": s.get("transition", "crossfade"),
+                "start_time": start_time,
+            })
+            
+        await _update_job(job_id, status="rendering", message="Đang render video...", progress=80)
 
         output_video_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
         output_srt_path = os.path.join(OUTPUT_DIR, f"{job_id}.ass")
+        raw_video = output_video_path + ".raw.mp4"
+        
+        # ══════════════════════════════════════════════════════════
+        # Phase 2: Render — OFFLOAD sang process con riêng biệt
+        # MoviePy + FFmpeg là CPU-bound nặng, chạy trong process con
+        # để không block FastAPI event loop
+        # ══════════════════════════════════════════════════════════
+        from services.render_worker import spawn_render, read_status as read_render_status
 
-        # MoviePy CPU-bound -> chạy trong thread riêng
-        await asyncio.to_thread(
-            video_service.render_final_video,
-            scene_assets, output_video_path,
+        render_kwargs = dict(
             aspect_ratio=aspect_ratio,
-            bgm_path=bgm_path,
+            bgm_path=None,  # BGM được mix bởi FFmpeg
             mode=mode,
-            bgm_volume=req.bgm_volume
+            hook_text=req.hook_text,
+            use_sfx=req.use_sfx,
+            sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
+        )
+        master_kwargs = dict(
+            bgm_path=bgm_path,
+            use_gpu=req.use_gpu_encode,
+            bgm_volume=req.bgm_volume,
+            watermark_text=req.watermark_text,
+            color_grading=req.color_grading,
+            subtitle_style=req.subtitle_style,
+            hook_effect=req.hook_effect,
         )
 
-        # ASS chỉ có ý nghĩa khi có text (không cho slideshow)
-        if mode != "photo_slideshow":
-            await asyncio.to_thread(video_service.generate_ass_file, scene_assets, output_srt_path, mode)
-
-        await _update_job(
-            job_id,
-            status="done", progress=100, message="Hoàn tất!",
-            video_url=f"/api/download/{job_id}.mp4",
-            srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
+        spawned = spawn_render(
+            job_id=job_id,
+            scene_assets=scene_assets,
+            raw_video_path=raw_video,
+            output_video_path=output_video_path,
+            output_srt_path=output_srt_path,
+            render_kwargs=render_kwargs,
+            master_kwargs=master_kwargs,
         )
+
+        if not spawned:
+            # Nếu đạt giới hạn worker → fallback chạy inline (giữ backward-compatible)
+            await _update_job(job_id, message="Hàng đợi render đầy. Đang render trực tiếp...")
+            await asyncio.to_thread(
+                video_service.render_final_video,
+                scene_assets, raw_video,
+                aspect_ratio=aspect_ratio, bgm_path=None, mode=mode,
+                hook_text=req.hook_text, use_sfx=req.use_sfx,
+                sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
+            )
+            if mode != "photo_slideshow":
+                await asyncio.to_thread(
+                    video_service.generate_ass_file, scene_assets, output_srt_path,
+                    mode, subtitle_style=req.subtitle_style,
+                    hook_text=req.hook_text, hook_effect=req.hook_effect,
+                )
+            await _update_job(job_id, message="Đang Mastering Âm thanh & Tối ưu Video...", progress=90)
+            from services.audio_mix_service import master_audio_and_export
+            try:
+                await asyncio.to_thread(
+                    master_audio_and_export,
+                    input_video_path=raw_video, output_path=output_video_path,
+                    bgm_path=bgm_path,
+                    ass_subtitle_path=output_srt_path if os.path.isfile(output_srt_path) else None,
+                    use_gpu=req.use_gpu_encode, bgm_volume=req.bgm_volume,
+                    watermark_text=req.watermark_text, color_grading=req.color_grading,
+                )
+                if os.path.isfile(raw_video):
+                    os.remove(raw_video)
+            except Exception as err:
+                print(f"FFmpeg Mastering error: {err}")
+                if os.path.isfile(raw_video) and not os.path.isfile(output_video_path):
+                    os.rename(raw_video, output_video_path)
+            await _update_job(
+                job_id, status="done", progress=100, message="Hoàn tất!",
+                video_url=f"/api/download/{job_id}.mp4",
+                srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
+            )
+        else:
+            # Worker đang chạy → poll file status và broadcast qua WebSocket
+            while True:
+                await asyncio.sleep(2)
+                ws = read_render_status(job_id)
+                if ws is None:
+                    continue
+                await _update_job(
+                    job_id,
+                    status=ws.get("status", "rendering"),
+                    progress=ws.get("progress", 80),
+                    message=ws.get("message", "Đang render..."),
+                    video_url=ws.get("video_url"),
+                    srt_url=ws.get("srt_url"),
+                    error=ws.get("error"),
+                )
+                if ws.get("status") in ("done", "error"):
+                    from services.render_worker import cleanup_status
+                    cleanup_status(job_id)
+                    break
 
     except Exception as e:
+        print(f"Exception in pipeline: {e}")
         await _update_job(job_id, status="error", error=str(e), message=f"Lỗi: {e}")
 
     finally:
-        # Dọn rác audio/ảnh tạm (giữ lại video/srt final + ảnh upload)
         shutil.rmtree(job_dir_audio, ignore_errors=True)
         shutil.rmtree(job_dir_images, ignore_errors=True)
-        # Cleanup ảnh upload sau khi render xong
         if req.upload_session_id:
             cleanup_upload(req.upload_session_id)
 
@@ -371,24 +587,80 @@ async def _cleanup_old_outputs(max_age_hours: int = 24):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@app.post("/api/generate-video")
-async def generate_video(req: GenerateVideoRequest, background_tasks: BackgroundTasks):
-    # Validate mode
+from services import quota_service
+
+@app.get("/api/quota")
+async def get_quota():
+    return quota_service.get_quota()
+
+@app.post("/api/generate-script")
+async def generate_script(req: GenerateScriptRequest):
+    if req.mode not in VALID_MODES:
+        raise HTTPException(status_code=400, detail=f"Mode không hợp lệ. Chọn 1 trong: {', '.join(VALID_MODES)}")
+    
+    try:
+        scenes = []
+        if req.mode == "storyteller" or req.mode == "quiz_listicle":
+            if not req.topic or not req.topic.strip():
+                raise HTTPException(status_code=400, detail="Thiếu chủ đề (topic) cho mode này.")
+            scenes = await gemini_service.generate_script(
+                topic=req.topic, num_scenes=req.num_scenes, mode=req.mode,
+                art_style=req.art_style, api_key=req.gemini_api_key,
+                target_duration=req.target_duration,
+                narration_tone=req.narration_tone or "viral",
+                character_description=req.character_description,
+                sync_characters=req.sync_characters
+            )
+
+        elif req.mode == "script_video":
+            if not req.script_text or not req.script_text.strip():
+                raise HTTPException(status_code=400, detail="Thiếu script text cho mode Script → Video.")
+            scenes = await gemini_service.split_script_to_scenes(
+                script_text=req.script_text, num_scenes=req.num_scenes,
+                art_style=req.art_style, api_key=req.gemini_api_key,
+            )
+
+        elif req.mode == "photo_narration":
+            if not req.upload_session_id:
+                raise HTTPException(status_code=400, detail="Thiếu ảnh upload cho mode Photo Narration.")
+            user_images = get_upload_paths(req.upload_session_id)
+            if not user_images:
+                raise HTTPException(status_code=400, detail="Không tìm thấy ảnh upload. Vui lòng upload lại.")
+            scenes = await gemini_service.generate_script_from_images(
+                image_paths=user_images, topic=req.topic, api_key=req.gemini_api_key,
+            )
+
+        elif req.mode == "photo_slideshow":
+            if not req.upload_session_id:
+                raise HTTPException(status_code=400, detail="Thiếu ảnh upload cho mode Photo Slideshow.")
+            user_images = get_upload_paths(req.upload_session_id)
+            if not user_images:
+                raise HTTPException(status_code=400, detail="Không tìm thấy ảnh upload. Vui lòng upload lại.")
+            scenes = [
+                {"scene": i + 1, "text": "", "image_prompt": ""}
+                for i in range(len(user_images))
+            ]
+            
+        if isinstance(scenes, dict):
+            return scenes
+        else:
+            return {"scenes": scenes, "sentiment": "happy"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/render-video")
+async def render_video(req: RenderVideoRequest, background_tasks: BackgroundTasks):
     if req.mode not in VALID_MODES:
         raise HTTPException(
             status_code=400,
             detail=f"Mode không hợp lệ. Chọn 1 trong: {', '.join(VALID_MODES)}",
         )
 
-    # Validate input theo mode
-    if req.mode in ("storyteller", "quiz_listicle") and (not req.topic or not req.topic.strip()):
-        raise HTTPException(status_code=400, detail="Thiếu chủ đề (topic) cho mode này.")
-
-    if req.mode == "script_video" and (not req.script_text or not req.script_text.strip()):
-        raise HTTPException(status_code=400, detail="Thiếu script text cho mode Script → Video.")
-
     if req.mode in ("photo_narration", "photo_slideshow") and not req.upload_session_id:
         raise HTTPException(status_code=400, detail="Thiếu ảnh upload. Vui lòng upload ảnh trước.")
+        
+    if not req.scenes:
+        raise HTTPException(status_code=400, detail="Thiếu danh sách scenes.")
 
     job_id = str(uuid.uuid4())
     JOBS[job_id] = JobState(
@@ -396,7 +668,7 @@ async def generate_video(req: GenerateVideoRequest, background_tasks: Background
         message="Đã nhận yêu cầu, đang chờ xử lý...",
     )
 
-    background_tasks.add_task(_run_pipeline, job_id, req)
+    background_tasks.add_task(_run_render_pipeline, job_id, req)
     background_tasks.add_task(_cleanup_old_outputs)
 
     return {"job_id": job_id, "status_url": f"/api/job-status/{job_id}"}
@@ -431,6 +703,46 @@ async def voices_list():
     return {"voices": tts_service.get_available_voices()}
 
 
+from services import preset_service
+
+@app.get("/api/presets")
+async def get_presets():
+    """Trả về danh sách tất cả các preset đã lưu."""
+    return {"presets": preset_service.load_presets()}
+
+@app.post("/api/presets")
+async def create_preset(req: PresetRequest):
+    """Lưu 1 preset mới."""
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="Thiếu tên preset.")
+    new_preset = preset_service.add_preset(req.model_dump())
+    return {"message": "Đã lưu preset thành công.", "preset": new_preset}
+
+@app.delete("/api/presets/{preset_id}")
+async def delete_preset(preset_id: str):
+    """Xóa 1 preset."""
+    success = preset_service.delete_preset(preset_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Không thể xóa preset này (preset mặc định hoặc không tồn tại).")
+    return {"message": "Đã xóa preset thành công."}
+
+
+@app.get("/api/preview/{type}/{id}")
+async def preview_media(type: str, id: str):
+    """Phát thử nhạc nền (BGM) hoặc giọng đọc mẫu."""
+    from fastapi.responses import FileResponse
+    if type == "bgm":
+        bgm_path = os.path.join(BGM_DIR, f"{id}.mp3")
+        if os.path.isfile(bgm_path):
+            return FileResponse(bgm_path)
+    elif type == "voice":
+        voice_path = os.path.join(ASSETS_DIR, "voices_preview", f"{id}.mp3")
+        if os.path.isfile(voice_path):
+            return FileResponse(voice_path)
+            
+    raise HTTPException(status_code=404, detail="Không tìm thấy file nghe thử.")
+
+
 @app.get("/api/job-status/{job_id}")
 async def job_status(job_id: str):
     job = JOBS.get(job_id)
@@ -444,7 +756,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await manager.connect(websocket, job_id)
     try:
         if job_id in JOBS:
-            await websocket.send_json(JOBS[job_id].model_dump())
+            await websocket.send_json(JOBS[job_id].model_dump(mode='json'))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -464,3 +776,83 @@ async def download_file(filename: str):
 @app.get("/")
 async def health_check():
     return {"status": "ok", "service": "AI Video Studio API v2"}
+
+
+# ---------------------------------------------------------------------------
+# Project Management & Single Scene Editing Endpoints
+# ---------------------------------------------------------------------------
+from services import project_service
+
+class RegenerateSceneImageRequest(BaseModel):
+    new_prompt: Optional[str] = None
+    aspect_ratio: Optional[str] = "9:16"
+    art_style: Optional[str] = None
+
+@app.get("/api/projects")
+async def list_user_projects():
+    """Liệt kê các dự án đã lưu."""
+    return {"projects": project_service.list_projects()}
+
+@app.get("/api/projects/{job_id}")
+async def get_project_detail(job_id: str):
+    """Tải thông tin dự án chi tiết."""
+    state = project_service.load_project_state(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Không tìm thấy dự án này.")
+    return state
+
+@app.post("/api/projects/{job_id}/scenes/{scene_idx}/regenerate-image")
+async def regenerate_scene_image(job_id: str, scene_idx: int, req: RegenerateSceneImageRequest):
+    """Sinh lại ảnh AI riêng cho phân cảnh scene_idx."""
+    state = project_service.load_project_state(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Dự án không tồn tại.")
+    scenes = state.get("scenes", [])
+    if scene_idx < 0 or scene_idx >= len(scenes):
+        raise HTTPException(status_code=400, detail="Chỉ số phân cảnh không hợp lệ.")
+    
+    scene = scenes[scene_idx]
+    prompt = req.new_prompt or scene.get("image_prompt", "")
+    job_dir_images = os.path.join(IMAGES_DIR, job_id)
+    os.makedirs(job_dir_images, exist_ok=True)
+    img_path = os.path.join(job_dir_images, f"scene_{scene_idx+1}.png")
+    
+    # Xóa file cũ nếu có để buộc vẽ lại
+    if os.path.exists(img_path):
+        os.remove(img_path)
+    mp4_alt = img_path.replace(".png", ".mp4")
+    if os.path.exists(mp4_alt):
+        os.remove(mp4_alt)
+
+    from services import image_router
+    new_path = await image_router.generate_image_with_fallback(
+        image_prompt=prompt,
+        output_path=img_path,
+        aspect_ratio=req.aspect_ratio or "9:16",
+        art_style=req.art_style
+    )
+    
+    project_service.update_scene_asset(job_id, scene_idx, image_path=new_path, image_prompt=prompt)
+    return {"message": f"Đã sinh lại ảnh cho cảnh {scene_idx+1} thành công.", "image_path": new_path}
+
+@app.post("/api/projects/{job_id}/scenes/{scene_idx}/upload-image")
+async def upload_scene_image(job_id: str, scene_idx: int, file: UploadFile = File(...)):
+    """Upload bức ảnh tùy chỉnh cho riêng phân cảnh scene_idx."""
+    state = project_service.load_project_state(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Dự án không tồn tại.")
+    scenes = state.get("scenes", [])
+    if scene_idx < 0 or scene_idx >= len(scenes):
+        raise HTTPException(status_code=400, detail="Chỉ số phân cảnh không hợp lệ.")
+
+    job_dir_images = os.path.join(IMAGES_DIR, job_id)
+    os.makedirs(job_dir_images, exist_ok=True)
+    img_path = os.path.join(job_dir_images, f"scene_{scene_idx+1}.png")
+    
+    content = await file.read()
+    with open(img_path, "wb") as f:
+        f.write(content)
+        
+    project_service.update_scene_asset(job_id, scene_idx, image_path=img_path)
+    return {"message": f"Đã cập nhật ảnh tùy chỉnh cho cảnh {scene_idx+1}.", "image_path": img_path}
+

@@ -2,13 +2,35 @@
 backend/venv/
 backend/__pycache__/
 backend/.env
-backend/assets/output/*.mp4
-backend/assets/output/*.srt
-backend/assets/audio/*.mp3
-backend/assets/images/*.png
-backend/assets/images/*.jpg
 backend/.pytest_cache/
 *.pyc
+
+# Assets & Generated Media
+backend/assets/output/
+backend/assets/audio/
+backend/assets/images/
+backend/assets/cache/
+backend/assets/uploads/
+backend/assets/projects/
+backend/assets/veo_tmp/
+backend/assets/render_status/
+backend/assets/voices_preview/
+
+# Root test files & temporary assets
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+*.ass
+*.srt
+tree.txt
+status.json
+*TEMP_MPY*
+test_workspace/
+test_workspace_mock/
+tester/
+image/
 
 # Node / Frontend
 frontend/node_modules/
@@ -21,5 +43,3 @@ frontend/.env.local
 .idea/
 .DS_Store
 Thumbs.db
-status.json
-*TEMP_MPY*

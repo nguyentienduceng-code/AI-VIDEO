@@ -1,0 +1,38 @@
+[
+  {
+    "id": "preset_viral_short",
+    "name": "🔥 Short TikTok Viral (Nam Minh + Anime)",
+    "aspect_ratio": "9:16",
+    "voice": "vi-VN-NamMinhNeural",
+    "art_style": "Anime illustration, vibrant colors, Studio Ghibli inspired",
+    "bgm_track": "auto",
+    "target_duration": "30s",
+    "narration_tone": "viral",
+    "speech_rate": "+0%",
+    "speech_pitch": "+0Hz",
+    "bgm_volume": 15,
+    "subtitle_style": "karaoke_bold",
+    "use_sfx": true,
+    "sfx_volume": 50,
+    "is_default": true,
+    "created_at": "2026-07-21T00:00:00"
+  },
+  {
+    "id": "preset_cinematic_story",
+    "name": "🎬 Kể Chuyện Cinematic (Hoài My + Realistic)",
+    "aspect_ratio": "16:9",
+    "voice": "vi-VN-HoaiMyNeural",
+    "art_style": "Photorealistic, cinematic lighting, 8K UHD",
+    "bgm_track": "auto",
+    "target_duration": "60s",
+    "narration_tone": "emotional",
+    "speech_rate": "+0%",
+    "speech_pitch": "+0Hz",
+    "bgm_volume": 20,
+    "subtitle_style": "cinematic_box",
+    "use_sfx": true,
+    "sfx_volume": 40,
+    "is_default": true,
+    "created_at": "2026-07-21T00:00:00"
+  }
+]
