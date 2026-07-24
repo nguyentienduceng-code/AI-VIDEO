@@ -121,6 +121,7 @@ export default function ConfigSection() {
             <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
             <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
             <option value="hype_drill">Hype Drill</option>
+            <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
             <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
             <option value="moment_of_peace">Moment Of Peace</option>
             <option value="music_promotion">Music Promotion</option>

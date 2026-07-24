@@ -6,6 +6,21 @@ import imageio_ffmpeg
 
 logger = logging.getLogger(__name__)
 
+def _ffmpeg_ass_path(ass_path: str) -> str:
+    """
+    Chuẩn hoá đường dẫn file .ass cho filter `ass=` của FFmpeg.
+    Ưu tiên relative path để tránh dấu hai chấm ổ đĩa (C:). Nếu file nằm khác ổ đĩa với CWD
+    (relpath ném ValueError) thì dùng absolute path có escape dấu ':' và '\\'.
+    """
+    try:
+        rel = os.path.relpath(ass_path)
+        return rel.replace('\\', '/')
+    except ValueError:
+        # Khác ổ đĩa trên Windows → escape absolute path
+        abs_path = os.path.abspath(ass_path).replace('\\', '/')
+        return abs_path.replace(':', '\\:')
+
+
 def _has_nvenc() -> bool:
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     try:
@@ -90,12 +105,12 @@ def master_audio_and_export(
 
     if watermark_text:
         wm_text = watermark_text.replace("'", "").replace(":", "")
-        font_path = "C\\:/Windows/Fonts/arial.ttf"
-        filter_complex.append(f"{video_chain}drawtext=fontfile='{font_path}':text='{wm_text}':fontcolor=white@0.6:fontsize=32:x=(w-text_w)/2:y=80:borderw=1:bordercolor=black[v_wm]")
+        font_path = "C\\:/Windows/Fonts/segoeuib.ttf"
+        filter_complex.append(f"{video_chain}drawtext=fontfile='{font_path}':text='{wm_text}':fontcolor=white@0.45:fontsize=56:x=w-text_w-60:y=100:borderw=2:bordercolor=black@0.3[v_wm]")
         video_chain = "[v_wm]"
 
     if ass_subtitle_path and os.path.isfile(ass_subtitle_path):
-        ass_safe = os.path.relpath(ass_subtitle_path).replace('\\', '/')
+        ass_safe = _ffmpeg_ass_path(ass_subtitle_path)
         filter_complex.append(f"{video_chain}ass={ass_safe}[video_out]")
         video_chain = "[video_out]"
 
@@ -124,6 +139,7 @@ def master_audio_and_export(
     cmd.extend(["-shortest", output_path])
 
     logger.info(f"[AudioMaster] Processing: {'NVENC' if gpu_available else 'CPU'}. BGM: {has_bgm}")
-    subprocess.run(cmd, check=True)
-    
+    # timeout 30 phút: chặn treo vô hạn nếu FFmpeg kẹt (video dài + CPU encode).
+    subprocess.run(cmd, check=True, timeout=1800)
+
     return output_path

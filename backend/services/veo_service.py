@@ -34,7 +34,7 @@ from .key_manager import gemini_keys  # giữ nguyên key rotation hiện có
 
 logger = logging.getLogger(__name__)
 
-ASSETS_DIR = "assets"
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 IMAGES_DIR = os.path.join(ASSETS_DIR, "images")
 VIDEO_TMP_DIR = os.path.join(ASSETS_DIR, "veo_tmp")
 os.makedirs(VIDEO_TMP_DIR, exist_ok=True)
@@ -42,10 +42,30 @@ os.makedirs(VIDEO_TMP_DIR, exist_ok=True)
 VEO_MODEL_QUALITY = "veo-3.1-generate-preview"   # dùng cho bản final render
 VEO_MODEL_FAST = "veo-3.1-fast-generate-preview"  # dùng cho preview / nháp nhanh
 
+# ── VEO PROMPT TEMPLATES NÂNG CAO ──
+VEO_PROMPT_TEMPLATES = {
+    "cinematic_motion": {
+        "prompt_structure": "{scene_prompt}, cinematic camera movement, {motion_type}, professional film quality, 24fps, film grain",
+        "motion_types": ["slow dolly zoom", "parallax pan", "orbits around subject", "tracking shot"],
+        "lighting": "cinematic lighting, volumetric rays, depth of field",
+        "quality_boosters": "unreal engine 5 render, octane render, photorealistic"
+    }
+}
+
+import random
+
+def enhance_veo_prompt(prompt: str) -> str:
+    template = VEO_PROMPT_TEMPLATES["cinematic_motion"]
+    motion = random.choice(template["motion_types"])
+    enhanced = template["prompt_structure"].format(scene_prompt=prompt, motion_type=motion)
+    enhanced += f", {template['lighting']}, {template['quality_boosters']}"
+    return enhanced
+
+
 
 def _get_client() -> genai.Client:
-    """Lấy client Gemini với API key đang xoay vòng (key_manager có sẵn)."""
-    api_key = gemini_keys.rotate()
+    """Lấy client Gemini với API key hiện tại (chỉ rotate khi gặp lỗi quota, không rotate mỗi lần gọi)."""
+    api_key = gemini_keys.get_key()
     return genai.Client(api_key=api_key)
 
 
@@ -164,22 +184,26 @@ async def generate_scene_video(
     if reference_images:
         loaded_refs = []
         for path in reference_images[:3]:  # Veo 3.1 tối đa 3 ảnh reference ổn định
-            loaded_refs.append(types.Image.from_file(path))
+            loaded_refs.append(types.Image.from_file(location=path))
         config_kwargs["reference_images"] = loaded_refs
 
     # --- Frame-to-frame transition (nối cảnh mượt) ---
     image_arg = None
     if first_frame_image:
-        image_arg = types.Image.from_file(first_frame_image)
+        image_arg = types.Image.from_file(location=first_frame_image)
     if last_frame_image:
-        config_kwargs["last_frame"] = types.Image.from_file(last_frame_image)
+        config_kwargs["last_frame"] = types.Image.from_file(location=last_frame_image)
 
     logger.info(f"[Veo] Đang tạo scene: model={model}, aspect={aspect_ratio}, "
                 f"has_ref={bool(reference_images)}, chained={bool(first_frame_image)}")
 
+    # Enhance Veo Prompt
+    enhanced_prompt = enhance_veo_prompt(scene_prompt)
+    logger.info(f"[Veo] Enhanced Prompt: {enhanced_prompt}")
+
     operation = client.models.generate_videos(
         model=model,
-        prompt=scene_prompt,
+        prompt=enhanced_prompt,
         image=image_arg,
         config=types.GenerateVideosConfig(**config_kwargs),
     )

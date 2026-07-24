@@ -244,13 +244,62 @@ async def _synth_one_sentence(text: str, voice: str, rate: str, pitch: str) -> t
     return bytes(audio_data), word_boundaries
 
 
+def _concat_audio_files(files: list[str], output_path: str) -> bool:
+    """
+    Ghép nhiều file MP3 thành 1 bằng ffmpeg concat demuxer (-c copy).
+    An toàn hơn nối byte thô: tránh lệch timing / tiếng "pop" ở điểm nối câu.
+    Fallback nối byte nếu ffmpeg không khả dụng.
+    """
+    if not files:
+        return False
+    if len(files) == 1:
+        import shutil
+        shutil.copy(files[0], output_path)
+        return True
+
+    import tempfile
+    import subprocess
+    list_path = None
+    try:
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as lf:
+            list_path = lf.name
+            for f in files:
+                safe = f.replace("\\", "/").replace("'", "'\\''")
+                lf.write(f"file '{safe}'\n")
+        cmd = [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        return True
+    except Exception as e:
+        print(f"[Prosody] ffmpeg concat lỗi ({e}). Fallback nối byte thô.")
+        try:
+            with open(output_path, "wb") as out:
+                for f in files:
+                    with open(f, "rb") as inp:
+                        out.write(inp.read())
+            return True
+        except Exception as e2:
+            print(f"[Prosody] Nối byte cũng lỗi: {e2}")
+            return False
+    finally:
+        if list_path and os.path.exists(list_path):
+            try:
+                os.remove(list_path)
+            except OSError:
+                pass
+
+
 async def _synthesize_with_prosody(
     text: str, output_path: str, voice: str, rate: str, pitch: str
 ) -> tuple[float, list]:
     """
     V3.1 Core: Tách câu → sinh giọng nói từng câu với rate/pitch riêng → ghép nối.
     Nếu câu nào lỗi → gộp vào câu kế tiếp. Nếu toàn bộ lỗi → fallback plain text.
+    Các đoạn được ghi ra file tạm rồi ghép bằng ffmpeg (không nối byte thô).
     """
+    import tempfile
+
     sentences = _split_and_merge_sentences(text)
 
     # Nếu chỉ 1 câu hoặc text quá ngắn → dùng plain text
@@ -260,77 +309,84 @@ async def _synthesize_with_prosody(
     base_rate, base_pitch = _parse_rate_pitch(rate, pitch)
     total = len(sentences)
 
-    all_audio = bytearray()
+    chunk_files: list[str] = []
     all_wbs = []
     cumulative_offset = 0.0
     failed_buffer = ""  # Câu thất bại sẽ được gộp vào đây
 
-    for i in range(total):
-        sentence = sentences[i]
+    def _write_chunk(audio_bytes: bytes) -> str:
+        fd, tmp = tempfile.mkstemp(suffix=".mp3")
+        with os.fdopen(fd, "wb") as f:
+            f.write(audio_bytes)
+        return tmp
 
-        # Nếu có câu thất bại trước đó, gộp vào câu hiện tại
-        if failed_buffer:
-            sentence = failed_buffer + " " + sentence
-            failed_buffer = ""
+    try:
+        for i in range(total):
+            sentence = sentences[i]
 
-        prosody = _get_sentence_prosody(sentence, i, total, base_rate, base_pitch)
+            # Nếu có câu thất bại trước đó, gộp vào câu hiện tại
+            if failed_buffer:
+                sentence = failed_buffer + " " + sentence
+                failed_buffer = ""
 
-        try:
-            audio_bytes, wbs = await _synth_one_sentence(
-                sentence, voice, prosody["rate"], prosody["pitch"]
-            )
+            prosody = _get_sentence_prosody(sentence, i, total, base_rate, base_pitch)
 
-            # Điều chỉnh offset của word boundaries
-            for wb in wbs:
-                wb["offset"] += cumulative_offset
-                all_wbs.append(wb)
-
-            all_audio.extend(audio_bytes)
-
-            # Đo duration của chunk này
-            import tempfile, os
-            tmp = tempfile.mktemp(suffix=".mp3")
-            with open(tmp, "wb") as f:
-                f.write(audio_bytes)
             try:
-                chunk_dur = MP3(tmp).info.length
+                audio_bytes, wbs = await _synth_one_sentence(
+                    sentence, voice, prosody["rate"], prosody["pitch"]
+                )
+
+                # Điều chỉnh offset của word boundaries
+                for wb in wbs:
+                    wb["offset"] += cumulative_offset
+                    all_wbs.append(wb)
+
+                tmp = _write_chunk(audio_bytes)
+                chunk_files.append(tmp)
+
+                # Đo duration của chunk này
+                try:
+                    chunk_dur = MP3(tmp).info.length
+                except Exception:
+                    chunk_dur = len(audio_bytes) / 16000.0  # ước lượng
+
+                cumulative_offset += chunk_dur
+
+                # Delay nhỏ giữa các API call (tránh rate limit)
+                if i < total - 1:
+                    await asyncio.sleep(0.3)
+
+            except Exception as e:
+                print(f"Prosody Engine: Sentence {i} failed ({e}), buffering for merge...")
+                failed_buffer = sentence
+                continue
+
+        # Nếu câu cuối cùng cũng fail → fallback plain text cho phần còn lại
+        if failed_buffer:
+            print(f"Prosody Engine: Remaining buffer '{failed_buffer[:30]}...' — falling back to plain text append")
+            try:
+                fb_audio, fb_wbs = await _synth_one_sentence(failed_buffer, voice, rate, pitch)
+                for wb in fb_wbs:
+                    wb["offset"] += cumulative_offset
+                    all_wbs.append(wb)
+                chunk_files.append(_write_chunk(fb_audio))
             except Exception:
-                chunk_dur = len(audio_bytes) / 16000.0  # ước lượng
-            finally:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+                print("Prosody Engine: Final buffer also failed, skipping.")
 
-            cumulative_offset += chunk_dur
+        if not chunk_files:
+            # Toàn bộ thất bại → fallback plain text đầy đủ
+            print("Prosody Engine: All sentences failed. Full fallback to plain text.")
+            return await _synthesize_plain(text, output_path, voice, rate, pitch)
 
-            # Delay nhỏ giữa các API call (tránh rate limit)
-            if i < total - 1:
-                await asyncio.sleep(0.3)
-
-        except Exception as e:
-            print(f"Prosody Engine: Sentence {i} failed ({e}), buffering for merge...")
-            failed_buffer = sentence
-            continue
-
-    # Nếu câu cuối cùng cũng fail → fallback plain text cho phần còn lại
-    if failed_buffer:
-        print(f"Prosody Engine: Remaining buffer '{failed_buffer[:30]}...' — falling back to plain text append")
-        try:
-            fb_audio, fb_wbs = await _synth_one_sentence(failed_buffer, voice, rate, pitch)
-            for wb in fb_wbs:
-                wb["offset"] += cumulative_offset
-                all_wbs.append(wb)
-            all_audio.extend(fb_audio)
-        except Exception:
-            print("Prosody Engine: Final buffer also failed, skipping.")
-
-    if not all_audio:
-        # Toàn bộ thất bại → fallback plain text đầy đủ
-        print("Prosody Engine: All sentences failed. Full fallback to plain text.")
-        return await _synthesize_plain(text, output_path, voice, rate, pitch)
-
-    # Ghi file output
-    with open(output_path, "wb") as f:
-        f.write(all_audio)
+        if not _concat_audio_files(chunk_files, output_path):
+            return await _synthesize_plain(text, output_path, voice, rate, pitch)
+    finally:
+        for f in chunk_files:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
     try:
         audio = MP3(output_path)
@@ -353,7 +409,8 @@ async def _synthesize_plain(
             audio_data.extend(chunk["data"])
         elif chunk["type"] == "WordBoundary":
             word_boundaries.append({
-                "offset": chunk["offset"] / 10000000.0,
+                # Bù trừ độ trễ padding của MP3 encoder khi decode bằng FFmpeg (khoảng 50ms)
+                "offset": (chunk["offset"] / 10000000.0) + 0.05,
                 "duration": chunk["duration"] / 10000000.0,
                 "text": chunk["text"]
             })
@@ -362,8 +419,14 @@ async def _synthesize_plain(
     with open(temp_path, "wb") as f:
         f.write(audio_data)
 
-    audio = MP3(temp_path)
-    duration_seconds = audio.info.length
+    try:
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        clip = AudioFileClip(temp_path)
+        duration_seconds = clip.duration
+        clip.close()
+    except Exception:
+        audio = MP3(temp_path)
+        duration_seconds = audio.info.length
 
     import shutil
     shutil.move(temp_path, output_path)
@@ -381,8 +444,10 @@ def _get_omnivoice_model():
     global _omnivoice_model
     if _omnivoice_model is None:
         import sys
-        if r"C:\dev\OmniVoice" not in sys.path:
-            sys.path.append(r"C:\dev\OmniVoice")
+        # Đường dẫn cài đặt OmniVoice có thể override qua env OMNIVOICE_PATH (không hard-code máy).
+        omnivoice_path = os.getenv("OMNIVOICE_PATH", r"C:\dev\OmniVoice")
+        if omnivoice_path not in sys.path:
+            sys.path.append(omnivoice_path)
         try:
             from omnivoice import OmniVoice
             import torch
@@ -517,14 +582,11 @@ def _forced_align_word_boundaries(wav_path: str, text: str) -> list:
     return _estimate_word_boundaries(text, duration)
 
 
-async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "male, young adult, moderate pitch", warning_callback=None) -> tuple[float, list]:
+async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "male, young adult, moderate pitch", rate: str = "+0%", emotion: str = "", warning_callback=None) -> tuple[float, list]:
     """
     V3.3: Tạo giọng đọc từ OmniVoice với Prosody Engine + Forced Alignment.
-    - Sentence Chunking với instruct khác nhau theo ngữ cảnh câu.
-    - Word Boundaries chính xác qua Forced Alignment (stable-ts).
-    - Tự động Fallback sang Edge-TTS/gTTS nếu GPU bận hoặc lỗi.
-    
-    warning_callback: async function(msg) — thông báo cho user qua WebSocket.
+    - Emotion Mapping: Dịch cảm xúc từ Gemini sang Instruct Token.
+    - Time-Stretching: Xử lý rate modifier bằng FFmpeg atempo.
     """
     import soundfile as sf
     import asyncio
@@ -537,14 +599,26 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         clean_text = "..."
 
     OMNIVOICE_MAPPING = {
+        "omnivoice_female_storyteller_vi": "female, young adult, energetic, moderate pitch",
         "omnivoice_male_podcast_vi": "male, young adult, moderate pitch",
-        "omnivoice_male_elderly_vi": "male, elderly, very low pitch",
+        "omnivoice_male_elderly_vi": "male, elderly, low pitch",
         "omnivoice_male_middle_aged_low_vi": "male, middle-aged, low pitch",
         "omnivoice_female_whisper_vi": "female, young adult, whisper",
         "omnivoice_female_child_vi": "female, child, high pitch",
     }
     
     mapped_instruct = OMNIVOICE_MAPPING.get(instruct, instruct)
+    
+    # --- Emotion Mapping ---
+    if emotion == "excited":
+        mapped_instruct = mapped_instruct.replace("moderate pitch", "").replace("low pitch", "")
+        mapped_instruct += ", high pitch"
+    elif emotion in ["dramatic", "suspense"]:
+        mapped_instruct = mapped_instruct.replace("moderate pitch", "").replace("high pitch", "")
+        mapped_instruct += ", whisper, low pitch"
+    elif emotion == "calm":
+        mapped_instruct = mapped_instruct.replace("high pitch", "").replace("low pitch", "")
+        mapped_instruct += ", moderate pitch"
     
     # Whitelist các từ khóa hợp lệ được chấp nhận bởi mô hình OmniVoice
     VALID_OMNIVOICE_TOKENS = {
@@ -616,7 +690,27 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         wav_path = output_path.replace(".mp3", ".wav") if output_path.endswith(".mp3") else output_path
         sf.write(wav_path, audio, 24000)
         
-        duration = len(audio) / 24000.0
+        # --- Time-Stretching (Rate Modification) ---
+        rate_match = re.match(r'([+-]?\d+)%', rate)
+        if rate_match:
+            percent = int(rate_match.group(1))
+            if percent != 0:
+                atempo = max(0.5, min(2.0, 1.0 + (percent / 100.0)))
+                stretched_wav_path = wav_path.replace(".wav", "_stretched.wav")
+                try:
+                    import subprocess
+                    import imageio_ffmpeg
+                    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                    cmd = [ffmpeg_exe, "-y", "-i", wav_path, "-filter:a", f"atempo={atempo}", stretched_wav_path]
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+                    os.replace(stretched_wav_path, wav_path)
+                except Exception as stretch_err:
+                    print(f"[OmniVoice] Time-stretching failed: {stretch_err}")
+
+        # Update duration after stretching
+        info = sf.info(wav_path)
+        duration = info.duration
+
         if output_path != wav_path:
             import shutil
             shutil.copy(wav_path, output_path)
@@ -676,7 +770,8 @@ async def synthesize_speech(
                 final_clip = concatenate_audioclips([breath_clip, speech_clip])
                 
                 # Cần ghi đè lại output_path
-                temp_out = tempfile.mktemp(suffix=".wav")
+                _fd, temp_out = tempfile.mkstemp(suffix=".wav")
+                os.close(_fd)
                 # moviepy 2.1.2 không hỗ trợ `await final_clip.write_audiofile_async`, ta chạy đồng bộ trên thread
                 def _write():
                     final_clip.write_audiofile(temp_out, fps=24000, logger=None)
@@ -711,7 +806,7 @@ async def _synthesize_speech_internal(
 ) -> tuple[float, list]:
     # ── Xử lý OmniVoice ──
     if voice.startswith("omnivoice_"):
-        return await _synthesize_omnivoice(text, output_path, voice, warning_callback=warning_callback)
+        return await _synthesize_omnivoice(text, output_path, voice, rate=rate, emotion=emotion, warning_callback=warning_callback)
 
     if voice == "vi-VN-NamMinhNeural_deep":
         voice = "vi-VN-NamMinhNeural"
@@ -745,6 +840,11 @@ async def _synthesize_speech_internal(
     last_error = None
     for attempt in range(3):
         try:
+            # Sentence-Level Prosody Engine V3.1: gán micro-prosody (rate/pitch) riêng cho
+            # từng câu theo dấu câu + vị trí. Giọng ảo (minion) bỏ qua để giữ hiệu ứng gốc.
+            # _synthesize_with_prosody tự fallback về plain khi text 1 câu hoặc câu lỗi.
+            if use_prosody:
+                return await _synthesize_with_prosody(text, output_path, voice, rate, pitch)
             return await _synthesize_plain(text, output_path, voice, rate, pitch)
         except Exception as e:
             last_error = e

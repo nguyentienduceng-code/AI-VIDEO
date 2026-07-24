@@ -40,8 +40,18 @@ def apply_ken_burns(
 
     pan_direction: "center" | "left_to_right" | "right_to_left" | "top_to_bottom"
     """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            w, h = img.size
+            # Đảm bảo chẵn để libx264 không lỗi
+            w = w - (w % 2)
+            h = h - (h % 2)
+    except Exception as e:
+        logger.warning(f"Không thể đọc kích thước {image_path}: {e}")
+        w, h = resolution
+
     total_frames = int(duration * fps)
-    w, h = resolution
 
     # Công thức zoom tuyến tính từ zoom_start -> zoom_end trong suốt clip
     zoom_expr = f"'{zoom_start}+({zoom_end}-{zoom_start})*on/{total_frames}'"
@@ -75,7 +85,8 @@ def apply_ken_burns(
     ]
 
     logger.info(f"[KenBurns] {image_path} -> {output_path} (dur={duration}s, pan={pan_direction})")
-    subprocess.run(cmd, check=True, capture_output=True)
+    # timeout 10 phút: 1 cảnh Ken Burns không nên lâu hơn thế; chặn treo do FFmpeg kẹt.
+    subprocess.run(cmd, check=True, capture_output=True, timeout=600)
     return output_path
 
 

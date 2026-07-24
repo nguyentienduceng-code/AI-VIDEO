@@ -33,7 +33,8 @@ def detect_beats(bgm_path: str) -> List[float]:
     tempo, beat_frames = librosa.beat.beat_track(y=y_percussive, sr=sr, units="frames")
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     
-    logger.info(f"[BeatSync Advanced] Tempo ước tính: {float(tempo):.1f} BPM, "
+    tempo_val = float(tempo[0]) if isinstance(tempo, np.ndarray) else float(tempo)
+    logger.info(f"[BeatSync Advanced] Tempo ước tính: {tempo_val:.1f} BPM, "
                 f"{len(beat_times)} điểm nhịp gõ (Percussive) phát hiện được trong {bgm_path}")
     return beat_times.tolist()
 

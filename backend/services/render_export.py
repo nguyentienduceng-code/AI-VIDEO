@@ -71,9 +71,9 @@ def export_final_video(
     # Đóng dấu bản quyền (Watermark) nếu có
     if watermark_text:
         wm_text = watermark_text.replace("'", "").replace(":", "")  # sanitize basic
-        # Trên Windows cần chỉ định rõ fontfile cho drawtext để tránh crash
-        font_path = "C\\:/Windows/Fonts/arial.ttf"
-        vf_filter += f",drawtext=fontfile='{font_path}':text='{wm_text}':fontcolor=white@0.6:fontsize=32:x=(w-text_w)/2:y=80:borderw=1:bordercolor=black"
+        # Vị trí Top-Right: x=w-text_w-60, y=100. Font to hơn (56), trong suốt hơn (0.45)
+        font_path = "C\\:/Windows/Fonts/segoeuib.ttf"
+        vf_filter += f",drawtext=fontfile='{font_path}':text='{wm_text}':fontcolor=white@0.45:fontsize=56:x=w-text_w-60:y=100:borderw=2:bordercolor=black@0.3"
 
     import imageio_ffmpeg
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -101,5 +101,5 @@ def export_final_video(
     ]
 
     logger.info(f"[Export] Encode bằng {codec} (GPU={'CÓ' if gpu_available else 'KHÔNG'}) -> {output_path}")
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
     return output_path

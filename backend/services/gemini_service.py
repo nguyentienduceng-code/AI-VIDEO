@@ -18,7 +18,7 @@ Cách hoạt động:
 from __future__ import annotations
 
 import asyncio
-import base64
+import hashlib
 import logging
 import os
 import time
@@ -115,6 +115,14 @@ class Scene(BaseModel):
         default="calm",
         description="Cảm xúc giọng đọc tại cảnh này: hook, calm, dramatic, excited, suspense, closing"
     )
+    speech_rate_modifier: str = Field(
+        default="0%",
+        description="Thay đổi nhịp độ giọng đọc (Dynamic Pacing) cho cảnh này. Giá trị là chuỗi % (ví dụ: '+20%' cho đọc nhanh dồn dập, '-10%' cho đọc chậm điềm tĩnh, '0%' là bình thường). Dùng tốc độ nhanh ở Hook, chậm lại ở giải thích, và bình thường ở Climax."
+    )
+    highlight_text: str = Field(
+        default="",
+        description="B-Roll Text: Trích xuất 1-3 từ khoá ĐẮT GIÁ nhất mang tính 'Giật tít' (Clickbait) từ 'text'. Ví dụ: 'SỐC!', 'SỰ THẬT', 'ĐỪNG XEM', '99% SAI LẦM'. Các từ này sẽ đập thẳng vào mắt người xem. Bỏ trống nếu không có từ nào giật gân."
+    )
     transition: str = Field(
         default="crossfade",
         description="Kiểu chuyển cảnh SAU cảnh này sang cảnh tiếp theo: crossfade, fade_black, zoom_through. Cảnh cuối dùng fade_black."
@@ -162,6 +170,55 @@ def _get_client(api_key: Optional[str] = None) -> genai.Client:
 
 
 # ---------------------------------------------------------------------------
+
+# ── CẤU HÌNH PROMPTS NÂNG CAO (V2.1 - Prompts Improvement) ──
+ART_STYLES = {
+    "cinematic_realistic": {
+        "keywords": "photorealistic, natural lighting, cinema verite, shallow depth of field",
+        "color_grading": "teal orange cinematic lut, desaturated shadows",
+        "composition": "rule of thirds, wide establishing shots",
+        "mood": "epic, dramatic, emotional"
+    },
+    "3d_animation": {
+        "keywords": "3D render, blender, octane render, volumetric lighting, ray tracing",
+        "color_grading": "vibrant colors, high contrast, saturated",
+        "composition": "dynamic angles, epic wide shots",
+        "mood": "energetic, playful, adventure"
+    },
+    "cyberpunk": {
+        "keywords": "neon lights, cyberpunk city, rain, reflections, hdr",
+        "color_grading": "cyan magenta color scheme, high contrast neon",
+        "composition": "urban environment, futuristic",
+        "mood": "tense, futuristic, mysterious"
+    },
+    "minimalist_clean": {
+        "keywords": "minimal, clean lines, plenty of whitespace, modern design",
+        "color_grading": "soft pastels, muted tones",
+        "composition": "centered, symmetrical, ample negative space",
+        "mood": "calm, professional, trustworthy"
+    }
+}
+
+EMOTION_VISUAL_COUPLING = {
+    "hook": "image_style: dramatic, high contrast, bold composition | visual_effect: zoom_in_fast, high energy | color_mood: warm tones, saturated, attention-grabbing | lighting: rim light, dramatic shadows",
+    "calm": "image_style: peaceful, soft, natural | visual_effect: slow pan, gentle zoom | color_mood: cool tones, pastel, soothing | lighting: soft diffused, golden hour",
+    "dramatic": "image_style: cinematic, moody, intense | visual_effect: slow_motion, dramatic_angle | color_mood: desaturated, high contrast, cinematic | lighting: chiaroscuro, single source",
+    "excited": "image_style: vibrant, dynamic, energetic | visual_effect: fast cuts, multiple angles | color_mood: bright, saturated, warm | lighting: bright, colorful, high energy"
+}
+
+NEGATIVE_PROMPT_TEMPLATES = {
+    "default": "blurry, low quality, distorted, deformed, ugly, bad anatomy, extra limbs, poorly drawn face",
+    "cinematic": "flat lighting, amateur, phone camera quality, compressed, artifacts, cartoon, illustration",
+    "3d_animation": "2d, flat colors, stiff, robotic movements, uncanny valley, photorealistic",
+}
+
+def get_enhanced_art_style(style: str) -> str:
+    key = style.lower().replace(" ", "_")
+    if key in ART_STYLES:
+        cfg = ART_STYLES[key]
+        return f"{cfg['keywords']}, {cfg['color_grading']}, {cfg['composition']}, {cfg['mood']}"
+    return style
+
 # 3. MODE: Storyteller (mặc định) + Quiz/Listicle
 # ---------------------------------------------------------------------------
 # ── Bảng cấu hình thời lượng → số từ + số cảnh đề xuất ──────────────
@@ -176,22 +233,10 @@ DURATION_CONFIG = {
 
 # ── Bảng tone kể chuyện ─────────────────────────────────────────────
 NARRATION_TONE_PROMPTS = {
-    "viral": (
-        "GIỌNG ĐIỆU: Viral Hook — mở đầu bằng tuyên bố gây sốc hoặc số liệu bất ngờ. "
-        "Nội dung cuốn hút, tạo FOMO (sợ bỏ lỡ). Kết thúc bằng câu hỏi mở khiến người xem PHẢI bình luận."
-    ),
-    "educational": (
-        "GIỌNG ĐIỆU: Giáo dục — giải thích rõ ràng, logic, có dẫn chứng cụ thể. "
-        "Dùng phép so sánh đơn giản để người xem dễ hiểu. Kết thúc bằng bài học thực tế."
-    ),
-    "emotional": (
-        "GIỌNG ĐIỆU: Cảm xúc — storytelling sâu sắc, gợi cảm xúc mạnh. "
-        "Xây dựng nhân vật/tình huống → cao trào → kết thúc lắng đọng. Dùng nhiều dấu chấm lửng (...) tạo kịch tính."
-    ),
-    "humorous": (
-        "GIỌNG ĐIỆU: Hài hước — giọng điệu vui vẻ, dí dỏm, bất ngờ. "
-        "Xen kẽ twist hài giữa các cảnh. Kết thúc bằng punchline hoặc câu hỏi hài hước."
-    ),
+    "drama": "Tone: Đanh thép, kịch tính, dồn dập. Dùng từ ngữ mạnh, hơi hướng giật gân, tạo ra cảm giác bí ẩn, đe doạ hoặc bất ngờ tột độ. Không dùng từ thừa.",
+    "educational": "Tone: Cuốn hút, khai mở trí óc. Giống như một bí mật vừa được bật mí, tiết lộ sự thật gây shock nhưng vẫn đáng tin cậy. Dùng số liệu để đè bẹp sự nghi ngờ.",
+    "humorous": "Tone: Cà khịa, châm biếm, hài hước sâu cay. Chơi chữ, dùng từ ngữ trending của Gen Z hoặc văn phong 'troll' nhẹ nhàng nhưng thâm thúy.",
+    "inspirational": "Tone: Cảm xúc, hùng hồn, truyền động lực mãnh liệt. Đánh vào trái tim người nghe, dùng từ ngữ khơi gợi khát vọng và vượt qua giới hạn."
 }
 
 async def generate_script(
@@ -214,43 +259,32 @@ async def generate_script(
 
     # ── Master Storyteller Base Prompt ──
     base_storyteller = (
-        "Bạn là biên kịch video ngắn HÀNG ĐẦU, chuyên tạo nội dung viral trên TikTok/Reels/YouTube Shorts.\n\n"
-        "NGUYÊN TẮC VIẾT:\n"
-        "1. HOOK (Cảnh 1, emotion='hook'): Mở đầu bằng câu hỏi gây sốc, số liệu bất ngờ, hoặc tuyên bố ngược đời. "
-        "VD: '99% mọi người không biết rằng...' / 'Điều này sẽ thay đổi cách bạn nghĩ về...'\n"
-        "2. TENSION (Cảnh 2 trở đi): Xây dựng sự tò mò bằng kỹ thuật 'mở nút - thắt nút'. "
-        "Đưa ra vấn đề → giải thích một phần → để lại câu hỏi mở chuyển sang cảnh tiếp.\n"
-        "3. CLIMAX (Cảnh áp chót, emotion='dramatic' hoặc 'excited'): Tiết lộ thông tin quan trọng nhất, bất ngờ nhất. "
-        "Dùng câu ngắn, dứt khoát, tạo cảm xúc mạnh.\n"
-        "4. CTA (Cảnh cuối, emotion='closing'): Kết thúc bằng câu hỏi mở khiến người xem PHẢI bình luận. "
-        "Không dùng 'follow/like/share' trực tiếp.\n\n"
+        "Bạn là đạo diễn và biên kịch video ngắn HÀNG ĐẦU thế giới, chuyên tạo nội dung Triệu View trên TikTok/Reels/Shorts.\n\n"
+        "CẤU TRÚC KỂ CHUYỆN (Curiosity Gap & PAS):\n"
+        "1. HOOK (Cảnh 1): Móc câu sắc bén. Phải tạo ra một 'Curiosity Gap' (Lỗ hổng tò mò). Nếu xem xong cảnh 1 mà khán giả không bị sốc, bạn thất bại.\n"
+        "2. TENSION (Các cảnh giữa): Xoáy sâu vào vấn đề bằng các chi tiết gây sốc. Không kể lể dài dòng.\n"
+        "3. CLIMAX (Cảnh áp chót): Đưa ra Sự thật bất ngờ nhất (Plot Twist) hoặc Giải pháp tột đỉnh.\n"
+        "4. CTA (Cảnh cuối): Kêu gọi hành động khéo léo và tự nhiên nhất có thể.\n\n"
+        "QUY TẮC CẤM KỴ (BẮT BUỘC TUÂN THỦ):\n"
+        "- CẤM dùng các câu mở đầu sáo rỗng: 'Xin chào các bạn', 'Hôm nay mình sẽ chia sẻ', 'Cùng tìm hiểu nhé', 'Bạn có biết'.\n"
+        "- CẤM nói đạo lý suông, cấm dùng từ ngữ hàn lâm. Mọi luận điểm phải đính kèm hình ảnh so sánh thực tế.\n\n"
+        "QUY TẮC ĐẠO DIỄN HÌNH ẢNH (CINEMATIC CAMERA - BẮT BUỘC):\n"
+        "- BẮT BUỘC mở đầu mỗi 'image_prompt' bằng các góc máy điện ảnh chuyên nghiệp. Ví dụ: 'Extreme close-up shot of...', 'Low-angle drone shot of...', 'Over-the-shoulder shot of...', 'Wide establishing shot of...'\n"
+        "- BẮT BUỘC tả LẶP LẠI ngoại hình nhân vật chính xuyên suốt các cảnh.\n"
+        "- BẮT BUỘC dùng chung 1 tông màu ánh sáng cho toàn video (VD: 'cinematic teal and orange lighting, volumetric dust').\n"
+        "- Kết hợp: Góc máy + Đối tượng + Hành động + Ánh sáng + Bối cảnh + Phẩm chất nghệ thuật (8k, photorealistic, Unreal Engine 5).\n\n"
+        "QUY TẮC NHỊP ĐỘ GIỌNG ĐỌC (DYNAMIC PACING):\n"
+        "- Sử dụng 'speech_rate_modifier' để điều khiển nhịp điệu: Hook (nhanh dồn dập '+15%'), Giải thích (chậm rãi '-5%'), Climax (bình thường '0%').\n\n"
         "KỸ THUẬT VĂN NÓI:\n"
         "- Dùng 'bạn' trực tiếp: 'Bạn có biết...', 'Hãy tưởng tượng...'\n"
-        "- Dấu chấm lửng (...) tại điểm cao trào để tạo kịch tính.\n"
-        "- Câu hỏi tu từ để kéo người xem vào câu chuyện.\n"
-        "- Số liệu cụ thể (nếu có) luôn hấp dẫn hơn nói chung chung.\n"
-        "- TUYỆT ĐỐI KHÔNG dùng ngôn ngữ sách vở, học thuật, ký tự Markdown (*, #).\n\n"
-        "QUY TẮC ĐỒNG NHẤT GIỌNG VĂN (RẤT QUAN TRỌNG):\n"
-        "- Giữ nguyên 1 NGƯỜI KỂ CHUYỆN XUYÊN SUỐT toàn bộ video.\n"
-        "- Tuyệt đối không được đổi ngôi xưng (tôi - bạn - chúng ta) một cách lộn xộn giữa các cảnh.\n"
-        "- Văn phong (tone) phải mạch lạc, cảnh sau phải nối tiếp tự nhiên với cảnh trước, không được viết rời rạc như từng câu độc lập.\n\n"
-        "QUY TẮC EMOTION (bắt buộc):\n"
-        "- Cảnh 1 LUÔN có emotion='hook'\n"
-        "- Cảnh cuối LUÔN có emotion='closing'\n"
-        "- Các cảnh giữa chọn phù hợp: calm, dramatic, excited, suspense\n\n"
+        "- Tuyệt đối giữ 1 người kể chuyện xuyên suốt. Văn phong mạch lạc, nối tiếp.\n"
+        "- TUYỆT ĐỐI KHÔNG dùng từ ngữ hàn lâm, không dùng Markdown (*, #).\n\n"
         "QUY TẮC TRANSITION (bắt buộc):\n"
-        "- Chuyển chủ đề/bất ngờ → transition='fade_black'\n"
-        "- Liên tục/kể tiếp → transition='crossfade'\n"
-        "- Cao trào/zoom vào chi tiết → transition='zoom_through'\n"
-        "- Cảnh cuối cùng → transition='fade_black'\n\n"
-        "QUY TẮC NHẤT QUÁN HÌNH ẢNH (IDENTITY & COLOR LOCK):\n"
-        "- BẮT BUỘC tả LẶP LẠI chính xác ngoại hình của nhân vật chính (tuổi, màu tóc, màu da, trang phục) vào TẤT CẢ các cảnh có sự xuất hiện của họ (để giữ Identity Consistency).\n"
-        "- BẮT BUỘC thêm 1 từ khóa tông màu ánh sáng (VD: 'cinematic teal and orange lighting' hoặc 'moody dark lighting') vào TẤT CẢ các image_prompt để đảm bảo Color Grading đồng nhất toàn video.\n\n"
-        "QUY TẮC ÂM THANH (SOUND DESIGN - BẮT BUỘC):\n"
-        "- BẮT BUỘC điền trường 'sfx' cho từng cảnh. CHỈ ĐƯỢC DÙNG 1 TRONG CÁC GIÁ TRỊ SAU: whoosh, pop, ding, riser, suspense, impact, bell, laugh.\n"
-        "- Dùng 'whoosh' cho chuyển cảnh nhanh/bất ngờ, 'pop' khi hiện text quan trọng, 'ding' hoặc 'bell' cho điểm nhấn tích cực.\n"
-        "- Dùng 'riser' hoặc 'suspense' cho cao trào, 'impact' cho sự kiện chấn động, 'laugh' cho tình huống hài hước.\n"
-        "- Cảnh đầu (hook): dùng 'whoosh' hoặc 'riser'. Cảnh cuối (closing): dùng 'ding' hoặc 'bell'.\n"
+        "- Chuyển chủ đề/bất ngờ → 'fade_black'\n"
+        "- Liên tục/kể tiếp → 'crossfade'\n"
+        "- Cao trào/chi tiết → 'zoom_through'\n\n"
+        "QUY TẮC ÂM THANH (SOUND DESIGN):\n"
+        "- Hạn chế lạm dụng 'sfx' liên tục. Cảnh đầu (hook): nên dùng 'whoosh' hoặc 'riser'. Cảnh cuối (closing): dùng 'ding' hoặc 'bell'.\n"
     )
 
     if mode == "quiz_listicle":
@@ -258,7 +292,9 @@ async def generate_script(
             base_storyteller +
             f"\nCHẾ ĐỘ: Quiz/Listicle — viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh theo dạng 'Top N' hoặc hỏi-đáp. "
             "Mỗi cảnh là 1 fact/item hoặc 1 câu hỏi+đáp thú vị. "
-            f"image_prompt viết bằng tiếng Anh, mô tả cực kỳ chi tiết theo phong cách '{art_style}', "
+            f"image_prompt viết bằng tiếng Anh, cực kỳ chi tiết. Phong cách hình ảnh và nghệ thuật bắt buộc (Art Style): '{get_enhanced_art_style(art_style)}'. "
+            "BẮT BUỘC phải đồng bộ màu sắc, ánh sáng và hiệu ứng hình ảnh với cảm xúc (Emotion) của cảnh theo bảng chuẩn: "
+            f"{EMOTION_VISUAL_COUPLING} "
             "phù hợp để đưa vào mô hình sinh ảnh AI."
         )
     else:  # storyteller (default)
@@ -320,39 +356,10 @@ async def generate_script(
             cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone)
             return result
         except Exception as e:
-            logger.error(f"Gemini API failed: {e}. Using mock script to bypass rate limits.")
-            return {
-                "sentiment": "happy",
-                "scenes": [
-                    {
-                        "text": "Bạn có biết tại sao Python lại là ngôn ngữ đáng học nhất năm 2026 không?",
-                        "image_prompt": "A futuristic programmer typing code in a cyberpunk style room.",
-                        "sfx": "whoosh",
-                        "visual_effect": "zoom_in"
-                    },
-                    {
-                        "scene": 2,
-                        "text": "Đầu tiên, Python siêu dễ học! Cú pháp như tiếng Anh, cực kỳ thân thiện với người mới.",
-                        "image_prompt": "A cute cartoon snake wearing glasses and holding a book, minimalist flat design.",
-                        "sfx": "pop",
-                        "visual_effect": "pan_right"
-                    },
-                    {
-                        "scene": 3,
-                        "text": "Thứ hai, AI và Machine Learning đang bùng nổ, và Python chính là vua của lĩnh vực này!",
-                        "image_prompt": "A glowing artificial intelligence brain connected to Python logos, sci-fi futuristic.",
-                        "sfx": "bell",
-                        "visual_effect": "zoom_out"
-                    },
-                    {
-                        "scene": 4,
-                        "text": "Vậy còn chần chờ gì nữa, hãy học lập trình Python ngay hôm nay nhé!",
-                        "image_prompt": "A dynamic shot of a person cheering in front of a laptop showing Python code, energetic style.",
-                        "sfx": "whoosh",
-                        "visual_effect": "pan_left"
-                    }
-                ][:num_scenes]
-            }
+            # KHÔNG trả kịch bản mock (trước đây trả video "Python" bất kể chủ đề, âm thầm
+            # nuốt lỗi khiến user nhận nội dung sai lệch). Ném lỗi thật để pipeline báo lên UI.
+            logger.error(f"Gemini generate_script thất bại cho chủ đề '{topic}': {e}")
+            raise
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
 
@@ -465,7 +472,7 @@ async def split_script_to_scenes(
 
     def _call():
         # Trim script_text for hashing to avoid too long string issue, or hash it inside _get_key
-        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hash(script_text), num_scenes=num_scenes, art_style=art_style)
+        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style)
         if cached_result:
             logger.info("Using cached result for split_script_to_scenes")
             return cached_result
@@ -488,7 +495,7 @@ async def split_script_to_scenes(
             pass
         parsed: ScriptResponse = response.parsed
         result = [scene.model_dump() for scene in parsed.scenes]
-        cache.set("split_script", result, script_len=len(script_text), text_hash=hash(script_text), num_scenes=num_scenes, art_style=art_style)
+        cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style)
         return result
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
@@ -513,6 +520,14 @@ async def generate_image(
     hàm sẽ raise Exception để main.py có thể fallback sang ảnh placeholder hoặc Pollinations,
     tránh làm chết toàn bộ pipeline.
     """
+    # Tự động gộp Negative Prompt Nâng cao
+    base_neg = NEGATIVE_PROMPT_TEMPLATES.get("default", "")
+    if "cinematic" in image_prompt.lower():
+        base_neg = NEGATIVE_PROMPT_TEMPLATES.get("cinematic", "")
+    elif "3d" in image_prompt.lower() or "animation" in image_prompt.lower():
+        base_neg = NEGATIVE_PROMPT_TEMPLATES.get("3d_animation", "")
+    negative_prompt = f"{base_neg}, {negative_prompt}".strip(", ")
+
     def _call():
         client = _get_client(api_key)
         

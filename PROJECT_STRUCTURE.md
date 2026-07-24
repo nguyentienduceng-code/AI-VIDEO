@@ -1,12 +1,17 @@
+áa
+
 # Bảng Giải Trình Cấu Trúc Dự Án AI-VIDEO-MAKER (Toàn Diện v2.0)
+
 *Tài liệu dành cho chuyên gia AI & IT phục vụ việc đánh giá tổng thể, bảo trì và lên kế hoạch nâng cấp.*
 
 ---
 
 ## 1. Tổng quan Hệ thống (System Overview)
+
 **AI-VIDEO-MAKER** là hệ thống phần mềm dạng Client-Server (Single Page Application) chuyên dụng để tự động hoá toàn bộ quy trình sản xuất video dạng ngắn (TikTok, YouTube Shorts, Reels) bằng các mô hình Trí tuệ Nhân tạo tiên tiến nhất.
 
 **Các tính năng cốt lõi (Features):**
+
 - **AI Storyteller (Gemini 2.5 Flash/Pro)**: Tự động viết kịch bản chi tiết dựa trên chủ đề (Topic). Hỗ trợ các Option linh hoạt (Storyteller, Quiz/Listicle, Ảnh -> Video) với độ sáng tạo cao.
 - **Script → Video (Strict Mode)**: Trình bóc tách kịch bản chuyên nghiệp. AI giữ nguyên văn 100% lời thoại người dùng, tự động nhận diện và dịch các "chỉ dẫn đạo diễn" sang Prompt hình ảnh/hiệu ứng. Tích hợp Regex loại bỏ Emoji tự động trước khi nạp vào TTS để tránh đọc sai.
 - **AI Image Generation (Imagen 3)**: Sinh hình ảnh minh họa chất lượng cao cho từng phân cảnh.
@@ -53,17 +58,19 @@ AI-VIDEO-MAKER/
 Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pipeline)** để ngăn ngừa HTTP Timeout:
 
 ### Nhóm API Quản lý Tài nguyên:
+
 1. `GET /api/bgm-list`: Lấy danh sách nhạc nền có sẵn.
 2. `GET /api/voices`: Lấy danh sách giọng đọc tiếng Việt.
 3. `POST /api/upload-images`: Tải ảnh cục bộ lên server (Dành cho mode Photo Narration / Slideshow).
 
 ### Nhóm API Core Pipeline:
+
 4. **Bước 1: Sinh Kịch bản (`POST /api/generate-script`)**
    - **Đầu vào:** Chủ đề, Mô tả nhân vật, Mode.
    - **Hoạt động:** Chạy đồng bộ (Sync). Gọi Gemini phân tích và trả về ngay mảng JSON chứa các cảnh (Scenes) chi tiết (Hình ảnh, Lời bình).
 5. **Bước 2: Kết xuất Video (`POST /api/render-video`)**
    - **Đầu vào:** Danh sách Scenes, Cấu hình hiệu ứng.
-   - **Hoạt động:** 
+   - **Hoạt động:**
      - 1. Tính toán Timeline tại `motion_effects.py`.
      - 2. Ghép RAW Video (không có nhạc nền/phụ đề) bằng `video_service.py`.
      - 3. Mix âm thanh chuẩn FFmpeg & Burn phụ đề, tối ưu GPU tại `audio_mix_service.py`.
@@ -76,14 +83,17 @@ Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pi
 ---
 
 ## 4. Quản lý Nợ Kỹ thuật & Khuyến nghị Cập nhật (Technical Debt)
+
 *Các lỗi lớn ở bản MVP như Event Loop crash, HTTP Timeout, Tràn bộ nhớ temp file đã được fix dứt điểm ở v2.0.*
 
 ### ✅ Đã xử lý (v2.1 — 2026-07-23):
+
 1. **~~Quản lý State Frontend~~:** `App.jsx` đã được tách thành 9 components + `AppContext.jsx` quản lý state tập trung.
 2. **~~Offload Render~~:** `render_worker.py` chạy MoviePy/FFmpeg trong `multiprocessing.Process` riêng biệt, giao tiếp qua file JSON.
 3. **~~Cache AI~~:** `cache_service.py` V2 cache binary media (ảnh/video) theo hash prompt. Auto-cleanup khi > 5GB.
 
 ### 🟢 Định hướng mở rộng:
+
 1. Chuyển sang Redis Queue + Celery khi mở rộng lên Render Farm multi-server.
 2. Tích hợp API Auto-publish TikTok/YouTube Shorts.
 3. Batch render hàng loạt video từ danh sách chủ đề CSV.
@@ -93,7 +103,9 @@ Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pi
 ## 5. Phụ lục: Mã nguồn Cốt lõi (Code Appendix)
 
 ### Phụ lục 1: Schema Request Mới (backend/main.py)
+
 Tích hợp các cài đặt điện ảnh nâng cao.
+
 ```python
 class RenderVideoRequest(BaseModel):
     scenes: List[dict]
@@ -111,7 +123,9 @@ class RenderVideoRequest(BaseModel):
 ```
 
 ### Phụ lục 2: Đồng bộ nhịp tim nhạc - Beat Sync (backend/services/beat_sync.py)
+
 Logic cơ bản để phát hiện nhịp điệu (Onset detection) từ track BGM, làm căn cứ để chuyển cảnh hoặc zoom.
+
 ```python
 # Phân tích Onset (điểm nhấn bass mạnh)
 y, sr = librosa.load(bgm_path)
@@ -121,4 +135,5 @@ peak_times = librosa.frames_to_time(peaks, sr=sr)
 ```
 
 ---
+
 *Tài liệu được kết xuất tự động - Đã cập nhật v2.0 Điện Ảnh.*

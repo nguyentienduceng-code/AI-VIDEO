@@ -1,4 +1,4 @@
-"""
+﻿"""
 video_service.py
 -----------------
 NÂNG CẤP V2:
@@ -41,8 +41,8 @@ AUDIO_FADEOUT_DURATION = 0.3   # giây — audio fade-out cuối mỗi cảnh đ
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
 
 # QUAN TRỌNG: font hỗ trợ dấu tiếng Việt (Unicode Latin Extended).
-# Windows: arial.ttf hoặc segoeuil.ttf. Linux: DejaVuSans.ttf
-SUBTITLE_FONT_PATH = "C:/Windows/Fonts/arial.ttf"
+# Windows: segoeuib.ttf. Linux: DejaVuSans.ttf
+SUBTITLE_FONT_PATH = "C:/Windows/Fonts/ariblk.ttf"
 
 # ── Thư mục BGM ─────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +56,7 @@ class SceneAsset(TypedDict):
     duration: float        # độ dài audio (giây), hoặc SLIDESHOW_SCENE_DURATION
     sfx: str               # Tên hiệu ứng âm thanh (whoosh, pop...)
     visual_effect: str     # zoom_in, zoom_out, pan_left, pan_right
+    highlight_text: str    # B-Roll Text
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -104,6 +105,32 @@ def _build_scene_clip(
     media_clip = media_clip.with_position("center")
 
     layers = [media_clip]
+    
+    # ── B-Roll Text (Highlight Text) ──
+    highlight_text = asset.get("highlight_text", "")
+    if highlight_text:
+        from moviepy.video.VideoClip import TextClip
+        from moviepy.video.fx.CrossFadeIn import CrossFadeIn
+        from moviepy.video.fx.CrossFadeOut import CrossFadeOut
+        
+        # Chỉ hiện chớp nhoáng 1.2s để làm điểm nhấn, không che mặt nhân vật quá lâu
+        hl_dur = min(1.2, duration)
+        
+        txt_clip = (
+            TextClip(
+                text=highlight_text,
+                font="C:/Windows/Fonts/arialbd.ttf",
+                font_size=120,
+                color="yellow",
+                stroke_color="black",
+                stroke_width=4,
+                method="label"
+            )
+            .with_position(("center", 0.25), relative=True)  # Đẩy lên 25% phía trên
+            .with_duration(hl_dur)
+            .with_effects([CrossFadeIn(0.2), CrossFadeOut(0.2)])
+        )
+        layers.append(txt_clip)
 
     # ── Audio KHÔNG được gắn vào clip video ──
     # LÝ DO: Khi concatenate_videoclips dùng padding âm (crossfade), 
@@ -202,9 +229,8 @@ def render_final_video(
             else:
                 ac = scene_audio_clips[0]
                 
-            # Đảm bảo audio không tràn sang cảnh tiếp theo (cắt bỏ phần overlap)
-            safe_dur = dur - crossfade_dur if i < len(scene_assets) - 1 else dur
-            ac = ac.subclipped(0, min(ac.duration, safe_dur))
+            # Không cắt cụt audio (đặc biệt là giọng đọc TTS) để tránh mất chữ cuối
+            # Dù Hình ảnh bị rút ngắn do Beat Sync, Audio vẫn phát đủ câu nói.
             ac = ac.with_effects([AudioFadeOut(AUDIO_FADEOUT_DURATION)])
             
             # Đặt đúng vị trí trên timeline tổng
@@ -333,7 +359,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
     
     # ── ĐỊNH NGHĨA STYLE DỰA TRÊN USER SETTING ──
     if subtitle_style == "cinematic_box":
-        font_name = "Arial"  # Font hiện đại, sạch sẽ
+        font_name = "Arial Black"  # Font hiện đại, sạch sẽ
         font_size = 55
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
@@ -342,7 +368,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         # BorderStyle=3 (Opaque box), Outline=8 (Box padding/margin)
         style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,3,8,0,2,60,60,250,1"
     elif subtitle_style == "minimal_white":
-        font_name = "Arial"
+        font_name = "Arial Black"
         font_size = 50
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
@@ -351,22 +377,21 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         # BorderStyle=1 (Outline), Outline=0, Shadow=3
         style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},0,0,0,0,100,100,0,0,1,0,3,2,40,40,250,1"
     else: # karaoke_bold & hormozi_bold (Default)
-        # Sửa lỗi font chữ: Đổi từ 'Impact' (thiếu dấu tiếng Việt) sang 'Arial'
-        # Do Style bên dưới có tham số Bold=-1 (tức là True), nên font thực tế sẽ là Arial Bold (hỗ trợ 100% tiếng Việt).
-        font_name = "Arial"
-        font_size = 55 if mode == "quiz_listicle" else 65
+        # Sử dụng Arial Black cho cảm giác Cinematic và hiện đại (hỗ trợ 100% tiếng Việt).
+        font_name = "Arial Black"
+        font_size = 65 if mode == "quiz_listicle" else 75
         primary_color = "&H0000FFFF"     # Yellow highlight
         secondary_color = "&H00FFFFFF"   # White base
         outline_color = "&H00000000"     # Black outline
         back_color = "&H00000000"        # Black shadow
         # BorderStyle=1 (Outline), Outline=6, Shadow=4
-        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,1,6,4,2,40,40,350,1"
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,1,6,5,2,40,40,500,1"
         
     ass_content.append(style_line)
     
     # ── HOOK STYLE (cho Tiêu đề 3s đầu) ──
     # Chữ to, vàng, nằm ở top (MarginV=150)
-    hook_style_line = f"Style: HookTitle,Arial,75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
+    hook_style_line = f"Style: HookTitle,Arial Black,75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
     ass_content.append(hook_style_line)
     
     ass_content.append("")
@@ -436,15 +461,21 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
     cursor = 0.0
     for asset in scene_assets:
         duration = asset["duration"]
+        # Dùng đúng mốc thời gian tuyệt đối (start_time đã tính overlap crossfade trong
+        # build_scene_timeline) để phụ đề khớp 100% với giọng đọc. Trước đây hàm này tự
+        # cộng dồn `cursor += duration` KHÔNG trừ overlap → phụ đề lệch dần theo số cảnh.
+        scene_start = asset.get("start_time")
+        if scene_start is None:
+            scene_start = cursor
         if asset.get("text") and asset["text"].strip():
-            start_td = dt.timedelta(seconds=cursor)
-            end_td = dt.timedelta(seconds=cursor + duration)
+            start_td = dt.timedelta(seconds=scene_start)
+            end_td = dt.timedelta(seconds=scene_start + duration)
             
             start_str = format_ass_time(start_td)
             end_str = format_ass_time(end_td)
             
             # Xử lý Text & Effect
-            pop_effect = r"{\fscx50\fscy50\t(0,150,\fscx120\fscy120)\t(150,250,\fscx100\fscy100)}"
+            pop_effect = r"{\fscx30\fscy30\t(0,100,\fscx150\fscy150)\t(100,250,\fscx100\fscy100)}"
             word_boundaries = asset.get("word_boundaries", [])
             
             if subtitle_style == "cinematic_box":
@@ -479,7 +510,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
 
                     chunks = _chunk_word_boundaries(word_boundaries, max_chars=14)
                     import random
-                    hormozi_colors = ["&H0000FF00", "&H000000FF", "&H0000A5FF"]
+                    hormozi_colors = ["&H0000FFFF", "&H000000FF", "&H0000FF00", "&H0000A5FF"] # Yellow, Red, Green, Orange
                     _VN_STOPWORDS = {
                         "CỦA", "VÀ", "LÀ", "CÓ", "CHO", "ĐỂ", "MỘT", "CÁC", "NHỮNG",
                         "TRONG", "KHÔNG", "ĐƯỢC", "NÀY", "ĐÓ", "VỚI", "TRÊN", "THEO",
@@ -492,8 +523,8 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
 
                     for chunk in chunks:
                         # chunk_start = offset of first word, chunk_end = offset + duration of last word
-                        chunk_start_td = dt.timedelta(seconds=cursor + chunk[0]["offset"])
-                        chunk_end_td = dt.timedelta(seconds=cursor + chunk[-1]["offset"] + chunk[-1]["duration"])
+                        chunk_start_td = dt.timedelta(seconds=scene_start + chunk[0]["offset"])
+                        chunk_end_td = dt.timedelta(seconds=scene_start + chunk[-1]["offset"] + chunk[-1]["duration"])
                         chunk_start_str = format_ass_time(chunk_start_td)
                         chunk_end_str = format_ass_time(chunk_end_td)
 

@@ -25,13 +25,12 @@ import os
 import re
 import shutil
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services import gemini_service, tts_service, video_service
 from services.image_upload_service import (
@@ -42,10 +41,14 @@ from services.image_upload_service import (
 
 app = FastAPI(title="AI Video Studio API")
 
+# CORS cấu hình qua env ALLOWED_ORIGINS (danh sách phân tách bằng dấu phẩy).
+# Mặc định "*" để dev local hoạt động như cũ; khi deploy public nên set origin cụ thể.
+_origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = ["*"] if _origins_env == "*" else [o.strip() for o in _origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=ALLOWED_ORIGINS != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -74,7 +77,7 @@ class JobState(BaseModel):
     scenes: Optional[List[dict]] = None
     error: Optional[str] = None
     mode: str = "storyteller"
-    created_at: datetime = datetime.utcnow()
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 JOBS: Dict[str, JobState] = {}
@@ -208,7 +211,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
     voice = req.voice or tts_service.DEFAULT_VOICE
     speech_rate = req.speech_rate or "+0%"
     aspect_ratio = req.aspect_ratio if req.aspect_ratio in VALID_ASPECT_RATIOS else "9:16"
-    imagen_aspect = aspect_ratio.replace(":", ":")
+    imagen_aspect = aspect_ratio
 
     video_seed = None
     if req.use_fixed_seed or req.use_frame_chaining:
@@ -281,9 +284,12 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     async def _voice_warning(msg: str):
                         await _update_job(job_id, message=msg)
                     
+                    dynamic_rate = scene.get("speech_rate_modifier", "0%")
+                    final_rate = dynamic_rate if dynamic_rate and dynamic_rate != "0%" else speech_rate
+                    
                     try:
                         dur, wbs = await tts_service.synthesize_speech(
-                            text, a_path, voice=voice, rate=speech_rate, pitch=req.speech_pitch, mode=mode,
+                            text, a_path, voice=voice, rate=final_rate, pitch=req.speech_pitch, mode=mode,
                             emotion=scene.get("emotion", ""),
                             warning_callback=_voice_warning,
                             use_breathing=req.use_breathing
@@ -341,7 +347,9 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         pexels_key = os.getenv("PEXELS_API_KEY")
                         if pexels_key:
                             try:
-                                return await image_router.fetch_pexels_video(img_prompt, final_img_path, aspect_ratio, pexels_key)
+                                from services.gemini_service import extract_search_keyword
+                                query = await extract_search_keyword(img_prompt, api_key)
+                                return await image_router.fetch_pexels_video(query, final_img_path, imagen_aspect, pexels_key)
                             except Exception as pex_v_err:
                                 print(f"Pexels Video fallback failed: {pex_v_err}")
                         return await image_router.generate_image_with_fallback(
@@ -450,6 +458,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 "word_boundaries": s.get("word_boundaries", []),
                 "transition": s.get("transition", "crossfade"),
                 "start_time": start_time,
+                "highlight_text": s.get("highlight_text", ""),
             })
             
         await _update_job(job_id, status="rendering", message="Đang render video...", progress=80)
@@ -555,12 +564,17 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
     except Exception as e:
         print(f"Exception in pipeline: {e}")
         await _update_job(job_id, status="error", error=str(e), message=f"Lỗi: {e}")
-
-    finally:
-        shutil.rmtree(job_dir_audio, ignore_errors=True)
-        shutil.rmtree(job_dir_images, ignore_errors=True)
+        # Giữ lại ảnh/audio đã sinh khi lỗi để có thể sinh lại từng cảnh / resume,
+        # thay vì xoá sạch khiến lần sau phải chạy lại toàn bộ.
         if req.upload_session_id:
             cleanup_upload(req.upload_session_id)
+        return
+
+    # Chỉ dọn asset tạm khi pipeline thành công.
+    shutil.rmtree(job_dir_audio, ignore_errors=True)
+    shutil.rmtree(job_dir_images, ignore_errors=True)
+    if req.upload_session_id:
+        cleanup_upload(req.upload_session_id)
 
 
 def _create_placeholder_image(path: str):
@@ -575,13 +589,26 @@ def _create_placeholder_image(path: str):
 
 async def _cleanup_old_outputs(max_age_hours: int = 24):
     """Dọn các video/srt final cũ hơn max_age_hours trong assets/output."""
-    now = datetime.utcnow().timestamp()
+    now = datetime.now(timezone.utc).timestamp()
     for fname in os.listdir(OUTPUT_DIR):
         fpath = os.path.join(OUTPUT_DIR, fname)
         if os.path.isfile(fpath):
             age_hours = (now - os.path.getmtime(fpath)) / 3600
             if age_hours > max_age_hours:
                 os.remove(fpath)
+
+
+def _prune_old_jobs(max_jobs: int = 200):
+    """Giới hạn kích thước JOBS in-memory: xoá bớt job cũ nhất đã kết thúc để tránh rò rỉ RAM."""
+    if len(JOBS) <= max_jobs:
+        return
+    finished = [
+        (jid, j) for jid, j in JOBS.items()
+        if j.status in ("done", "error")
+    ]
+    finished.sort(key=lambda kv: kv[1].created_at)
+    for jid, _ in finished[: len(JOBS) - max_jobs]:
+        JOBS.pop(jid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +672,9 @@ async def generate_script(req: GenerateScriptRequest):
             return scenes
         else:
             return {"scenes": scenes, "sentiment": "happy"}
+    except HTTPException:
+        # Giữ nguyên status code gốc (400 thiếu topic/script...) thay vì bọc thành 500.
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -662,6 +692,7 @@ async def render_video(req: RenderVideoRequest, background_tasks: BackgroundTask
     if not req.scenes:
         raise HTTPException(status_code=400, detail="Thiếu danh sách scenes.")
 
+    _prune_old_jobs()
     job_id = str(uuid.uuid4())
     JOBS[job_id] = JobState(
         job_id=job_id, status="pending", mode=req.mode,
@@ -731,15 +762,17 @@ async def delete_preset(preset_id: str):
 async def preview_media(type: str, id: str):
     """Phát thử nhạc nền (BGM) hoặc giọng đọc mẫu."""
     from fastapi.responses import FileResponse
+    # Chống path traversal: chỉ lấy phần basename, loại bỏ mọi thành phần thư mục.
+    safe_id = os.path.basename(id)
     if type == "bgm":
-        bgm_path = os.path.join(BGM_DIR, f"{id}.mp3")
+        bgm_path = os.path.join(BGM_DIR, f"{safe_id}.mp3")
         if os.path.isfile(bgm_path):
             return FileResponse(bgm_path)
     elif type == "voice":
-        voice_path = os.path.join(ASSETS_DIR, "voices_preview", f"{id}.mp3")
+        voice_path = os.path.join(ASSETS_DIR, "voices_preview", f"{safe_id}.mp3")
         if os.path.isfile(voice_path):
             return FileResponse(voice_path)
-            
+
     raise HTTPException(status_code=404, detail="Không tìm thấy file nghe thử.")
 
 
@@ -767,7 +800,11 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 async def download_file(filename: str):
     from fastapi.responses import FileResponse
 
-    file_path = os.path.join(OUTPUT_DIR, filename)
+    # Chống path traversal: chỉ cho phép basename nằm trong OUTPUT_DIR.
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(OUTPUT_DIR, safe_name)
+    if os.path.commonpath((os.path.abspath(file_path), OUTPUT_DIR)) != OUTPUT_DIR:
+        raise HTTPException(status_code=400, detail="Tên file không hợp lệ.")
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File không tồn tại hoặc đã bị xoá.")
     return FileResponse(file_path)
