@@ -229,6 +229,8 @@ DURATION_CONFIG = {
     "90s":  {"words": "210-240",  "suggested_scenes": 9},
     "120s": {"words": "280-320",  "suggested_scenes": 12},
     "180s": {"words": "420-480",  "suggested_scenes": 16},
+    "240s": {"words": "560-640",  "suggested_scenes": 18},   # Long-form kể chuyện
+    "300s": {"words": "700-800",  "suggested_scenes": 20},   # Long-form kể chuyện
 }
 
 # ── Bảng tone kể chuyện ─────────────────────────────────────────────
@@ -236,8 +238,39 @@ NARRATION_TONE_PROMPTS = {
     "drama": "Tone: Đanh thép, kịch tính, dồn dập. Dùng từ ngữ mạnh, hơi hướng giật gân, tạo ra cảm giác bí ẩn, đe doạ hoặc bất ngờ tột độ. Không dùng từ thừa.",
     "educational": "Tone: Cuốn hút, khai mở trí óc. Giống như một bí mật vừa được bật mí, tiết lộ sự thật gây shock nhưng vẫn đáng tin cậy. Dùng số liệu để đè bẹp sự nghi ngờ.",
     "humorous": "Tone: Cà khịa, châm biếm, hài hước sâu cay. Chơi chữ, dùng từ ngữ trending của Gen Z hoặc văn phong 'troll' nhẹ nhàng nhưng thâm thúy.",
-    "inspirational": "Tone: Cảm xúc, hùng hồn, truyền động lực mãnh liệt. Đánh vào trái tim người nghe, dùng từ ngữ khơi gợi khát vọng và vượt qua giới hạn."
+    "inspirational": "Tone: Cảm xúc, hùng hồn, truyền động lực mãnh liệt. Đánh vào trái tim người nghe, dùng từ ngữ khơi gợi khát vọng và vượt qua giới hạn.",
+    "storytelling": "Tone: Trầm lắng, chiêm nghiệm, dẫn chuyện như một người kể chuyện tài hoa. Giọng văn điện ảnh, giàu cảm xúc nhưng KHÔNG lên gân. Mỗi cảnh kết bằng một câu tạo tò mò nhẹ (soft cliffhanger) để người xem muốn nghe tiếp.",
 }
+
+
+# ── Base prompt riêng cho chế độ KỂ CHUYỆN LONG-FORM (style @sachhay_chondoc) ──
+# Khác hẳn base_storyteller (tối ưu hook giật gân 15-60s): đây là kể lại cốt truyện
+# sách/phim dạng dài, trầm lắng, footage thật khớp cảm xúc.
+BASE_STORYTELLING = (
+    "Bạn là người kể chuyện sách/phim bậc thầy trên TikTok/YouTube, chuyên tóm tắt & kể lại "
+    "cốt truyện tiểu thuyết, phim theo lối điện ảnh cuốn hút hàng triệu view.\n\n"
+    "CẤU TRÚC KỂ CHUYỆN LONG-FORM:\n"
+    "1. MỞ (Cảnh 1-2): Giới thiệu bối cảnh & nhân vật bằng một tình huống gợi tò mò, KHÔNG spoiler cái kết.\n"
+    "2. DIỄN BIẾN (phần thân): Kể tuần tự các nút thắt của câu chuyện. Mỗi cảnh là một bước ngoặt nhỏ.\n"
+    "3. CAO TRÀO: Nút thắt lớn nhất, tình tiết bất ngờ nhất.\n"
+    "4. KẾT & ĐÚC KẾT: Gỡ nút + một câu suy ngẫm đọng lại, rồi mời người xem đọc/tìm hiểu thêm.\n\n"
+    "QUY TẮC VĂN KỂ (BẮT BUỘC):\n"
+    "- Mỗi cảnh kết bằng một câu tạo tò mò nhẹ (soft cliffhanger), VD: 'Nhưng điều cô không ngờ tới là...', "
+    "'Câu trả lời anh nhận được nghe thật vô lý...'.\n"
+    "- Văn nói tự nhiên, trầm lắng, mạch lạc. TUYỆT ĐỐI không dùng Markdown, không emoji.\n"
+    "- Giữ ĐÚNG tên nhân vật/địa danh trong tác phẩm gốc nếu chủ đề nhắc tới.\n\n"
+    "QUY TẮC HÌNH ẢNH (CỰC KỲ QUAN TRỌNG — DÙNG FOOTAGE THẬT):\n"
+    "- image_prompt PHẢI mô tả một cảnh QUAY THẬT, đời thường, giàu cảm xúc, CÓ THỂ tìm thấy trên kho video "
+    "stock (Pexels): VD 'a hand writing a letter by candlelight', 'car headlights on a rainy night street', "
+    "'lonely person walking in autumn park', 'cloudy sky at dusk'.\n"
+    "- TUYỆT ĐỐI TRÁNH hình ảnh giả tưởng/anime/CGI không có thật (rồng, phép thuật, nhân vật hoạt hình) — "
+    "vì sẽ không tìm được footage thật khớp.\n"
+    "- Ưu tiên: bàn tay, ánh đèn, khung cửa sổ, thư từ, đường phố, thiên nhiên, đồ vật gợi hoài niệm — "
+    "khớp CẢM XÚC của lời kể hơn là minh hoạ đúng từng chữ.\n\n"
+    "QUY TẮC ÂM THANH: KHÔNG lạm dụng sfx. Để trống 'sfx' ở hầu hết cảnh, chỉ dùng 'riser' hoặc 'suspense' "
+    "ở đúng 1-2 điểm cao trào.\n"
+    "QUY TẮC CẢM XÚC: 'emotion' phần lớn là 'calm' hoặc 'dramatic'/'suspense' ở cao trào; 'closing' ở cảnh cuối.\n"
+)
 
 async def generate_script(
     topic: str,
@@ -287,7 +320,14 @@ async def generate_script(
         "- Hạn chế lạm dụng 'sfx' liên tục. Cảnh đầu (hook): nên dùng 'whoosh' hoặc 'riser'. Cảnh cuối (closing): dùng 'ding' hoặc 'bell'.\n"
     )
 
-    if mode == "quiz_listicle":
+    # Chế độ KỂ CHUYỆN long-form (tone=storytelling): dùng base prompt riêng, style @sachhay_chondoc
+    if narration_tone == "storytelling" and mode != "quiz_listicle":
+        system_prompt = (
+            BASE_STORYTELLING +
+            f"\nNhiệm vụ: kể câu chuyện cho chủ đề được cung cấp thành CHÍNH XÁC {num_scenes} phân cảnh nối tiếp mạch lạc. "
+            f"image_prompt viết bằng tiếng Anh (mô tả cảnh quay thật để tìm footage stock)."
+        )
+    elif mode == "quiz_listicle":
         system_prompt = (
             base_storyteller +
             f"\nCHẾ ĐỘ: Quiz/Listicle — viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh theo dạng 'Top N' hoặc hỏi-đáp. "
@@ -567,23 +607,51 @@ async def generate_image(
 
 async def extract_search_keyword(image_prompt: str, api_key: Optional[str] = None) -> str:
     """
-    Trích xuất từ khóa ngắn (1-3 từ) từ image_prompt dài để tìm kiếm trên Pexels/Pixabay (Offline, không dùng Gemini để tiết kiệm Quota).
+    Trích xuất từ khóa ngắn (2-4 từ) từ image_prompt dài để tìm kiếm trên Pexels/Pixabay
+    (Offline, không dùng Gemini để tiết kiệm Quota).
+
+    Lưu ý: prompt template BẮT BUỘC mở đầu bằng góc máy ("Extreme close-up shot of...",
+    "Low-angle drone shot of..."), nên phải loại bỏ toàn bộ thuật ngữ quay phim trước khi
+    trích chủ thể — nếu không Pexels sẽ nhận từ khóa rác kiểu "extreme close-up" và trả
+    video ngẫu nhiên không đúng chủ đề.
     """
-    # Xóa các từ thông dụng không mang ý nghĩa chính
-    stopwords = {"a", "an", "the", "in", "on", "at", "with", "and", "or", "of", "to", "for", "is", "are", "cinematic", "style", "lighting", "photo", "image", "picture", "realistic", "4k", "8k"}
-    
+    # Từ thông dụng + THUẬT NGỮ GÓC MÁY/quay phim không mang nội dung chủ thể
+    stopwords = {
+        # common
+        "a", "an", "the", "in", "on", "at", "with", "and", "or", "of", "to", "for",
+        "is", "are", "his", "her", "its", "their",
+        # chất lượng / render
+        "cinematic", "style", "lighting", "photo", "image", "picture", "realistic",
+        "photorealistic", "4k", "8k", "uhd", "hdr", "detailed", "highly", "quality",
+        "unreal", "engine", "octane", "render", "volumetric", "dust", "film", "grain",
+        "teal", "orange", "dramatic", "moody", "epic", "professional",
+        # góc máy / camera jargon
+        "shot", "close-up", "closeup", "close", "up", "extreme", "wide", "medium",
+        "full", "establishing", "low-angle", "high-angle", "angle", "low", "high",
+        "drone", "aerial", "over-the-shoulder", "over", "shoulder", "tracking",
+        "dolly", "pan", "panning", "zoom", "pov", "macro", "portrait", "landscape",
+        "view", "scene", "frame", "camera", "lens", "depth", "field", "bokeh",
+    }
+
+    lower_prompt = image_prompt.lower()
+
+    # Ưu tiên phần SAU cụm " of " đầu tiên: "Extreme close-up shot of a lion roaring..."
+    # → chủ thể thật nằm sau "of". Chỉ áp dụng khi phần đầu đúng là cụm góc máy.
+    if " of " in lower_prompt:
+        prefix, _, subject_part = lower_prompt.partition(" of ")
+        prefix_words = [w.strip(",.!?") for w in prefix.split()]
+        if prefix_words and all(w in stopwords for w in prefix_words):
+            lower_prompt = subject_part
+
     # Chuẩn hóa chuỗi, bỏ dấu câu cơ bản
-    clean_prompt = image_prompt.replace(",", " ").replace(".", " ").replace("!", " ").replace("?", " ").lower()
-    words = clean_prompt.split()
-    
+    clean_prompt = lower_prompt.replace(",", " ").replace(".", " ").replace("!", " ").replace("?", " ")
+    words = [w for w in clean_prompt.split() if w]
+
     # Lọc stopwords
     filtered_words = [w for w in words if w not in stopwords]
-    
-    # Lấy 2-3 từ đầu tiên mang ý nghĩa (chủ thể)
-    if len(filtered_words) >= 2:
-        return " ".join(filtered_words[:2])
-    elif len(filtered_words) == 1:
-        return filtered_words[0]
-    else:
-        # Fallback an toàn
-        return "nature"
+
+    # Lấy tối đa 3 từ đầu mang nghĩa (chủ thể + hành động/bối cảnh)
+    if filtered_words:
+        return " ".join(filtered_words[:3])
+    # Fallback an toàn
+    return "nature"

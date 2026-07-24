@@ -1,5 +1,25 @@
 [
   {
+    "id": "preset_book_storytelling",
+    "name": "📖 Kể Chuyện Sách/Phim (Long-form + Video thật)",
+    "aspect_ratio": "16:9",
+    "voice": "omnivoice_male_podcast_vi",
+    "art_style": "Cinematic, realistic documentary footage, moody warm lighting",
+    "bgm_track": "deep_abstract_ambient",
+    "target_duration": "240s",
+    "narration_tone": "storytelling",
+    "speech_rate": "-5%",
+    "speech_pitch": "+0Hz",
+    "bgm_volume": 18,
+    "subtitle_style": "cinematic_box",
+    "color_grading": "warm_cinematic",
+    "prefer_stock_video": true,
+    "use_sfx": false,
+    "sfx_volume": 30,
+    "is_default": true,
+    "created_at": "2026-07-24T00:00:00"
+  },
+  {
     "id": "preset_viral_short",
     "name": "🔥 Short TikTok Viral (Nam Minh + Anime)",
     "aspect_ratio": "9:16",

@@ -43,11 +43,34 @@ DEFAULT_PRESETS = [
         "sfx_volume": 40,
         "is_default": True,
         "created_at": "2026-07-21T00:00:00"
+    },
+    {
+        # Preset tái tạo style viral @sachhay_chondoc: kể chuyện sách/phim long-form,
+        # footage thật (Pexels), phụ đề hộp mờ, giọng nam trầm ấm, nhịp chậm.
+        "id": "preset_book_storytelling",
+        "name": "📖 Kể Chuyện Sách/Phim (Long-form + Video thật)",
+        "aspect_ratio": "16:9",
+        "voice": "omnivoice_male_podcast_vi",
+        "art_style": "Cinematic, realistic documentary footage, moody warm lighting",
+        "bgm_track": "deep_abstract_ambient",
+        "target_duration": "240s",
+        "narration_tone": "storytelling",
+        "speech_rate": "-5%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 18,
+        "subtitle_style": "cinematic_box",
+        "color_grading": "warm_cinematic",
+        "prefer_stock_video": True,
+        "use_sfx": False,
+        "sfx_volume": 30,
+        "is_default": True,
+        "created_at": "2026-07-24T00:00:00"
     }
 ]
 
 def load_presets() -> List[Dict[str, Any]]:
-    """Đọc danh sách presets từ file JSON. Nếu chưa có thì tạo các mẫu mặc định."""
+    """Đọc danh sách presets từ file JSON. Nếu chưa có thì tạo các mẫu mặc định.
+    Tự động merge các preset MẶC ĐỊNH mới (theo id) vào file đã seed từ trước."""
     if not os.path.exists(PRESETS_FILE):
         save_all_presets(DEFAULT_PRESETS)
         return DEFAULT_PRESETS
@@ -56,7 +79,14 @@ def load_presets() -> List[Dict[str, Any]]:
             presets = json.load(f)
             if not isinstance(presets, list):
                 return DEFAULT_PRESETS
-            return presets
+        # Migration: bổ sung preset mặc định mới chưa có trong file (giữ nguyên preset user)
+        existing_ids = {p.get("id") for p in presets}
+        missing = [dp for dp in DEFAULT_PRESETS if dp["id"] not in existing_ids]
+        if missing:
+            # Chèn preset mặc định mới lên đầu để dễ thấy
+            presets = missing + presets
+            save_all_presets(presets)
+        return presets
     except Exception:
         return DEFAULT_PRESETS
 

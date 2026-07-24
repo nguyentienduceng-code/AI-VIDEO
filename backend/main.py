@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -164,6 +164,7 @@ class RenderVideoRequest(BaseModel):
     topic: Optional[str] = None
     use_breathing: bool = False
     hook_effect: str = "word_by_word"
+    prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
 
 class PresetRequest(BaseModel):
     name: str
@@ -177,6 +178,8 @@ class PresetRequest(BaseModel):
     speech_pitch: str = "+0Hz"
     bgm_volume: float = 15
     subtitle_style: str = "karaoke_bold"
+    color_grading: str = "warm_cinematic"
+    prefer_stock_video: bool = False
     use_sfx: bool = True
     sfx_volume: float = 50
 
@@ -243,6 +246,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
 
         from services import image_router
         import subprocess
+
+        # Trạng thái Veo cho toàn job: nếu lỗi quota/permission (không thể tự hết trong
+        # phiên render) → tắt Veo cho các cảnh còn lại, tránh lãng phí thời gian retry,
+        # đồng thời báo rõ lý do lên UI thay vì fallback im lặng.
+        veo_state = {"disabled": False}
 
         for i, scene in enumerate(scenes):
             image_path = os.path.join(job_dir_images, f"scene_{i+1}.png")
@@ -333,7 +341,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             art_style=req.art_style
                         )
                         return final_img_path
-                elif req.use_veo:
+                elif req.use_veo and not veo_state["disabled"]:
                     await _update_job(job_id, message=f"Đang sinh Video AI (Veo) cho cảnh {i+1}/{total}...")
                     try:
                         from services.veo_service import generate_scene_video
@@ -343,6 +351,19 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         )
                         return video_path
                     except Exception as veo_err:
+                        err_str = str(veo_err)
+                        # Lỗi quota/billing/permission → không thể tự hết trong phiên này:
+                        # tắt Veo cho các cảnh còn lại + báo rõ lý do lên UI.
+                        if any(sig in err_str for sig in ("429", "RESOURCE_EXHAUSTED", "403", "PERMISSION_DENIED", "billed")):
+                            veo_state["disabled"] = True
+                            await _update_job(
+                                job_id,
+                                message=(
+                                    "⚠️ Veo 3 không khả dụng: API key hiện tại chưa bật billing "
+                                    "(Google yêu cầu gói trả phí cho Veo). Tự động dùng "
+                                    "Pexels Video / Ảnh AI + Ken Burns cho toàn bộ video."
+                                ),
+                            )
                         print(f"Veo Error for scene {i+1}: {veo_err}. Tự động fallback sang Pexels Video / Image Router...")
                         pexels_key = os.getenv("PEXELS_API_KEY")
                         if pexels_key:
@@ -367,7 +388,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         is_realistic = any(kw in img_prompt.lower() for kw in ["realistic", "photography", "photoreal", "real-life", "photo of", "dslr"])
 
                     pexels_key = os.getenv("PEXELS_API_KEY")
-                    if is_realistic and pexels_key:
+                    # prefer_stock_video: user chủ động chọn video thật cho MỌI cảnh (không chỉ realistic)
+                    if (req.prefer_stock_video or is_realistic) and pexels_key:
                         await _update_job(job_id, message=f"Đang tìm video Pexels cho cảnh {i+1}/{total}...")
                         try:
                             from services.gemini_service import extract_search_keyword
@@ -375,7 +397,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             pexels_vid = await image_router.fetch_pexels_video(query, final_img_path, imagen_aspect, pexels_key)
                             return pexels_vid
                         except Exception as pexels_err:
-                            print(f"Pexels fallback for scene {i+1}: {pexels_err}")
+                            print(f"Pexels video cho cảnh {i+1} thất bại ({pexels_err}). Rơi về ảnh AI.")
 
                     await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
                     try:
@@ -442,18 +464,28 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             if not img_path.lower().endswith((".mp4", ".mov")):
                 await _update_job(job_id, message=f"Đang xử lý chuyển động (Ken Burns) cho cảnh {i+1}...")
                 out_mp4 = img_path + f"_{i}.mp4"
+                # Hook Zoom Boost: cảnh đầu zoom mạnh hơn (1.0→1.35) tạo "cú đấm" thị giác
+                # giữ chân người xem trong 2-3 giây đầu. Đây là cờ bật/tắt thật sự.
+                kb_zoom_end = 1.35 if (i == 0 and req.hook_zoom_boost) else 1.15
                 await asyncio.to_thread(
                     apply_ken_burns,
-                    image_path=img_path, output_path=out_mp4, duration=duration, fps=30, pan_direction=default_effect
+                    image_path=img_path, output_path=out_mp4, duration=duration, fps=30,
+                    pan_direction=default_effect, zoom_end=kb_zoom_end
                 )
                 img_path = out_mp4
-                
+
+            # Hook SFX: tự thêm 'riser' mở màn cho cảnh đầu nếu bật Hook Zoom Boost + SFX
+            # và cảnh chưa có sẵn hiệu ứng âm thanh nào.
+            scene_sfx = s.get("sfx", "")
+            if i == 0 and req.hook_zoom_boost and req.use_sfx and not scene_sfx:
+                scene_sfx = "riser"
+
             scene_assets.append({
                 "image_path": img_path,
                 "audio_path": s.get("audio_path"),
                 "text": s.get("text", ""),
                 "duration": duration,
-                "sfx": s.get("sfx", ""),
+                "sfx": scene_sfx,
                 "visual_effect": default_effect,
                 "word_boundaries": s.get("word_boundaries", []),
                 "transition": s.get("transition", "crossfade"),
@@ -730,8 +762,119 @@ async def bgm_list():
 
 @app.get("/api/voices")
 async def voices_list():
-    """Trả về danh sách giọng đọc tiếng Việt."""
+    """Trả về danh sách giọng đọc tiếng Việt (gồm cả giọng clone cá nhân)."""
     return {"voices": tts_service.get_available_voices()}
+
+
+@app.get("/api/tts-health")
+async def tts_health():
+    """Trạng thái hạ tầng TTS: OmniVoice/GPU/whisper-align sẵn sàng hay chưa."""
+    return tts_service.get_tts_health()
+
+
+@app.on_event("startup")
+async def _startup_warmup():
+    """Warmup OmniVoice + whisper-align trong background (tắt bằng OMNIVOICE_WARMUP=0)."""
+    if os.getenv("OMNIVOICE_WARMUP", "1") != "0":
+        asyncio.create_task(tts_service.warmup_omnivoice())
+
+
+# ---------------------------------------------------------------------------
+# Voice Cloning (Phase 3) — upload mẫu giọng 5-10s → giọng OmniVoice cá nhân
+# ---------------------------------------------------------------------------
+ALLOWED_VOICE_SAMPLE_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
+MAX_VOICE_SAMPLE_SIZE = 15 * 1024 * 1024  # 15MB
+
+
+@app.post("/api/voice-clone")
+async def create_voice_clone(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    transcript: Optional[str] = Form(None),
+):
+    """
+    Nhận file mẫu giọng (5-10s) → chuẩn hóa 24kHz mono WAV làm reference cho
+    OmniVoice Voice Cloning. Nếu không có transcript, tự nhận dạng bằng whisper.
+    Trả về voice_id để chọn trong danh sách giọng đọc.
+    """
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_VOICE_SAMPLE_EXTS:
+        raise HTTPException(status_code=400, detail=f"Định dạng không hỗ trợ. Chấp nhận: {', '.join(sorted(ALLOWED_VOICE_SAMPLE_EXTS))}")
+    content = await file.read()
+    if len(content) > MAX_VOICE_SAMPLE_SIZE:
+        raise HTTPException(status_code=400, detail="File mẫu giọng vượt quá 15MB.")
+    if len(content) < 10_000:
+        raise HTTPException(status_code=400, detail="File mẫu quá ngắn. Cần đoạn nói rõ ràng 5-10 giây.")
+
+    voice_id = f"omnivoice_custom_{uuid.uuid4().hex[:8]}"
+    preview_dir = tts_service.VOICES_PREVIEW_DIR
+    os.makedirs(preview_dir, exist_ok=True)
+
+    raw_path = os.path.join(preview_dir, f"{voice_id}_src{ext}")
+    ref_wav_path = os.path.join(preview_dir, f"{voice_id}_ref.wav")
+    preview_mp3_path = os.path.join(preview_dir, f"{voice_id}.mp3")
+    with open(raw_path, "wb") as f:
+        f.write(content)
+
+    def _convert():
+        """Chuẩn hóa mẫu về 24kHz mono WAV (tối đa 15s) + xuất mp3 preview."""
+        import subprocess
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", raw_path, "-t", "15", "-ar", "24000", "-ac", "1", ref_wav_path],
+            check=True, capture_output=True, timeout=120,
+        )
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", ref_wav_path, "-b:a", "128k", preview_mp3_path],
+            check=True, capture_output=True, timeout=120,
+        )
+
+    try:
+        await asyncio.to_thread(_convert)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không thể xử lý file âm thanh: {e}")
+    finally:
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except OSError:
+                pass
+
+    # Transcript: user cung cấp hoặc tự nhận dạng bằng whisper (cần cho ref_text của cloning)
+    ref_text = (transcript or "").strip()
+    if not ref_text:
+        def _transcribe():
+            model = tts_service._get_whisper_model()
+            result = model.transcribe(ref_wav_path, language="vi")
+            return " ".join(seg.text.strip() for seg in result.segments).strip()
+        try:
+            ref_text = await asyncio.to_thread(_transcribe)
+        except Exception as e:
+            print(f"[VoiceClone] Whisper transcribe lỗi: {e}")
+    if not ref_text:
+        ref_text = "Chào bạn, đây là giọng đọc tham khảo để đồng bộ video."
+
+    display_name = (name or "").strip() or f"Giọng của tôi {voice_id[-4:]}"
+    entry = tts_service.register_custom_voice(voice_id, display_name, ref_text)
+    return {
+        "voice_id": voice_id,
+        "name": display_name,
+        "ref_text": ref_text,
+        "message": "Đã tạo giọng clone thành công. Chọn giọng này trong danh sách Giọng đọc.",
+        "voice": entry,
+    }
+
+
+@app.delete("/api/voice-clone/{voice_id}")
+async def delete_voice_clone(voice_id: str):
+    """Xóa giọng clone cá nhân (registry + file mẫu)."""
+    safe_id = os.path.basename(voice_id)
+    if not safe_id.startswith("omnivoice_custom_"):
+        raise HTTPException(status_code=400, detail="Chỉ xóa được giọng clone cá nhân.")
+    if not tts_service.remove_custom_voice(safe_id):
+        raise HTTPException(status_code=404, detail="Không tìm thấy giọng clone này.")
+    return {"message": "Đã xóa giọng clone."}
 
 
 from services import preset_service

@@ -45,6 +45,7 @@ export const VOICES = [
 
 export const NARRATION_TONES = [
   { value: 'viral', label: '🔥 Viral Hook', desc: 'Gây sốc, cuốn hút, FOMO' },
+  { value: 'storytelling', label: '📖 Kể chuyện', desc: 'Trầm lắng, cliffhanger, style review sách/phim' },
   { value: 'educational', label: '📚 Giáo dục', desc: 'Rõ ràng, logic, dẫn chứng' },
   { value: 'emotional', label: '💔 Cảm xúc', desc: 'Storytelling sâu sắc' },
   { value: 'humorous', label: '😂 Hài hước', desc: 'Dí dỏm, bất ngờ' },
@@ -57,6 +58,8 @@ export const DURATION_OPTIONS = [
   { value: '90s',  label: '90s',  scenes: 9 },
   { value: '120s', label: '2 min', scenes: 12 },
   { value: '180s', label: '3 min', scenes: 16 },
+  { value: '240s', label: '4 min', scenes: 18 },
+  { value: '300s', label: '5 min', scenes: 20 },
 ];
 
 export const SUBTITLE_STYLES = [
@@ -64,6 +67,33 @@ export const SUBTITLE_STYLES = [
   { value: 'hormozi_bold', label: 'Hormozi (Đa sắc, nảy chữ)' },
   { value: 'cinematic_box', label: 'Điện ảnh (Nền mờ)' },
   { value: 'minimal_white', label: 'Tối giản (Chữ trắng, bóng mờ)' },
+];
+
+// Chuyển cảnh — đồng bộ với backend video_service.VALID_TRANSITIONS
+export const TRANSITIONS = [
+  { value: 'crossfade', label: '🌫️ Hòa tan (Crossfade)' },
+  { value: 'fade_black', label: '⬛ Mờ đen (Fade Black)' },
+  { value: 'fade_white', label: '⚡ Chớp trắng (Flash)' },
+  { value: 'zoom_through', label: '🔍 Lao xuyên (Zoom Through)' },
+  { value: 'slide_left', label: '⬅️ Trượt trái (Slide)' },
+  { value: 'slide_right', label: '➡️ Trượt phải (Slide)' },
+  { value: 'slide_up', label: '⬆️ Trượt lên (Slide)' },
+  { value: 'whip_pan', label: '💨 Quét nhanh (Whip Pan)' },
+  { value: 'page_flip', label: '📖 Lật trang sách' },
+  { value: 'droplet', label: '💧 Giọt nước lan' },
+];
+
+// Hiệu ứng âm thanh per-scene — khớp file trong assets/sfx/
+export const SFX_OPTIONS = [
+  { value: '', label: '🔇 Không tiếng' },
+  { value: 'whoosh', label: '💨 Vèo (Whoosh)' },
+  { value: 'pop', label: '🫧 Bụp (Pop)' },
+  { value: 'ding', label: '🔔 Ding' },
+  { value: 'riser', label: '📈 Riser (dâng trào)' },
+  { value: 'suspense', label: '😱 Hồi hộp (Suspense)' },
+  { value: 'impact', label: '💥 Va đập (Impact)' },
+  { value: 'bell', label: '🛎️ Chuông (Bell)' },
+  { value: 'laugh', label: '😂 Cười (Laugh)' },
 ];
 
 export const COLOR_GRADINGS = [

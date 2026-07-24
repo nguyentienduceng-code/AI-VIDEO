@@ -53,6 +53,7 @@ export default function PresetManager() {
         bgm_volume: ctx.bgmVolume,
         subtitle_style: ctx.subtitleStyle,
         color_grading: ctx.colorGrading,
+        prefer_stock_video: ctx.preferStockVideo,
         use_sfx: ctx.useSfx,
         sfx_volume: ctx.sfxVolume
       };

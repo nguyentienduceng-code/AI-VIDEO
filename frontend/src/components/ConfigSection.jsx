@@ -1,13 +1,49 @@
-import React from 'react';
-import { Smartphone, Monitor, Square, Play } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Smartphone, Monitor, Square, Play, Mic, Loader } from 'lucide-react';
 import { useAppContext } from '../AppContext';
-import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS } from '../constants';
+import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, API_BASE } from '../constants';
 import PresetManager from './PresetManager';
 
 export default function ConfigSection() {
   const ctx = useAppContext();
   const minScenes = 4, maxScenes = 20;
   const sliderPercent = ((ctx.numScenes - minScenes) / (maxScenes - minScenes)) * 100;
+
+  // ── Voice Cloning: danh sách giọng clone cá nhân + upload mẫu ──
+  const [customVoices, setCustomVoices] = useState([]);
+  const [cloneBusy, setCloneBusy] = useState(false);
+  const cloneInputRef = useRef(null);
+
+  const loadCustomVoices = useCallback(() => {
+    fetch(`${API_BASE}/api/voices`)
+      .then(r => r.json())
+      .then(d => setCustomVoices((d.voices || []).filter(v => v.id?.startsWith('omnivoice_custom_'))))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { loadCustomVoices(); }, [loadCustomVoices]);
+
+  const handleCloneUpload = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setCloneBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('name', f.name.replace(/\.[^.]+$/, ''));
+      const res = await fetch(`${API_BASE}/api/voice-clone`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Upload thất bại');
+      loadCustomVoices();
+      ctx.setVoice(data.voice_id);
+      alert(`✅ Đã tạo giọng clone "${data.name}"!\n\nTranscript nhận dạng: "${data.ref_text}"\n\nGiọng đã được chọn sẵn trong danh sách.`);
+    } catch (err) {
+      alert('Lỗi tạo giọng clone: ' + err.message);
+    } finally {
+      setCloneBusy(false);
+      if (cloneInputRef.current) cloneInputRef.current.value = '';
+    }
+  };
 
   return (
     <div className="panel-box">
@@ -96,9 +132,31 @@ export default function ConfigSection() {
           <label className="field-label">GIỌNG ĐỌC</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <select className="form-select" value={ctx.voice} onChange={e => ctx.setVoice(e.target.value)} style={{ flex: 1 }}>
-              {VOICES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              <optgroup label="Giọng có sẵn">
+                {VOICES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              </optgroup>
+              {customVoices.length > 0 && (
+                <optgroup label="🎤 Giọng Clone của bạn">
+                  {customVoices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </optgroup>
+              )}
             </select>
-            <button className="btn-icon" onClick={() => ctx.playPreview('voice', ctx.voice)}><Play size={18} /></button>
+            <button className="btn-icon" onClick={() => ctx.playPreview('voice', ctx.voice)} title="Nghe thử"><Play size={18} /></button>
+            <button
+              className="btn-icon"
+              onClick={() => cloneInputRef.current?.click()}
+              disabled={cloneBusy}
+              title="Clone giọng của bạn: upload đoạn ghi âm nói rõ ràng 5-10 giây (wav/mp3/m4a)"
+            >
+              {cloneBusy ? <Loader size={18} className="animate-spin" /> : <Mic size={18} />}
+            </button>
+            <input
+              ref={cloneInputRef}
+              type="file"
+              accept=".wav,.mp3,.m4a,.ogg,.flac,audio/*"
+              style={{ display: 'none' }}
+              onChange={handleCloneUpload}
+            />
           </div>
         </div>
         <div className="input-group">

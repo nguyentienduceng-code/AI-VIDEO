@@ -13,3 +13,4 @@ ffmpeg-python>=0.2.0
 librosa>=0.10.2
 soundfile>=0.12.1
 numpy>=1.26.0
+stable-ts>=2.19.0

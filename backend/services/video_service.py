@@ -60,6 +60,99 @@ class SceneAsset(TypedDict):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Transition Engine — đa dạng hoá chuyển cảnh
+# ─────────────────────────────────────────────────────────────────────
+# Danh sách transition hợp lệ (đồng bộ với frontend constants.TRANSITIONS)
+VALID_TRANSITIONS = {
+    "crossfade", "fade_black", "fade_white", "zoom_through",
+    "slide_left", "slide_right", "slide_up", "whip_pan",
+    "page_flip", "droplet",
+}
+
+
+def _apply_transition(scene, transition, add_crossfade_in, crossfade_dur, video_width, video_height):
+    """
+    Áp hiệu ứng chuyển cảnh cho ENTRANCE của 1 scene (blend/slide/reveal chồng lên cảnh
+    trước trong vùng overlap). Luôn CrossFadeOut ở cuối để cảnh sau có nền blend.
+
+    Mọi hiệu ứng "fancy" (slide/page_flip/droplet) được bọc try/except → nếu MoviePy lỗi
+    thì tự động fallback crossfade, KHÔNG bao giờ làm hỏng render.
+    """
+    from moviepy.video.fx import CrossFadeIn, CrossFadeOut, FadeIn, FadeOut
+    cf = crossfade_dur
+
+    # Cảnh đầu tiên: không có entrance transition, chỉ fade out cuối để nối cảnh sau
+    if not add_crossfade_in:
+        return scene.with_effects([CrossFadeOut(cf)])
+
+    try:
+        if transition == "fade_black":
+            return scene.with_effects([FadeIn(cf), FadeOut(cf)])
+
+        if transition == "fade_white":
+            from moviepy import ColorClip
+            flash = (
+                ColorClip((video_width, video_height), color=(255, 255, 255))
+                .with_duration(cf)
+                .with_effects([CrossFadeOut(cf)])
+            )
+            scene = scene.with_effects([CrossFadeIn(cf * 0.5), CrossFadeOut(cf)])
+            return CompositeVideoClip([scene, flash], size=(video_width, video_height)).with_duration(scene.duration)
+
+        if transition == "zoom_through":
+            return scene.with_effects([CrossFadeIn(cf * 0.8), CrossFadeOut(cf * 0.8)])
+
+        if transition in ("slide_left", "slide_right", "slide_up", "whip_pan", "page_flip"):
+            slide_dur = cf * (0.5 if transition == "whip_pan" else 1.0)
+
+            def _pos(t, tr=transition, d=slide_dur):
+                p = min(t / d, 1.0) if d > 0 else 1.0
+                ease = 1 - (1 - p) ** 3  # ease-out cubic cho cảm giác "đẩy" mượt
+                if tr in ("slide_left", "whip_pan", "page_flip"):
+                    return (int(video_width * (1 - ease)), 0)     # vào từ phải
+                if tr == "slide_right":
+                    return (int(-video_width * (1 - ease)), 0)    # vào từ trái
+                if tr == "slide_up":
+                    return (0, int(video_height * (1 - ease)))    # vào từ dưới
+                return (0, 0)
+
+            scene = scene.with_position(_pos)
+
+            if transition == "page_flip":
+                # Ép ngang nhẹ lúc "lật" rồi bung ra → cảm giác lật trang sách
+                def _scale(t, d=slide_dur):
+                    p = min(t / d, 1.0) if d > 0 else 1.0
+                    return 0.82 + 0.18 * p
+
+                scene = scene.resized(_scale)
+
+            scene = scene.with_effects([CrossFadeOut(cf)])
+            return CompositeVideoClip([scene], size=(video_width, video_height)).with_duration(scene.duration)
+
+        if transition == "droplet":
+            # Giọt nước: mặt nạ hình tròn lan rộng từ tâm ra (ripple reveal)
+            import numpy as np
+            from moviepy import VideoClip
+            w, h = video_width, video_height
+            max_r = ((w ** 2 + h ** 2) ** 0.5) / 2.0
+            yy, xx = np.ogrid[:h, :w]
+            dist = np.sqrt((xx - w / 2.0) ** 2 + (yy - h / 2.0) ** 2)
+
+            def _mask_frame(t, d=cf):
+                p = min(t / d, 1.0) if d > 0 else 1.0
+                ease = 1 - (1 - p) ** 2
+                return (dist <= ease * max_r).astype(float)
+
+            mask = VideoClip(_mask_frame, is_mask=True).with_duration(scene.duration)
+            return scene.with_mask(mask).with_effects([CrossFadeOut(cf)])
+    except Exception as e:
+        print(f"[Transition] '{transition}' lỗi ({e}), fallback crossfade.")
+
+    # Mặc định: crossfade
+    return scene.with_effects([CrossFadeIn(cf), CrossFadeOut(cf)])
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Build 1 scene clip
 # ─────────────────────────────────────────────────────────────────────
 def _build_scene_clip(
@@ -139,20 +232,10 @@ def _build_scene_clip(
 
     scene = CompositeVideoClip(layers, size=(video_width, video_height))
 
-    # ── Transition effects theo loại (chỉ ảnh hưởng video, không audio) ──
-    if transition == "fade_black":
-        from moviepy.video.fx import FadeIn, FadeOut
-        if add_crossfade_in:
-            scene = scene.with_effects([FadeIn(crossfade_dur)])
-        scene = scene.with_effects([FadeOut(crossfade_dur)])
-    elif transition == "zoom_through":
-        if add_crossfade_in:
-            scene = scene.with_effects([CrossFadeIn(crossfade_dur * 0.8)])
-        scene = scene.with_effects([CrossFadeOut(crossfade_dur * 0.8)])
-    else:
-        if add_crossfade_in:
-            scene = scene.with_effects([CrossFadeIn(crossfade_dur)])
-        scene = scene.with_effects([CrossFadeOut(crossfade_dur)])
+    # ── Transition Engine (đa dạng: crossfade/slide/page_flip/droplet/...) ──
+    scene = _apply_transition(
+        scene, transition, add_crossfade_in, crossfade_dur, video_width, video_height
+    )
 
     return scene
 

@@ -6,6 +6,7 @@ backend/.pytest_cache/
 *.pyc
 
 # Assets & Generated Media
+backend/assets/voices_custom.json
 backend/assets/output/
 backend/assets/audio/
 backend/assets/images/

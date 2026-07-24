@@ -1,7 +1,7 @@
 import React from 'react';
-import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus } from 'lucide-react';
+import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2 } from 'lucide-react';
 import { useAppContext } from '../AppContext';
-import { API_BASE, MODE_MAP } from '../constants';
+import { API_BASE, MODE_MAP, TRANSITIONS, SFX_OPTIONS } from '../constants';
 
 export default function ScriptEditor() {
   const ctx = useAppContext();
@@ -34,6 +34,7 @@ export default function ScriptEditor() {
         cover_image_position: ctx.coverImagePosition,
         use_breathing: ctx.useBreathing, hook_effect: ctx.hookEffect,
         hook_text: ctx.hookText,
+        prefer_stock_video: ctx.preferStockVideo,
       };
 
       const res = await fetch(`${API_BASE}/api/render-video`, {
@@ -133,6 +134,28 @@ export default function ScriptEditor() {
               <div className="scene-field">
                 <label className="field-label">MÔ TẢ HÌNH ẢNH (TIẾNG ANH)</label>
                 <textarea className="form-textarea scene-textarea" value={scene.image_prompt} onChange={e => updateScene(idx, 'image_prompt', e.target.value)} placeholder="Image prompt for AI image generation..." rows={2} />
+              </div>
+              <div className="scene-field" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <label className="field-label"><Film size={12} style={{ verticalAlign: 'middle' }} /> CHUYỂN CẢNH (sang cảnh sau)</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={scene.transition || 'crossfade'}
+                    onChange={e => updateScene(idx, 'transition', e.target.value)}
+                  >
+                    {TRANSITIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <label className="field-label"><Volume2 size={12} style={{ verticalAlign: 'middle' }} /> TIẾNG ĐỘNG (SFX) CẢNH NÀY</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={scene.sfx || ''}
+                    onChange={e => updateScene(idx, 'sfx', e.target.value)}
+                  >
+                    {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
           </div>

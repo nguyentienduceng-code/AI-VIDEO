@@ -51,11 +51,23 @@ export default function AdvancedSettings() {
           onChange={ctx.setUseSfx} 
           tooltip="Bật hoặc tắt các tiếng vèo (whoosh), chuông (ding), nổ (pop) chèn giữa các cảnh"
         />
-        <ToggleRow 
-          label="Lấy hơi tự nhiên (Breathing)" 
-          checked={ctx.useBreathing} 
-          onChange={ctx.setUseBreathing} 
+        <ToggleRow
+          label="Lấy hơi tự nhiên (Breathing)"
+          checked={ctx.useBreathing}
+          onChange={ctx.setUseBreathing}
           tooltip="Tự động chèn tiếng lấy hơi (breathing) vào các khoảng nghỉ để nghe như người thật"
+        />
+        <ToggleRow
+          label={<span>Cú đấm mở màn (<b>Hook Zoom Boost</b>)</span>}
+          checked={ctx.hookZoomBoost}
+          onChange={ctx.setHookZoomBoost}
+          tooltip="Cảnh đầu zoom mạnh (1.0→1.35) + tự thêm tiếng Riser dâng trào để giữ chân người xem trong 3 giây đầu"
+        />
+        <ToggleRow
+          label={<span>🎬 Dùng <b>video nền thật</b> (Pexels stock)</span>}
+          checked={ctx.preferStockVideo}
+          onChange={ctx.setPreferStockVideo}
+          tooltip="Thay ảnh AI tĩnh bằng video stock chuyển động thật từ Pexels cho MỌI cảnh (không cần Veo/billing). Hợp nhất với chủ đề đời thực; cảnh nào không tìm được video sẽ tự dùng ảnh AI."
         />
       </div>
 

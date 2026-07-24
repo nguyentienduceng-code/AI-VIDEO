@@ -183,46 +183,54 @@ async def generate_image_with_fallback(
 async def fetch_pexels_video(query: str, output_path: str, aspect_ratio: str, api_key: str) -> str:
     """
     Tìm và tải video từ Pexels API. Trả về đường dẫn file .mp4.
+
+    QUAN TRỌNG: Pexels API trả 403 Forbidden nếu request THIẾU User-Agent.
+    (Đây là lý do trước đây video stock không bao giờ xuất hiện — pipeline luôn
+    rơi về ảnh AI tĩnh.) Bắt buộc gửi kèm User-Agent như trình duyệt thật.
     """
-    import json
+    import requests
     orientation = "portrait"
     if aspect_ratio == "16:9":
         orientation = "landscape"
     elif aspect_ratio == "1:1":
         orientation = "square"
-        
-    url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(query)}&per_page=1&orientation={orientation}"
-    
-    def _fetch():
-        import urllib.request
-        req = urllib.request.Request(url, headers={"Authorization": api_key})
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode())
-            if not data.get("videos"):
-                raise Exception(f"Pexels không có kết quả cho từ khóa: {query}")
-                
-            video = data["videos"][0]
-            files = video.get("video_files", [])
-            if not files:
-                raise Exception("Không tìm thấy link video trong kết quả Pexels.")
-                
-            # Lấy chất lượng phù hợp (HD)
-            selected = None
-            for vf in files:
-                if vf.get("quality") == "hd":
-                    selected = vf
-                    break
-            if not selected:
-                selected = files[0]
-                
-            download_url = selected["link"]
-            tmp_path = output_path + f".mp4"
-            import requests
-            r = requests.get(download_url, timeout=60)
-            r.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                f.write(r.content)
-            return tmp_path
 
-    logger.info(f"🔍 Tìm kiếm video trên Pexels với từ khóa: '{query}'")
+    clean_query = query.replace("\n", " ").strip()[:100]
+    url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(clean_query)}&per_page=5&orientation={orientation}"
+    headers = {
+        "Authorization": api_key,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+
+    # Kích thước mục tiêu theo tỉ lệ để chọn file gần nhất (tránh tải file 4K quá nặng)
+    target_h = 1920 if orientation == "portrait" else (1080 if orientation == "landscape" else 1080)
+
+    def _fetch():
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        videos = data.get("videos", [])
+        if not videos:
+            raise RuntimeError(f"Pexels không có video cho từ khóa: '{clean_query}'")
+
+        video = videos[0]
+        files = video.get("video_files", [])
+        if not files:
+            raise RuntimeError("Không tìm thấy link video trong kết quả Pexels.")
+
+        # Chọn file có chiều cao gần target nhất (API mới trả quality=None nên không lọc theo 'hd')
+        def _score(vf):
+            h = vf.get("height") or 0
+            return abs(h - target_h) if h else 10 ** 9
+        selected = sorted(files, key=_score)[0]
+
+        download_url = selected["link"]
+        tmp_path = output_path if output_path.endswith(".mp4") else output_path + ".mp4"
+        rv = requests.get(download_url, headers={"User-Agent": headers["User-Agent"]}, timeout=90)
+        rv.raise_for_status()
+        with open(tmp_path, "wb") as f:
+            f.write(rv.content)
+        return tmp_path
+
+    logger.info(f"🔍 Tìm kiếm video Pexels với từ khóa: '{clean_query}'")
     return await asyncio.to_thread(_fetch)

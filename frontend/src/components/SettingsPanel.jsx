@@ -45,6 +45,10 @@ export default function SettingsPanel() {
       if (data.recommended_bgm && ctx.bgm === 'auto') {
         ctx.setBgm(data.recommended_bgm);
       }
+      // Auto-điền tiêu đề Hook giật gân do AI sinh (trước đây bị vứt bỏ) nếu user chưa tự nhập
+      if (data.hook_text && !ctx.hookText?.trim()) {
+        ctx.setHookText(data.hook_text);
+      }
       ctx.setStep('editor');
     } catch (err) {
       ctx.setErrorMsg(err.message);

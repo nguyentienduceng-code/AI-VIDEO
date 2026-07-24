@@ -28,6 +28,60 @@ VIETNAMESE_VOICES = [
     {"id": "minion_pro", "name": "Minion Pro (Hỗn loạn, Cuốn hút)", "gender": "Ảo"},
 ]
 
+# ── Custom Voice Cloning Registry (Phase 3) ──────────────────────────
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+VOICES_PREVIEW_DIR = os.path.join(_ASSETS_DIR, "voices_preview")
+CUSTOM_VOICES_FILE = os.path.join(_ASSETS_DIR, "voices_custom.json")
+
+
+def _load_custom_voices() -> list:
+    import json
+    if not os.path.exists(CUSTOM_VOICES_FILE):
+        return []
+    try:
+        with open(CUSTOM_VOICES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_custom_voices(voices: list):
+    import json
+    with open(CUSTOM_VOICES_FILE, "w", encoding="utf-8") as f:
+        json.dump(voices, f, ensure_ascii=False, indent=2)
+
+
+def get_custom_voice(voice_id: str) -> dict | None:
+    for v in _load_custom_voices():
+        if v.get("id") == voice_id:
+            return v
+    return None
+
+
+def register_custom_voice(voice_id: str, name: str, ref_text: str) -> dict:
+    voices = _load_custom_voices()
+    entry = {"id": voice_id, "name": name, "ref_text": ref_text}
+    voices = [v for v in voices if v.get("id") != voice_id]
+    voices.append(entry)
+    _save_custom_voices(voices)
+    return entry
+
+
+def remove_custom_voice(voice_id: str) -> bool:
+    voices = _load_custom_voices()
+    remaining = [v for v in voices if v.get("id") != voice_id]
+    if len(remaining) == len(voices):
+        return False
+    _save_custom_voices(remaining)
+    for suffix in (f"{voice_id}_ref.wav", f"{voice_id}.mp3"):
+        p = os.path.join(VOICES_PREVIEW_DIR, suffix)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return True
+
 import random
 import re
 
@@ -229,7 +283,9 @@ async def _synth_one_sentence(text: str, voice: str, rate: str, pitch: str) -> t
     Sinh giọng nói cho 1 câu. Trả về (audio_bytes, word_boundaries).
     Raise exception nếu thất bại.
     """
-    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+    # edge-tts >= 7.x mặc định boundary="SentenceBoundary" — phải chỉ định WordBoundary
+    # tường minh, nếu không sẽ KHÔNG có word boundaries → phụ đề karaoke mất hiệu ứng nhảy chữ.
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, boundary="WordBoundary")
     audio_data = bytearray()
     word_boundaries = []
     async for chunk in communicate.stream():
@@ -401,7 +457,8 @@ async def _synthesize_plain(
     text: str, output_path: str, voice: str, rate: str, pitch: str
 ) -> tuple[float, list]:
     """Synthesize toàn bộ text bằng 1 lần gọi plain text (phương pháp cũ)."""
-    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+    # boundary="WordBoundary" bắt buộc từ edge-tts 7.x (mặc định là SentenceBoundary)
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, boundary="WordBoundary")
     word_boundaries = []
     audio_data = bytearray()
     async for chunk in communicate.stream():
@@ -547,14 +604,26 @@ def _get_omnivoice_sentence_instruct(sentence: str, index: int, total: int, base
     return base_instruct
 
 
+# Singleton model whisper cho Forced Alignment — load 1 lần, tránh tải lại ~150MB mỗi cảnh.
+_whisper_model = None
+
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        import stable_whisper
+        print("[ForcedAlign] Loading stable-whisper 'base' model (1 lần duy nhất)...")
+        _whisper_model = stable_whisper.load_model("base")
+    return _whisper_model
+
+
 def _forced_align_word_boundaries(wav_path: str, text: str) -> list:
     """
     Sử dụng Forced Alignment (stable-ts/whisper) để trích xuất word boundaries
     chính xác từ file WAV. Fallback về _estimate nếu thư viện chưa cài.
     """
     try:
-        import stable_whisper
-        model = stable_whisper.load_model("base")
+        model = _get_whisper_model()
         result = model.align(wav_path, text, language="vi")
         wbs = []
         for segment in result.segments:
@@ -608,18 +677,22 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
     }
     
     mapped_instruct = OMNIVOICE_MAPPING.get(instruct, instruct)
-    
-    # --- Emotion Mapping ---
-    if emotion == "excited":
-        mapped_instruct = mapped_instruct.replace("moderate pitch", "").replace("low pitch", "")
-        mapped_instruct += ", high pitch"
-    elif emotion in ["dramatic", "suspense"]:
-        mapped_instruct = mapped_instruct.replace("moderate pitch", "").replace("high pitch", "")
-        mapped_instruct += ", whisper, low pitch"
-    elif emotion == "calm":
-        mapped_instruct = mapped_instruct.replace("high pitch", "").replace("low pitch", "")
-        mapped_instruct += ", moderate pitch"
-    
+
+    # --- Emotion qua TEMPO thay vì đổi instruct token ---
+    # LÝ DO: pipeline dùng Voice Cloning (ref_audio) nên instruct KHÔNG ảnh hưởng audio
+    # sau khi ref đã tạo. Trước đây emotion còn "bake" vào file ref dùng chung → cảnh đầu
+    # quyết định timbre cả video. Giờ: ref = identity thuần (không emotion), cảm xúc thể
+    # hiện qua tempo delta (%) — phủ đủ 6/6 emotion Gemini sinh ra, giữ timbre ổn định.
+    EMOTION_TEMPO_DELTA = {
+        "hook": +4, "excited": +6, "calm": 0,
+        "dramatic": -5, "suspense": -6, "closing": -3,
+    }
+    emotion_tempo = EMOTION_TEMPO_DELTA.get(emotion, 0)
+
+    # Giọng clone cá nhân: lấy ref_text riêng từ registry
+    custom_voice = get_custom_voice(instruct) if instruct.startswith("omnivoice_custom_") else None
+
+
     # Whitelist các từ khóa hợp lệ được chấp nhận bởi mô hình OmniVoice
     VALID_OMNIVOICE_TOKENS = {
         "american accent", "australian accent", "british accent", "canadian accent", "child", "chinese accent",
@@ -649,13 +722,18 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         total_sentences = len(sentences)
             
         # Đường dẫn cache giọng mẫu (Reference Audio) để Cloning
-        preview_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "voices_preview")
+        preview_dir = VOICES_PREVIEW_DIR
         os.makedirs(preview_dir, exist_ok=True)
         ref_wav_path = os.path.join(preview_dir, f"{instruct}_ref.wav")
         ref_text = "Chào bạn, đây là giọng đọc tham khảo để đồng bộ video."
-        
-        # Nếu chưa có giọng mẫu, tạo 1 bản zero-shot và lưu lại
-        if not os.path.exists(ref_wav_path) or os.path.getsize(ref_wav_path) < 1000:
+
+        if custom_voice:
+            # Giọng clone cá nhân: file mẫu do user upload (bắt buộc tồn tại) + transcript riêng
+            ref_text = custom_voice.get("ref_text") or ref_text
+            if not os.path.exists(ref_wav_path) or os.path.getsize(ref_wav_path) < 1000:
+                raise RuntimeError(f"Thiếu file mẫu giọng clone: {ref_wav_path}. Hãy upload lại mẫu giọng.")
+        elif not os.path.exists(ref_wav_path) or os.path.getsize(ref_wav_path) < 1000:
+            # Nếu chưa có giọng mẫu, tạo 1 bản zero-shot (identity thuần, KHÔNG kèm emotion) và lưu lại
             print(f"[OmniVoice] Tạo giọng mẫu Zero-shot cho {instruct}...")
             ref_audio_arr = model.generate(text=ref_text, instruct=mapped_instruct)
             sf.write(ref_wav_path, ref_audio_arr[0], 24000)
@@ -667,9 +745,22 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
                 sentence, idx, total_sentences, mapped_instruct
             )
             
-            # Chunk nhỏ hơn cho câu dài (90 ký tự thay vì 180 nếu > 15 từ)
+            # Chunk nhỏ hơn cho câu dài (90 ký tự thay vì 180 nếu > 15 từ).
+            # Cắt theo RANH GIỚI TỪ — không đứt giữa từ (gây đọc sai/lắp bắp).
             max_chunk = 90 if len(sentence.split()) > 15 else 180
-            sub_chunks = [sentence[i:i+max_chunk] for i in range(0, len(sentence), max_chunk)]
+            if len(sentence) <= max_chunk:
+                sub_chunks = [sentence]
+            else:
+                sub_chunks = []
+                current = ""
+                for word in sentence.split():
+                    if current and len(current) + 1 + len(word) > max_chunk:
+                        sub_chunks.append(current)
+                        current = word
+                    else:
+                        current = f"{current} {word}".strip()
+                if current:
+                    sub_chunks.append(current)
             
             for sub in sub_chunks:
                 if not sub.strip():
@@ -690,10 +781,10 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         wav_path = output_path.replace(".mp3", ".wav") if output_path.endswith(".mp3") else output_path
         sf.write(wav_path, audio, 24000)
         
-        # --- Time-Stretching (Rate Modification) ---
+        # --- Time-Stretching (Rate + Emotion Tempo) ---
         rate_match = re.match(r'([+-]?\d+)%', rate)
-        if rate_match:
-            percent = int(rate_match.group(1))
+        if rate_match or emotion_tempo:
+            percent = (int(rate_match.group(1)) if rate_match else 0) + emotion_tempo
             if percent != 0:
                 atempo = max(0.5, min(2.0, 1.0 + (percent / 100.0)))
                 stretched_wav_path = wav_path.replace(".wav", "_stretched.wav")
@@ -753,7 +844,20 @@ async def synthesize_speech(
     """
     V3.1: Chuyển văn bản → giọng nói với Sentence-Level Prosody + Multilayer Fallback.
     Hỗ trợ chèn tiếng lấy hơi (Breathing) để tạo cảm giác tự nhiên.
+    Có TTS Cache: cùng (text, voice, rate, pitch, emotion, breathing) → tái dùng audio cũ,
+    render lại video không tốn thời gian sinh giọng.
     """
+    from services.cache_service import cache as _tts_cache
+
+    cache_params = dict(
+        text=text, voice=voice, rate=rate, pitch=pitch,
+        emotion=emotion or "", breathing=bool(use_breathing),
+    )
+    cached_meta = _tts_cache.get("tts_meta", **cache_params)
+    if cached_meta and _tts_cache.get_media("tts", output_path, **cache_params):
+        print(f"[TTS Cache] HIT — tái dùng giọng đọc đã sinh ({voice}).")
+        return cached_meta.get("duration", 3.0), cached_meta.get("word_boundaries", [])
+
     dur, wbs = await _synthesize_speech_internal(text, output_path, voice, rate, pitch, mode, emotion, warning_callback)
     
     if use_breathing and os.path.exists(output_path):
@@ -791,7 +895,15 @@ async def synthesize_speech(
                     
             except Exception as e:
                 print(f"[Breathing] Error applying breathing effect: {e}")
-                
+
+    # Lưu cache (file audio + metadata duration/word_boundaries) cho lần render sau
+    try:
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            _tts_cache.set_media("tts", output_path, **cache_params)
+            _tts_cache.set("tts_meta", {"duration": dur, "word_boundaries": wbs}, **cache_params)
+    except Exception as cache_err:
+        print(f"[TTS Cache] Save error (non-fatal): {cache_err}")
+
     return dur, wbs
 
 async def _synthesize_speech_internal(
@@ -862,4 +974,56 @@ async def _synthesize_speech_internal(
 
 
 def get_available_voices():
-    return VIETNAMESE_VOICES
+    """Danh sách giọng: built-in + giọng clone cá nhân của user."""
+    voices = list(VIETNAMESE_VOICES)
+    for cv in _load_custom_voices():
+        voices.append({
+            "id": cv["id"],
+            "name": f"🎤 {cv.get('name', cv['id'])} (Clone)",
+            "gender": "Clone",
+        })
+    return voices
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TTS Health & Warmup (Phase 1)
+# ══════════════════════════════════════════════════════════════════════
+
+def get_tts_health() -> dict:
+    """Trạng thái hạ tầng TTS — cho UI hiển thị GPU voice sẵn sàng hay chưa."""
+    import importlib.util
+    health = {
+        "omnivoice_repo": os.path.isdir(os.getenv("OMNIVOICE_PATH", r"C:\dev\OmniVoice")),
+        "omnivoice_model_loaded": _omnivoice_model is not None,
+        "stable_whisper_installed": importlib.util.find_spec("stable_whisper") is not None,
+        "whisper_align_loaded": _whisper_model is not None,
+        "custom_voices": len(_load_custom_voices()),
+        "cuda": False,
+        "gpu_name": None,
+    }
+    try:
+        import torch
+        health["cuda"] = torch.cuda.is_available()
+        if health["cuda"]:
+            health["gpu_name"] = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    return health
+
+
+async def warmup_omnivoice():
+    """
+    Load trước OmniVoice + whisper-align trong background lúc khởi động server,
+    để cảnh đầu tiên không phải chịu trễ load model (30-60s).
+    Gọi từ startup event của FastAPI; lỗi chỉ log, không làm chết server.
+    """
+    try:
+        await asyncio.to_thread(_get_omnivoice_model)
+        print("[Warmup] OmniVoice model sẵn sàng.")
+    except Exception as e:
+        print(f"[Warmup] OmniVoice không khả dụng ({type(e).__name__}: {e}). Sẽ dùng Edge-TTS.")
+    try:
+        await asyncio.to_thread(_get_whisper_model)
+        print("[Warmup] Whisper alignment model sẵn sàng.")
+    except Exception as e:
+        print(f"[Warmup] stable-whisper không khả dụng: {e}")

@@ -48,6 +48,7 @@ export const AppProvider = ({ children }) => {
   const [coverImagePosition, setCoverImagePosition] = useState('start');
   const [useBreathing, setUseBreathing] = useState(false);
   const [hookEffect, setHookEffect] = useState('word_by_word');
+  const [preferStockVideo, setPreferStockVideo] = useState(false);
   
   const [scenes, setScenes] = useState([]);
   const [scriptLoading, setScriptLoading] = useState(false);
@@ -109,6 +110,7 @@ export const AppProvider = ({ children }) => {
     if (preset.bgm_volume !== undefined) setBgmVolume(preset.bgm_volume);
     if (preset.subtitle_style) setSubtitleStyle(preset.subtitle_style);
     if (preset.color_grading) setColorGrading(preset.color_grading);
+    if (preset.prefer_stock_video !== undefined) setPreferStockVideo(preset.prefer_stock_video);
     if (preset.use_sfx !== undefined) setUseSfx(preset.use_sfx);
     if (preset.sfx_volume !== undefined) setSfxVolume(preset.sfx_volume);
   }, []);
@@ -138,7 +140,8 @@ export const AppProvider = ({ children }) => {
     coverImageLoading, setCoverImageLoading,
     coverImagePosition, setCoverImagePosition,
     useBreathing, setUseBreathing,
-    hookEffect, setHookEffect
+    hookEffect, setHookEffect,
+    preferStockVideo, setPreferStockVideo
   };
 
   return (

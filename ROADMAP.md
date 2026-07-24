@@ -66,19 +66,71 @@
 
 ## 2. CHỈ MỤC FILE (Quick Reference)
 
-| Khi cần sửa... | Mở file | Dòng quan trọng |
-|----------------|---------|-----------------|
-| Thêm mode mới | `main.py` | L155 `VALID_MODES` |
-| Sửa request schema | `main.py` | L115–155 |
-| Sửa pipeline render | `main.py` | L175–378 `_run_render_pipeline()` |
-| Sửa prompt AI / kịch bản | `gemini_service.py` | L81–114 (Schema), L188–226 (Prompt) |
-| Sửa cách sinh ảnh | `image_router.py` | L58–102 `generate_image_with_fallback()` |
-| Sửa phụ đề / subtitle style | `video_service.py` | L305–430 `generate_ass_file()` |
-| Sửa Ken Burns / timeline | `motion_effects.py` | L26–79 (Ken Burns), L131–153 (Timeline) |
-| Sửa BGM mixing / mastering | `audio_mix_service.py` | L20–90 |
-| Sửa beat sync | `beat_sync.py` | L72–94 |
-| Sửa Veo video gen | `veo_service.py` | L123–180 |
-| Thêm style/voice/mode FE | `constants.js` | Toàn file (56 dòng) |
+> Mốc là **TÊN HÀM/HẰNG** (bền hơn số dòng — số dòng dễ lệch sau mỗi lần sửa). Dùng Grep tên hàm để nhảy tới.
+
+| Khi cần sửa... | Mở file | Anchor (tên hàm/hằng) |
+|---|---|---|
+| Thêm mode mới | `main.py` | `VALID_MODES` |
+| Sửa request schema render | `main.py` | `class RenderVideoRequest` |
+| Sửa pipeline render (điều phối) | `main.py` | `_run_render_pipeline()` |
+| Sửa chọn nguồn hình mỗi cảnh (Veo/Pexels video/ảnh AI) | `main.py` | `_do_visuals()` bên trong `_run_render_pipeline` |
+| Sửa Hook Zoom Boost / auto riser | `main.py` | vòng lặp `apply_ken_burns` (biến `kb_zoom_end`, `scene_sfx`) |
+| Voice cloning (upload mẫu giọng) | `main.py` | `create_voice_clone()`, `delete_voice_clone()` |
+| Trạng thái/warmup TTS | `main.py` | `tts_health()`, `_startup_warmup()` |
+| Sửa prompt AI / kịch bản | `gemini_service.py` | `base_storyteller` (viral), `BASE_STORYTELLING` (kể chuyện) |
+| Thêm/sửa tone kể chuyện | `gemini_service.py` | `NARRATION_TONE_PROMPTS` |
+| Thêm/sửa thời lượng ↔ số cảnh | `gemini_service.py` | `DURATION_CONFIG` |
+| Sửa schema Scene (thêm field AI sinh) | `gemini_service.py` | `class Scene`, `class ScriptResponse` |
+| Sửa keyword tìm footage Pexels | `gemini_service.py` | `extract_search_keyword()` |
+| Sửa router sinh ảnh (4 tầng) | `image_router.py` | `generate_image_with_fallback()` |
+| Sửa tải video stock Pexels | `image_router.py` | `fetch_pexels_video()` (⚠️ BẮT BUỘC User-Agent) |
+| Thêm/sửa transition (slide/page_flip/droplet…) | `video_service.py` | `_apply_transition()`, `VALID_TRANSITIONS` |
+| Sửa phụ đề / subtitle style | `video_service.py` | `generate_ass_file()` (dùng `start_time`, KHÔNG cộng dồn) |
+| Sửa Ken Burns / timeline | `motion_effects.py` | `apply_ken_burns()`, `build_scene_timeline()` |
+| Sửa BGM mixing / mastering / color grade | `audio_mix_service.py` | `master_audio_and_export()`, `COLOR_GRADING_FILTERS` |
+| Sửa Prosody Engine / OmniVoice / emotion tempo | `tts_service.py` | `_synthesize_with_prosody()`, `_synthesize_omnivoice()`, `EMOTION_TEMPO_DELTA` |
+| Sửa TTS cache | `tts_service.py` | `synthesize_speech()` (đầu hàm: check cache; cuối: `set_media`) |
+| Registry giọng clone | `tts_service.py` | `register_custom_voice()`, `_load_custom_voices()` |
+| Sửa preset mặc định | `preset_service.py` | `DEFAULT_PRESETS` (có migration merge theo `id`) |
+| Sửa Veo video gen | `veo_service.py` | `generate_scene_video()` (⚠️ cần billing) |
+| Thêm style/voice/tone/duration/transition/sfx FE | `constants.js` | `STYLES`, `VOICES`, `NARRATION_TONES`, `DURATION_OPTIONS`, `TRANSITIONS`, `SFX_OPTIONS` |
+| Điều khiển per-scene (chuyển cảnh/SFX từng ảnh) | `ScriptEditor.jsx` | dropdown trong `.map(scene)` |
+| Toggle nâng cao (Veo/Ken Burns/Hook/stock video…) | `AdvancedSettings.jsx` | `<ToggleRow>` |
+| Auto-điền hook_text AI sinh | `SettingsPanel.jsx` | sau `setScenes(data.scenes)` |
+| Áp preset ↔ state | `AppContext.jsx` | `applyPreset()` |
+
+---
+
+## 2.5. QUY ƯỚC & CẠM BẪY (đọc trước khi sửa — tránh vấp lại lỗi cũ)
+
+**Biến môi trường (`backend/.env`):**
+| Biến | Ý nghĩa |
+|---|---|
+| `GEMINI_API_KEY`, `GEMINI_API_KEY_1..N` | Key Gemini (xoay vòng tự động khi 429) |
+| `PEXELS_API_KEY` | Bắt buộc để có ảnh/video stock thật |
+| `OMNIVOICE_PATH` | Thư mục cài OmniVoice (mặc định `C:\dev\OmniVoice`) |
+| `OMNIVOICE_WARMUP` | `0` để tắt warmup model lúc khởi động |
+| `ALLOWED_ORIGINS` | CORS (mặc định `*`; đặt origin cụ thể khi deploy) |
+
+**API endpoints mới thêm gần đây:** `GET /api/tts-health`, `POST /api/voice-clone`, `DELETE /api/voice-clone/{id}`, `GET /api/quota`, `GET/POST/DELETE /api/presets`.
+
+**Cạm bẫy đã từng dính (ĐỪNG lặp lại):**
+- **Pexels API trả 403 nếu THIẾU `User-Agent`** → footage stock không bao giờ xuất hiện. Mọi request Pexels phải kèm User-Agent trình duyệt.
+- **edge-tts ≥7.x mặc định `SentenceBoundary`** → mất word boundaries → phụ đề karaoke chết. Phải truyền `boundary="WordBoundary"`.
+- **Phụ đề phải dùng `asset["start_time"]`** (đã tính overlap crossfade), KHÔNG cộng dồn `cursor += duration` (lệch tiếng dần).
+- **KHÔNG trả script mock khi Gemini lỗi** — phải `raise` để UI báo lỗi thật.
+- **Cache key phải dùng `hashlib.md5`**, KHÔNG dùng `hash()` builtin (đổi mỗi lần chạy).
+- **Đường dẫn asset phải tuyệt đối** theo `__file__`, KHÔNG dùng path tương đối (phụ thuộc CWD/pm2).
+- **`subprocess.run` FFmpeg phải có `timeout=`** (tránh treo vô hạn).
+- **Transition "fancy" phải bọc `try/except` fallback crossfade** — không để hiệu ứng lạ làm hỏng render.
+- **Veo cần billing** — key free-tier trả 429 với mọi model Veo. `_do_visuals` tự tắt Veo + báo UI khi gặp 429/403.
+
+**Backtest offline (không cần chạy server):**
+```
+cd backend
+PYTHONPATH=<abs backend> PYTHONIOENCODING=utf-8 venv/Scripts/python.exe <script>.py
+```
+(`PYTHONIOENCODING=utf-8` bắt buộc — console cp1252 lỗi tiếng Việt). Syntax check: `python -m py_compile main.py services/*.py`.
 
 ---
 
@@ -109,7 +161,22 @@
 | 22 | AI Media Cache V2 (Binary ảnh/video theo hash prompt) | `services/cache_service.py`, `image_router.py`, `veo_service.py` | 2026-07-23 |
 | 23 | Emotion Profiles V2 (Kích hoạt pitch_delta ±3-5Hz) | `tts_service.py` L63–71 | 2026-07-23 |
 | 24 | OmniVoice Prosody Engine V3.3 (micro-prosody per sentence) | `tts_service.py` L451–560 | 2026-07-23 |
-| 25 | Forced Alignment Word Boundaries (stable-ts/whisper) | `tts_service.py` L500–530 | 2026-07-23 |
+| 25 | Forced Alignment Word Boundaries (stable-ts/whisper) — **đã cài stable-ts thật + singleton model** | `tts_service.py`, `requirements.txt` | 2026-07-24 |
+| 26 | Fix Pexels sai chủ đề (keyword extractor lọc thuật ngữ góc máy, lấy chủ thể sau "of") | `gemini_service.py` `extract_search_keyword` | 2026-07-24 |
+| 27 | Veo auto-disable + cảnh báo UI khi key chưa bật billing (hết fallback im lặng) | `main.py` `_run_render_pipeline` | 2026-07-24 |
+| 28 | OmniVoice Warmup lúc khởi động + `GET /api/tts-health` | `tts_service.py`, `main.py` | 2026-07-24 |
+| 29 | Emotion Tempo 6/6 (hook/excited/calm/dramatic/suspense/closing qua atempo, ref identity thuần) + chunk theo ranh giới từ | `tts_service.py` `_synthesize_omnivoice` | 2026-07-24 |
+| 20 | Advanced Voice Cloning: `POST /api/voice-clone` (upload mẫu 5-10s, auto-transcribe whisper) + UI upload + registry `voices_custom.json` | `tts_service.py`, `main.py`, `ConfigSection.jsx` | 2026-07-24 |
+| 30 | TTS Cache theo hash(text+voice+rate+pitch+emotion+breathing) — render lại không tốn thời gian sinh giọng | `tts_service.py` `synthesize_speech` | 2026-07-24 |
+| 31 | Fix mất Word Boundaries với edge-tts ≥7.x (`boundary="WordBoundary"`) — khôi phục phụ đề karaoke nhảy chữ | `tts_service.py` | 2026-07-24 |
+| 33 | Transition Engine đa dạng (10 kiểu: +fade_white, slide L/R/Up, whip_pan, page_flip ≈lật trang, droplet ≈giọt nước) — có fallback crossfade khi lỗi | `video_service.py` `_apply_transition` | 2026-07-24 |
+| 34 | Điều khiển per-scene: dropdown Chuyển cảnh + Tiếng động (SFX, có "Không tiếng") cho TỪNG cảnh trong ScriptEditor | `ScriptEditor.jsx`, `constants.js` | 2026-07-24 |
+| 35 | Wire `hook_zoom_boost` (trước là cờ chết): cảnh 0 zoom mạnh 1.0→1.35 + auto SFX riser mở màn — thành toggle thật | `main.py`, `AdvancedSettings.jsx` | 2026-07-24 |
+| 36 | Auto-điền hook_text AI sinh vào ô Hook (trước bị frontend vứt bỏ) | `SettingsPanel.jsx` | 2026-07-24 |
+| 37 | **FIX video ra toàn ảnh 100%**: Pexels VIDEO trả 403 do THIẾU User-Agent → luôn rơi về ảnh AI. Thêm User-Agent + chọn resolution hợp lý | `image_router.py` `fetch_pexels_video` | 2026-07-24 |
+| 38 | Toggle "Dùng video nền thật (Pexels stock)" — ép video thật cho MỌI cảnh không cần Veo/billing, fallback ảnh AI nếu không có | `main.py`, `AdvancedSettings.jsx`, `AppContext.jsx` | 2026-07-24 |
+| 39 | **Tầng A — Bắt kịp style viral kể chuyện sách/phim (@sachhay_chondoc)**: tone `storytelling` + base prompt long-form (cliffhanger, footage thật) + duration 240s/300s | `gemini_service.py`, `constants.js` | 2026-07-24 |
+| 40 | Preset "📖 Kể Chuyện Sách/Phim" (16:9 + cinematic_box + warm + OmniVoice trầm + rate -5% + prefer_stock_video) + migration merge preset default mới | `preset_service.py`, `main.py`, `AppContext.jsx`, `PresetManager.jsx` | 2026-07-24 |
 
 ---
 
@@ -119,7 +186,7 @@
 |---|----------|-------------|-------------|------------|
 | 9 | Auto-publish TikTok/YouTube | `services/publish_service.py` (file mới) | Tích hợp API đăng video tự động lên kênh TikTok/YouTube Shorts | 🟢 Chờ làm |
 | 12 | Batch render (hàng loạt video) | `main.py` (endpoint mới) | Nhập danh sách chủ đề CSV $\rightarrow$ render hàng loạt 50 video tự động | 🟢 Chờ làm |
-| 20 | Advanced Voice Cloning (Mẫu giọng OmniVoice tùy chỉnh) | `services/tts_service.py` | Upload file mẫu âm thanh 5s $\rightarrow$ clone giọng đọc cá nhân | 🟢 Chờ làm |
+| 32 | **Phase 2 Veo (TẠM HOÃN — cần bật billing Google)** | `main.py`, `veo_service.py` | Key free-tier KHÔNG có quota Veo (đã xác minh 429 cả 2 key, cả model lite). Khi bật billing: nối `generate_scene_chain` (frame chaining thật), cờ `use_veo_ambient_audio`, giới hạn Veo cho cảnh Hook+Climax để giảm ~60% chi phí | ⏸️ Hoãn |
 
 ---
 
