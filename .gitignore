@@ -20,6 +20,8 @@ backend/assets/voices_preview/
 # Root test files & temporary assets
 *.mp3
 *.wav
+# NGOẠI LỆ: kho SFX của app phải được track (asset thủ công, mất là không sinh lại được)
+!backend/assets/sfx/*.wav
 *.png
 *.jpg
 *.jpeg
