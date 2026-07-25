@@ -594,11 +594,11 @@ def render_final_video(
         overlays.append(hook_clip_overlay)
 
     # 1. Vignette (Làm tối 4 góc)
-    x = np.linspace(-1, 1, video_width)
-    y = np.linspace(-1, 1, video_height)
-    X, Y = np.meshgrid(x, y)
-    radius = np.sqrt(X**2 + Y**2)
-    opacity = np.clip(radius - 0.6, 0, 1) * 0.7
+    # Tối ưu Memory: dùng broadcasting + float32 để không bị MemoryError (15.8 MiB float64)
+    x = np.linspace(-1, 1, video_width, dtype=np.float32)[np.newaxis, :]
+    y = np.linspace(-1, 1, video_height, dtype=np.float32)[:, np.newaxis]
+    radius = np.sqrt(x**2 + y**2)
+    opacity = np.clip(radius - 0.6, 0.0, 1.0) * 0.7
     vig_img = np.zeros((video_height, video_width, 4), dtype=np.uint8)
     vig_img[:, :, 3] = (opacity * 255).astype(np.uint8)
     vig_clip = ImageClip(vig_img, is_mask=False).with_duration(final.duration)
