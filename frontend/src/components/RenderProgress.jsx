@@ -1,9 +1,26 @@
-import React from 'react';
-import { AlertTriangle, RotateCcw, Check, Download, PenLine } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { AlertTriangle, RotateCcw, Check, Download, PenLine, Clock } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 
 export default function RenderProgress() {
   const ctx = useAppContext();
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    let interval;
+    if (ctx.step === 'rendering' && !ctx.errorMsg) {
+      interval = setInterval(() => {
+        setElapsed(prev => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [ctx.step, ctx.errorMsg]);
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
 
   if (ctx.step === 'done') {
     return (
@@ -27,6 +44,10 @@ export default function RenderProgress() {
             <PenLine size={14} /> Chỉnh sửa & Render lại
           </button>
         </div>
+        <div style={{ textAlign: 'center', marginTop: 16, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+          <Clock size={14} style={{verticalAlign: 'text-bottom', marginRight: 4}} />
+          Thời gian hoàn thành: <strong>{formatTime(elapsed)}</strong>
+        </div>
       </div>
     );
   }
@@ -41,7 +62,13 @@ export default function RenderProgress() {
         <div className="progress-bar-container">
           <div className="progress-bar-fill" style={{ width: `${ctx.progress}%` }} />
         </div>
-        <div className="progress-percent">{ctx.progress}%</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <div className="progress-percent" style={{ marginTop: 0 }}>{ctx.progress}%</div>
+          <div style={{ fontSize: '1.1rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+            <Clock size={16} style={{verticalAlign: 'text-bottom', marginRight: 6}} />
+            {formatTime(elapsed)}
+          </div>
+        </div>
 
         <div className="progress-log">
           {ctx.progressLog.map((msg, i) => (
