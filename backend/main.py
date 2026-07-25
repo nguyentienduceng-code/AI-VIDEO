@@ -166,7 +166,17 @@ class RenderVideoRequest(BaseModel):
     use_breathing: bool = False
     hook_effect: str = "word_by_word"
     hook_quote: Optional[str] = None
+    hook_reel_sfx: str = "tick_wood"  # tiếng trục quay Máy Xèng — xem video_service.HOOK_REEL_SOUNDS
     prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
+    # Nguồn hình cho từng cảnh — thay cho heuristic dò chuỗi "photorealistic" trong prompt:
+    #   auto        = theo lựa chọn user (prefer_stock_video / art_style thực sự là footage thật)
+    #   ai_image    = KHÔNG bao giờ dùng stock, luôn sinh ảnh AI
+    #   stock_video = luôn thử video stock trước, fallback ảnh AI nếu không có
+    #   mixed       = xen kẽ theo cảm xúc cảnh (xem _pick_visual_source)
+    visual_source: str = "auto"
+    # Đọc liền mạch: gọi Edge-TTS 1 lần cho TOÀN kịch bản thay vì từng cảnh.
+    # Đánh đổi: bỏ qua emotion + speech_rate_modifier riêng của từng cảnh.
+    use_single_pass_narration: bool = False
 
 class PresetRequest(BaseModel):
     name: str
@@ -182,7 +192,10 @@ class PresetRequest(BaseModel):
     subtitle_style: str = "karaoke_bold"
     color_grading: str = "warm_cinematic"
     prefer_stock_video: bool = False
+    visual_source: str = "auto"
+    use_single_pass_narration: bool = False
     hook_effect: str = "word_by_word"
+    hook_reel_sfx: str = "tick_wood"
     use_sfx: bool = True
     sfx_volume: float = 8
     use_ken_burns: bool = True
@@ -198,6 +211,84 @@ VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
 # ---------------------------------------------------------------------------
 # Pipeline helpers
 # ---------------------------------------------------------------------------
+VALID_VISUAL_SOURCES = {"auto", "ai_image", "stock_video", "mixed"}
+
+# Cảm xúc hợp với b-roll quay thật (cảnh trầm, trừu tượng, mang tính không khí).
+# Các cảm xúc còn lại (hook, excited) cần dàn dựng cụ thể → ưu tiên ảnh AI.
+_STOCK_FRIENDLY_EMOTIONS = {"calm", "closing", "dramatic", "suspense"}
+
+
+def _pick_visual_source(req, scene: dict, scene_index: int) -> str:
+    """
+    Quyết định nguồn hình cho 1 cảnh: "stock_video" hay "ai_image".
+
+    LÝ DO TỒN TẠI: trước đây pipeline dò chuỗi "photorealistic"/"realistic" trong
+    `image_prompt` để bật Pexels. Nhưng base prompt của gemini_service BẮT BUỘC Gemini
+    chèn "8k, photorealistic, Unreal Engine 5" vào MỌI image_prompt → điều kiện luôn
+    đúng → gần như mọi video đều bị đẩy sang video tải về, kể cả khi user không chọn.
+    Giờ chỉ dựa trên lựa chọn tường minh của user (visual_source / prefer_stock_video)
+    và art_style — thứ do user chọn chứ không do Gemini sinh ra.
+    """
+    source = getattr(req, "visual_source", "auto")
+    if source not in VALID_VISUAL_SOURCES:
+        source = "auto"
+
+    if source == "ai_image":
+        return "ai_image"
+    if source == "stock_video":
+        return "stock_video"
+
+    if source == "mixed":
+        # Cảnh mở màn luôn dùng ảnh AI: hook cần kiểm soát bố cục 100%, không phó thác
+        # cho kết quả tìm kiếm stock.
+        if scene_index == 0:
+            return "ai_image"
+        emotion = (scene.get("emotion") or "").strip().lower()
+        return "stock_video" if emotion in _STOCK_FRIENDLY_EMOTIONS else "ai_image"
+
+    # auto: chỉ khi user chủ động bật, hoặc art_style do user chọn đúng là dòng
+    # footage/tư liệu thật. KHÔNG dò image_prompt nữa (xem docstring).
+    if req.prefer_stock_video:
+        return "stock_video"
+    art_style = (req.art_style or "").lower()
+    if any(kw in art_style for kw in ("realistic", "photography", "documentary", "footage", "photoreal")):
+        return "stock_video"
+    return "ai_image"
+
+
+def _estimate_scene_duration(text: str) -> float:
+    """
+    Ước lượng thời lượng cảnh từ số từ, dùng LÚC CHỌN clip stock.
+
+    Cần thiết vì `_do_tts` và `_do_visuals` chạy song song (asyncio.gather) nên thời
+    lượng thật từ word_boundaries CHƯA có khi ta phải quyết định tải clip nào. Con số
+    này chỉ dùng để chấm điểm "clip có đủ dài không", còn việc cắt/ping-pong về đúng
+    thời lượng thật thì làm sau, ở bước normalize_stock_clip.
+    Giọng Việt Edge-TTS đọc ~2.6 từ/giây.
+    """
+    words = len((text or "").split())
+    return max(3.0, words * 0.38 + 0.7)
+
+
+def _compose_speech_rate(user_rate: str, scene_modifier: str) -> str:
+    """
+    CỘNG DỒN tốc độ đọc của user với `speech_rate_modifier` Gemini gán cho từng cảnh.
+
+    LÝ DO: trước đây là phép GHI ĐÈ — hễ Gemini gán khác "0%" là tốc độ user chỉnh trên
+    UI bị vứt bỏ hoàn toàn. Vì base prompt yêu cầu Gemini gán '+15%' cho hook, '-5%' cho
+    giải thích..., gần như mọi cảnh đều ghi đè → thanh chỉnh tốc độ của user vô tác dụng.
+    Cộng dồn giữ được cả ý đồ đạo diễn của Gemini lẫn quyền chỉnh tay của user.
+    """
+    def _parse(v: str) -> int:
+        m = re.match(r'\s*([+-]?\d+)\s*%', v or "")
+        return int(m.group(1)) if m else 0
+
+    total = _parse(user_rate) + _parse(scene_modifier)
+    # Chặn biên: quá ±50% thì giọng Edge-TTS méo và nghe không còn tự nhiên.
+    total = max(-50, min(50, total))
+    return f"{total:+d}%"
+
+
 async def _update_job(job_id: str, **kwargs):
     """Helper: cập nhật job state + broadcast qua WebSocket."""
     job = JOBS.get(job_id)
@@ -260,6 +351,40 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # đồng thời báo rõ lý do lên UI thay vì fallback im lặng.
         veo_state = {"disabled": False}
 
+        # Id các clip Pexels đã dùng trong job này — chặn 2 cảnh nhận về cùng 1 đoạn phim.
+        stock_used_ids: set = set()
+
+        # ── Single-Pass Narration: đọc TOÀN kịch bản trong 1 lần gọi ──
+        # Phải chạy TRƯỚC vòng lặp vì mốc thời gian của mọi cảnh đều suy ra từ dải giọng này.
+        master_audio_path = None
+        narration_scene_wbs = None
+        narration_total_dur = 0.0
+        if req.use_single_pass_narration and mode != "photo_slideshow":
+            await _update_job(job_id, message="Đang đọc liền mạch toàn bộ kịch bản (1 lần gọi)...")
+            master_audio_path = os.path.join(job_dir_audio, "narration_master.mp3")
+            try:
+                scene_texts = [
+                    tts_service._strip_emoji(s.get("text", "") or "").strip() for s in scenes
+                ]
+                narration_total_dur, narration_scene_wbs, _ = await tts_service.synthesize_script_single_pass(
+                    scene_texts, master_audio_path,
+                    voice=voice, rate=speech_rate, pitch=req.speech_pitch,
+                )
+                await _update_job(
+                    job_id,
+                    message=f"Đọc liền mạch xong ({narration_total_dur:.1f}s) — timeline sẽ bám theo giọng.",
+                )
+            except Exception as narr_err:
+                # Giọng không hỗ trợ (OmniVoice/Minion) hoặc ánh xạ từ→cảnh hỏng →
+                # quay về đọc từng cảnh, KHÔNG làm chết job.
+                print(f"[Narration] Đọc liền mạch thất bại ({narr_err}). Quay về đọc từng cảnh.")
+                await _update_job(
+                    job_id,
+                    message=f"⚠️ Không dùng được chế độ đọc liền mạch ({narr_err}). Đã chuyển về đọc từng cảnh.",
+                )
+                master_audio_path = None
+                narration_scene_wbs = None
+
         for i, scene in enumerate(scenes):
             image_path = os.path.join(job_dir_images, f"scene_{i+1}.png")
             text = scene.get("text", "")
@@ -277,6 +402,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             img_prompt = scene.get("image_prompt", "")
 
             async def _do_tts():
+                # Chế độ đọc liền mạch: giọng đã sinh xong trước vòng lặp. Không có file audio
+                # riêng cho cảnh (audio_path=None) — cả bài dùng chung master_audio_path.
+                if narration_scene_wbs is not None:
+                    return 0.0, narration_scene_wbs[i], None
                 if mode != "photo_slideshow" and text.strip():
                     a_path = os.path.join(job_dir_audio, f"scene_{i+1}.mp3")
                     wav_alt = a_path.replace(".mp3", ".wav")
@@ -301,7 +430,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         await _update_job(job_id, message=msg)
                     
                     dynamic_rate = scene.get("speech_rate_modifier", "0%")
-                    final_rate = dynamic_rate if dynamic_rate and dynamic_rate != "0%" else speech_rate
+                    final_rate = _compose_speech_rate(speech_rate, dynamic_rate)
                     
                     try:
                         dur, wbs = await tts_service.synthesize_speech(
@@ -378,7 +507,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             try:
                                 from services.gemini_service import extract_search_keyword
                                 query = await extract_search_keyword(img_prompt, api_key)
-                                return await image_router.fetch_pexels_video(query, final_img_path, imagen_aspect, pexels_key)
+                                return await image_router.fetch_pexels_video(
+                                    query, final_img_path, imagen_aspect, pexels_key,
+                                    needed_duration=_estimate_scene_duration(text),
+                                    used_ids=stock_used_ids,
+                                )
                             except Exception as pex_v_err:
                                 print(f"Pexels Video fallback failed: {pex_v_err}")
                         return await image_router.generate_image_with_fallback(
@@ -389,20 +522,18 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             art_style=req.art_style
                         )
                 else:
-                    is_realistic = False
-                    if req.art_style:
-                        is_realistic = any(kw in req.art_style.lower() for kw in ["realistic", "photorealistic", "photography", "photo"])
-                    if not is_realistic:
-                        is_realistic = any(kw in img_prompt.lower() for kw in ["realistic", "photography", "photoreal", "real-life", "photo of", "dslr"])
-
                     pexels_key = os.getenv("PEXELS_API_KEY")
-                    # prefer_stock_video: user chủ động chọn video thật cho MỌI cảnh (không chỉ realistic)
-                    if (req.prefer_stock_video or is_realistic) and pexels_key:
+                    want_stock = _pick_visual_source(req, scene, i) == "stock_video"
+                    if want_stock and pexels_key:
                         await _update_job(job_id, message=f"Đang tìm video Pexels cho cảnh {i+1}/{total}...")
                         try:
                             from services.gemini_service import extract_search_keyword
                             query = await extract_search_keyword(img_prompt, api_key)
-                            pexels_vid = await image_router.fetch_pexels_video(query, final_img_path, imagen_aspect, pexels_key)
+                            pexels_vid = await image_router.fetch_pexels_video(
+                                query, final_img_path, imagen_aspect, pexels_key,
+                                needed_duration=_estimate_scene_duration(text),
+                                used_ids=stock_used_ids,
+                            )
                             return pexels_vid
                         except Exception as pexels_err:
                             print(f"Pexels video cho cảnh {i+1} thất bại ({pexels_err}). Rơi về ảnh AI.")
@@ -444,10 +575,16 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
 
         # ── Tính toán Timeline chính xác theo word_boundaries ──
         await _update_job(job_id, message="Tính toán Timeline & Sync...")
-        from services.motion_effects import build_scene_timeline, pick_pan_direction
+        from services.motion_effects import build_scene_timeline, build_timeline_from_narration
         from services.video_service import CROSSFADE_DURATION, SLIDESHOW_CROSSFADE
         cf_dur = SLIDESHOW_CROSSFADE if mode == "photo_slideshow" else CROSSFADE_DURATION
-        scenes = build_scene_timeline(scenes, overlap_dur=cf_dur)
+        if narration_scene_wbs is not None:
+            # Hình bám theo giọng: mốc cắt cảnh lấy từ thời điểm giọng bước sang câu kế tiếp.
+            scenes = build_timeline_from_narration(
+                scenes, narration_scene_wbs, narration_total_dur, overlap_dur=cf_dur
+            )
+        else:
+            scenes = build_scene_timeline(scenes, overlap_dur=cf_dur)
 
         # ── Beat Sync: snap điểm cắt cảnh theo nhịp nhạc (nếu user bật) ──
         if req.use_beat_sync and bgm_path and os.path.isfile(bgm_path):
@@ -458,29 +595,59 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             except Exception as bs_err:
                 print(f"Beat Sync warning (non-fatal): {bs_err}")
 
+        # ── Hook Máy Xèng: đẩy TOÀN BỘ mốc thời gian lùi lại để giọng đọc không bị
+        # tiếng trục quay đè lên. Chỉ dời tiếng + phụ đề; lớp phủ hook vẫn ở 0-3.5s.
+        # Đặt SAU beat sync vì beat sync tự tính lại start_time từ duration.
+        if req.hook_effect == "carousel_quote":
+            from services.video_service import HOOK_NARRATION_LEAD
+            for s in scenes:
+                s["start_time"] = s.get("start_time", 0.0) + HOOK_NARRATION_LEAD
+            await _update_job(
+                job_id,
+                message=f"Dời giọng đọc {HOOK_NARRATION_LEAD}s để tránh đè tiếng Máy Xèng...",
+            )
+
         scene_assets = []
-        from services.motion_effects import apply_ken_burns
+        from services.motion_effects import apply_ken_burns, resolve_motion, normalize_stock_clip
+        from services.video_service import ASPECT_RATIO_SIZES
+        frame_size = ASPECT_RATIO_SIZES.get(aspect_ratio, (1080, 1920))
         for i, s in enumerate(scenes):
-            # Xen kẽ hướng pan giữa các cảnh để tránh lặp nhàm chán
-            default_effect = s.get("visual_effect", "") or pick_pan_direction(i)
-            
+            scene_effect = s.get("visual_effect", "")
+
             img_path = s["image_path"]
             duration = s.get("computed_duration", 3.0)
             start_time = s.get("start_time", 0.0)
-            
-            # Apply Ken Burns via FFmpeg if it's an image
-            if not img_path.lower().endswith((".mp4", ".mov")):
+
+            # Apply Ken Burns via FFmpeg if it's an image (và user chưa tắt cờ use_ken_burns)
+            is_video_asset = img_path.lower().endswith((".mp4", ".mov"))
+            if not is_video_asset and req.use_ken_burns:
                 await _update_job(job_id, message=f"Đang xử lý chuyển động (Ken Burns) cho cảnh {i+1}...")
                 out_mp4 = img_path + f"_{i}.mp4"
                 # Hook Zoom Boost: cảnh đầu zoom mạnh hơn (1.0→1.35) tạo "cú đấm" thị giác
                 # giữ chân người xem trong 2-3 giây đầu. Đây là cờ bật/tắt thật sự.
-                kb_zoom_end = 1.35 if (i == 0 and req.hook_zoom_boost) else 1.15
+                hook_boost = bool(i == 0 and req.hook_zoom_boost)
+                pan_dir, kb_zoom_start, kb_zoom_end = resolve_motion(scene_effect, i, hook_boost=hook_boost)
                 await asyncio.to_thread(
                     apply_ken_burns,
                     image_path=img_path, output_path=out_mp4, duration=duration, fps=30,
-                    pan_direction=default_effect, zoom_end=kb_zoom_end
+                    pan_direction=pan_dir, zoom_start=kb_zoom_start, zoom_end=kb_zoom_end
                 )
                 img_path = out_mp4
+            elif is_video_asset:
+                # Clip stock/Veo: cắt đúng thời lượng cảnh (ưu tiên đoạn giữa), ping-pong nếu
+                # ngắn, ép về đúng khung + đồng chất màu. Lỗi thì giữ nguyên file gốc —
+                # video_service vẫn tự xử lý được, chỉ là không đẹp bằng.
+                await _update_job(job_id, message=f"Đang chuẩn hoá clip nền cảnh {i+1}...")
+                norm_mp4 = f"{os.path.splitext(img_path)[0]}_norm{i}.mp4"
+                try:
+                    await asyncio.to_thread(
+                        normalize_stock_clip,
+                        video_path=img_path, output_path=norm_mp4, duration=duration,
+                        resolution=frame_size, fps=30,
+                    )
+                    img_path = norm_mp4
+                except Exception as norm_err:
+                    print(f"[StockNorm] Cảnh {i+1} chuẩn hoá thất bại ({norm_err}). Dùng clip gốc.")
 
             # Hook SFX: tự thêm 'riser' mở màn cho cảnh đầu nếu bật Hook Zoom Boost + SFX
             # và cảnh chưa có sẵn hiệu ứng âm thanh nào.
@@ -494,7 +661,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 "text": s.get("text", ""),
                 "duration": duration,
                 "sfx": scene_sfx,
-                "visual_effect": default_effect,
+                "visual_effect": scene_effect,
                 "word_boundaries": s.get("word_boundaries", []),
                 "transition": s.get("transition", "crossfade"),
                 "start_time": start_time,
@@ -523,6 +690,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
             hook_effect=req.hook_effect,   # để render_final_video dựng hook carousel_quote
             hook_quote=req.hook_quote,
+            hook_reel_sfx=req.hook_reel_sfx,
+            master_audio_path=master_audio_path,  # chế độ đọc liền mạch (None nếu tắt)
         )
         master_kwargs = dict(
             bgm_path=bgm_path,
@@ -554,6 +723,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 hook_text=req.hook_text, use_sfx=req.use_sfx,
                 sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
                 hook_effect=req.hook_effect, hook_quote=req.hook_quote,
+                hook_reel_sfx=req.hook_reel_sfx,
+                master_audio_path=master_audio_path,
             )
             if mode != "photo_slideshow":
                 await asyncio.to_thread(

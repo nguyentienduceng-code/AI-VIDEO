@@ -36,14 +36,38 @@ ASPECT_RATIO_SIZES = {
 FPS = 30
 CROSSFADE_DURATION = 0.4       # giây — crossfade mượt giữa 2 cảnh (tăng từ 0.2 lên 0.4 cho tự nhiên hơn)
 SLIDESHOW_CROSSFADE = 0.8      # giây — crossfade dài hơn cho slideshow
-AUDIO_FADEOUT_DURATION = 0.3   # giây — audio fade-out cuối mỗi cảnh để tránh ngắt đột ngột
+AUDIO_FADEOUT_DURATION = 0.12  # giây — fade-out cuối mỗi cảnh, chỉ đủ chống "pop".
+                               # Trước là 0.3s: dài hơn cả đuôi im lặng Edge-TTS sinh ra
+                               # (~0.1-0.2s) nên ăn vào âm cuối của TỪ CUỐI mỗi cảnh.
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
 HOOK_CAROUSEL_DURATION = 3.5   # giây — độ dài clip hook carousel_quote chèn đầu video
+# Giọng đọc vào SAU khi trục quay chốt xong. Trục quay chạy 0→1.0s, tiếng "chốt" (ding)
+# nổ ở 1.0s; 1.35s là lúc phần đanh nhất của tiếng chốt đã tắt.
+# LÝ DO: trước đây giọng đọc bắt đầu ngay 0.0s nên câu dẫn đầu video bị tiếng máy xèng
+# đè lên toàn bộ — nghe lùng bùng đúng đoạn quan trọng nhất để giữ chân người xem.
+# Phần hình KHÔNG bị đẩy lùi: hook vẫn là lớp phủ 3.5s, chỉ mốc vào tiếng dời đi.
+HOOK_NARRATION_LEAD = 1.35
+
+# ── Thư viện tiếng trục quay cho Hook Máy Xèng ──────────────────────
+# Thêm tiếng mới: chạy `python tools/fit_hook_sfx.py <file tải về> --name <id>`,
+# công cụ đó tự cắt/chuẩn hoá rồi ghi vào assets/sfx/reel_<id>.wav; sau đó khai báo
+# thêm 1 dòng ở đây và 1 dòng trong frontend/src/constants.js (HOOK_REEL_SOUNDS).
+HOOK_REEL_SOUNDS = {
+    "tick_wood":     "reel_spin.wav",             # mặc định — tiếng gõ khớp từng bìa lướt qua
+    "arcade_8bit":   "reel_spin_v1_arcade.wav",   # bản 8-bit cũ
+    "money_counter": "reel_money_counter.wav",    # tiếng máy đếm tiền (user tự nạp)
+}
+DEFAULT_HOOK_REEL = "tick_wood"
 SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)
 
-# QUAN TRỌNG: font hỗ trợ dấu tiếng Việt (Unicode Latin Extended).
-# Windows: segoeuib.ttf. Linux: DejaVuSans.ttf
-SUBTITLE_FONT_PATH = "C:/Windows/Fonts/ariblk.ttf"
+# QUAN TRỌNG: font PHẢI có glyph tiếng Việt đầy đủ, đặc biệt ư/Ư (U+01B0/01AF)
+# và ơ/Ơ (U+01A1/01A0).
+# CẢNH BÁO: "Arial Black" (ariblk.ttf) KHÔNG có các glyph này — đã kiểm chứng bằng
+# fontTools trên chính máy này. Khi thiếu glyph, libass thay thế từng ký tự bằng font
+# khác nên chữ "trước" hiện thành "trƯớc": sai giữa từ, thấy rõ ở mọi phụ đề.
+# Segoe UI Black (seguibl.ttf) cùng độ dày mà phủ đủ tiếng Việt.
+SUBTITLE_FONT_NAME = "Segoe UI Black"
+SUBTITLE_FONT_PATH = "C:/Windows/Fonts/seguibl.ttf"
 
 # ── Thư mục BGM ─────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -180,6 +204,41 @@ def _apply_transition(scene, transition, add_crossfade_in, crossfade_dur, video_
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Chuẩn hoá khung hình — thay viền đen bằng nền mờ lấp đầy
+# ─────────────────────────────────────────────────────────────────────
+# Lệch tỉ lệ dưới ngưỡng này thì CROP cho lấp đầy khung (mất rìa không đáng kể,
+# đẹp hơn mọi loại nền). Vượt ngưỡng mới cần nền mờ.
+CROP_FILL_TOLERANCE = 0.18
+
+
+def _blurred_fill_bg_from_frame(frame, w: int, h: int, duration: float, darken: float = 0.45):
+    """
+    Nền LẤP ĐẦY khung từ chính khung hình đầu tiên của media: phóng to + làm mờ + tối đi.
+
+    LÝ DO: trước đây media lệch tỉ lệ được fit vào giữa trên nền ColorClip ĐEN. Video stock
+    Pexels rất hay trả clip 1080x1350 / 16:9 nên khung 9:16 lòi 2 dải đen dày — thứ giết
+    cảm giác "video xịn" nhanh nhất. Nền mờ lấp đầy là cách các editor thật vẫn dùng.
+    Nhận sẵn mảng frame thay vì đường dẫn để không phải decode lại file lần hai.
+    """
+    try:
+        from PIL import Image, ImageFilter
+        import numpy as np
+
+        img = Image.fromarray(frame).convert("RGB")
+        scale = max(w / img.width, h / img.height)
+        nw, nh = int(img.width * scale) + 2, int(img.height * scale) + 2
+        img = img.resize((nw, nh)).filter(ImageFilter.GaussianBlur(35))
+        left, top = (nw - w) // 2, (nh - h) // 2
+        img = img.crop((left, top, left + w, top + h))
+        arr = (np.array(img).astype(np.float32) * darken).astype(np.uint8)
+        return ImageClip(arr).with_duration(duration)
+    except Exception as e:
+        print(f"[BlurredFill] Lỗi tạo nền mờ ({e}). Dùng nền tối trơn.")
+        from moviepy import ColorClip
+        return ColorClip((w, h), color=(12, 12, 18)).with_duration(duration)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Build 1 scene clip
 # ─────────────────────────────────────────────────────────────────────
 def _build_scene_clip(
@@ -216,17 +275,28 @@ def _build_scene_clip(
         )
         media_ratio = media_clip.w / media_clip.h
 
-    # KHẮC PHỤC LỖI CẮT ẢNH SẢN PHẨM: Dùng kỹ thuật Fit (chèn viền đen) thay vì Crop Fill
+    # Chuẩn hoá về đúng khung: lệch ít → crop lấp đầy; lệch nhiều → nền mờ lấp đầy
+    # (KHÔNG dùng viền đen nữa, xem _blurred_fill_bg_from_frame).
     target_ratio = video_width / video_height
-    if abs(target_ratio - media_ratio) > 0.05:
-        from moviepy import ColorClip
-        bg = ColorClip((video_width, video_height), color=(0, 0, 0)).with_duration(duration)
+    if abs(target_ratio - media_ratio) <= CROP_FILL_TOLERANCE:
+        scale_fill = max(video_width / media_clip.w, video_height / media_clip.h)
+        media_clip = media_clip.resized(scale_fill).with_position("center")
+    else:
+        try:
+            first_frame = media_clip.get_frame(0)
+        except Exception as e:
+            print(f"[BlurredFill] Không đọc được frame đầu ({e}).")
+            first_frame = None
+
+        if first_frame is not None:
+            bg = _blurred_fill_bg_from_frame(first_frame, video_width, video_height, duration)
+        else:
+            from moviepy import ColorClip
+            bg = ColorClip((video_width, video_height), color=(12, 12, 18)).with_duration(duration)
+
         scale_fit = min(video_width / media_clip.w, video_height / media_clip.h)
         fg = media_clip.resized(scale_fit).with_position("center")
         media_clip = CompositeVideoClip([bg, fg], size=(video_width, video_height)).with_duration(duration)
-    else:
-        scale_fill = max(video_width / media_clip.w, video_height / media_clip.h)
-        media_clip = media_clip.resized(scale_fill).with_position("center")
 
     layers = [media_clip]
     
@@ -276,7 +346,12 @@ def _build_scene_clip(
 
 def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
     """
-    Trộn nhiều đoạn audio (path, start_time, volume, fadeout) thành 1 AudioArrayClip bằng numpy.
+    Trộn nhiều đoạn audio thành 1 AudioArrayClip bằng numpy.
+
+    Mỗi phần tử: (path, start_time, volume, fadeout) hoặc (path, start, volume, fadeout, max_dur).
+    `max_dur` (tuỳ chọn) CẮT CỨNG độ dài đoạn đó — dùng cho SFX mà người dùng tự nạp vào,
+    để một file dài (VD tiếng máy đếm tiền 5 giây tải trên mạng) không thể tràn sang phần
+    lời dẫn. Đây là chốt chặn ở tầng trộn, không phụ thuộc file nguồn dài bao nhiêu.
 
     LÝ DO KHÔNG dùng CompositeAudioClip: MoviePy 2.1.2 có bug — frame_function dùng
     `if (part is not False)` mà `part` là mảng numpy khi ghi audio theo chunk, khiến nó gọi
@@ -302,7 +377,10 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
     master = np.zeros((total_samples, 2), dtype=np.float32)
     used = False
 
-    for path, start, volume, fadeout in placements:
+    for item in placements:
+        # Chấp nhận cả tuple 4 phần tử (cũ) lẫn 5 phần tử có max_dur
+        path, start, volume, fadeout = item[:4]
+        max_dur = item[4] if len(item) > 4 else None
         try:
             arr = _read(path)
         except Exception as e:
@@ -325,6 +403,15 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
             arr = np.repeat(arr, 2, axis=1)
         elif arr.shape[1] > 2:
             arr = arr[:, :2]
+
+        # Cắt cứng theo max_dur + gọt mềm 40ms cuối để chỗ cắt không kêu "pắc"
+        if max_dur and max_dur > 0:
+            limit = int(max_dur * sr)
+            if 0 < limit < len(arr):
+                arr = arr[:limit].copy()
+                soft = min(int(0.04 * sr), len(arr))
+                if soft > 1:
+                    arr[-soft:] *= np.linspace(1.0, 0.0, soft)[:, None]
 
         if volume != 1.0:
             arr = arr * float(volume)
@@ -390,23 +477,36 @@ def render_final_video(
     speech_segments = []
     final_duration = 0.0
 
-    # ── Hook Engine (Prepend clip carousel_quote vào đầu video) ──
+    # ── Hook Engine (Overlay clip carousel_quote lên đầu video) ──
     hook_duration = 0.0
+    hook_clip_overlay = None
     if kwargs.get("hook_effect") == "carousel_quote":
         try:
             from services.hook_engine import build_carousel_hook
             cover_img = scene_assets[0]["image_path"]
             hook_quote = kwargs.get("hook_quote", "")
-            hook_clip = build_carousel_hook(cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
-            clips.append(hook_clip.with_start(0.0))
-            hook_duration = HOOK_CAROUSEL_DURATION
-            final_duration = HOOK_CAROUSEL_DURATION
+            hook_clip_overlay = build_carousel_hook(cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
+            hook_clip_overlay = hook_clip_overlay.with_start(0.0).with_position("center")
+            
+            # KHÔNG append vào clips vì clips sẽ vẽ theo thứ tự, có thể bị che. 
+            # Ta sẽ thêm vào overlays sau khi final được dựng.
             # Audio cho hook: tiếng trục quay (reel_spin) 0-1s + tiếng "chốt" (ding) khi bìa dừng
             sfx_dir = os.path.join(BASE_DIR, "assets", "sfx")
-            reel = os.path.join(sfx_dir, "reel_spin.wav")
+            reel_key = kwargs.get("hook_reel_sfx") or DEFAULT_HOOK_REEL
+            reel_file = HOOK_REEL_SOUNDS.get(reel_key)
+            if not reel_file:
+                print(f"[Hook] Không biết tiếng trục quay '{reel_key}', dùng mặc định.")
+                reel_file = HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]
+            reel = os.path.join(sfx_dir, reel_file)
+            if not os.path.isfile(reel):
+                print(f"[Hook] Thiếu {reel_file}, quay về {HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]}.")
+                reel = os.path.join(sfx_dir, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
             ding = os.path.join(sfx_dir, "ding.wav")
+
+            # max_dur = HOOK_NARRATION_LEAD: dù người dùng nạp file dài bao nhiêu, tiếng
+            # trục quay LUÔN tắt trước khi lời dẫn vào. Chốt chặn cứng ở tầng trộn.
             if os.path.isfile(reel):
-                audio_placements.append((reel, 0.0, 0.6, 0.0))
+                audio_placements.append((reel, 0.0, 0.6, 0.0, HOOK_NARRATION_LEAD))
             if os.path.isfile(ding):
                 audio_placements.append((ding, 1.0, 0.45, 0.0))
         except Exception as e:
@@ -466,23 +566,20 @@ def render_final_video(
         
     final = CompositeVideoClip(clips, size=(video_width, video_height)).with_duration(final_duration)
 
+    # Chế độ đọc liền mạch (Single-Pass Narration): cả bài chỉ có 1 dải giọng duy nhất,
+    # đặt tại mốc 0.0 như một track nữa trên timeline.
+    # TRƯỚC ĐÂY nhánh này gọi `final.with_audio(master_audio)` SAU khi đã trộn xong —
+    # tức là THAY TRẮNG toàn bộ track vừa trộn, xoá sạch SFX từng cảnh lẫn tiếng Máy Xèng
+    # mở màn. Giờ nó tham gia vào cùng một lần trộn nên mọi thứ cùng vang lên.
+    if master_audio_path and os.path.exists(master_audio_path):
+        audio_placements.append((master_audio_path, 0.0, 1.0, 0.0))
+        speech_segments = [(0.0, final_duration)]
+
     # Trộn toàn bộ audio (giọng đọc + SFX) bằng numpy → 1 track duy nhất (an toàn, không bug)
     if audio_placements:
         final_audio = _mix_audio_tracks(audio_placements, final_duration)
         if final_audio is not None:
             final = final.with_audio(final_audio)
-
-    # Nếu dùng Continuous TTS (có master_audio_path)
-    if master_audio_path and os.path.exists(master_audio_path):
-        from moviepy.audio.io.AudioFileClip import AudioFileClip
-        master_audio = AudioFileClip(master_audio_path)
-        
-        # Audio gốc dài hơn video do padding, ta cắt lại cho khớp với video final
-        master_audio = master_audio.subclipped(0, min(final.duration, master_audio.duration))
-        final = final.with_audio(master_audio)
-        
-        # Vì giọng nói liền mạch, ducking BGM toàn bộ video
-        speech_segments = [(0.0, final.duration)]
 
     # BGM mixing now happens via FFmpeg in audio_mix_service.py
 
@@ -490,8 +587,12 @@ def render_final_video(
     import numpy as np
     from moviepy.video.VideoClip import ImageClip, VideoClip
     
+    # ── OVERLAYS (Vignette, Text Hook, Progress Bar, Carousel Hook) ──
     overlays = [final]
     
+    if hook_clip_overlay is not None:
+        overlays.append(hook_clip_overlay)
+
     # 1. Vignette (Làm tối 4 góc)
     x = np.linspace(-1, 1, video_width)
     y = np.linspace(-1, 1, video_height)
@@ -569,7 +670,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
     
     # ── ĐỊNH NGHĨA STYLE DỰA TRÊN USER SETTING ──
     if subtitle_style == "cinematic_box":
-        font_name = "Arial Black"  # Font hiện đại, sạch sẽ
+        font_name = SUBTITLE_FONT_NAME  # Font dày, hiện đại, phủ đủ tiếng Việt
         font_size = 55
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
@@ -578,7 +679,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         # BorderStyle=3 (Opaque box), Outline=8 (Box padding/margin)
         style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,3,8,0,2,60,60,250,1"
     elif subtitle_style == "minimal_white":
-        font_name = "Arial Black"
+        font_name = SUBTITLE_FONT_NAME
         font_size = 50
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
@@ -587,8 +688,8 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         # BorderStyle=1 (Outline), Outline=0, Shadow=3
         style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},0,0,0,0,100,100,0,0,1,0,3,2,40,40,250,1"
     else: # karaoke_bold & hormozi_bold (Default)
-        # Sử dụng Arial Black cho cảm giác Cinematic và hiện đại (hỗ trợ 100% tiếng Việt).
-        font_name = "Arial Black"
+        # Font dày cho cảm giác Cinematic, phủ đủ tiếng Việt (xem SUBTITLE_FONT_NAME).
+        font_name = SUBTITLE_FONT_NAME
         font_size = 65 if mode == "quiz_listicle" else 75
         primary_color = "&H0000FFFF"     # Yellow highlight
         secondary_color = "&H00FFFFFF"   # White base
@@ -601,7 +702,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
     
     # ── HOOK STYLE (cho Tiêu đề 3s đầu) ──
     # Chữ to, vàng, nằm ở top (MarginV=150)
-    hook_style_line = f"Style: HookTitle,Arial Black,75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
+    hook_style_line = f"Style: HookTitle,{SUBTITLE_FONT_NAME},75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
     ass_content.append(hook_style_line)
     
     ass_content.append("")
@@ -668,12 +769,12 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
                 event_line = f"Dialogue: 1,{format_ass_time(start_td)},{format_ass_time(end_td)},HookTitle,,0,0,0,,{fad_tag}{full_text_formatted}"
                 ass_content.append(event_line)
 
-    # Hook carousel_quote chèn HOOK_CAROUSEL_DURATION giây vào ĐẦU video (render_final_video
-    # dời start_time của mọi cảnh thêm ngần đó). Phụ đề phải dời theo, nếu không sẽ lệch 3.5s.
-    hook_offset = HOOK_CAROUSEL_DURATION if hook_effect == "carousel_quote" else 0.0
+    # Hook carousel_quote giờ đã được chuyển thành OVERLAY, không đẩy lùi thời gian video nữa.
+    # Do đó hook_offset luôn = 0.0 để lồng tiếng và phụ đề Cảnh 1 bắt đầu ngay từ 0.0s.
+    hook_offset = 0.0
 
     cursor = 0.0
-    for asset in scene_assets:
+    for _idx, asset in enumerate(scene_assets):
         duration = asset["duration"]
         # Dùng đúng mốc thời gian tuyệt đối (start_time đã tính overlap crossfade trong
         # build_scene_timeline) để phụ đề khớp 100% với giọng đọc. Trước đây hàm này tự
@@ -682,10 +783,22 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         if scene_start is None:
             scene_start = cursor
         scene_start += hook_offset
+
+        # Phụ đề phải TẮT trước khi cảnh sau bắt đầu.
+        # LỖI CŨ: end = scene_start + duration, mà `duration` đã bao gồm phần chồng lấn
+        # crossfade (start_{i+1} = start_i + dur_i - overlap). Hệ quả: ở MỌI chuyển cảnh có
+        # đúng `overlap` giây mà HAI khối phụ đề cùng hiển thị, chồng đè lên nhau — với
+        # style hộp mờ thì thành hai hộp đen chồng nhau, rất lộ.
+        scene_end = scene_start + duration
+        if _idx + 1 < len(scene_assets):
+            next_start = scene_assets[_idx + 1].get("start_time")
+            if next_start is not None:
+                scene_end = min(scene_end, next_start + hook_offset)
+
         if asset.get("text") and asset["text"].strip():
             start_td = dt.timedelta(seconds=scene_start)
-            end_td = dt.timedelta(seconds=scene_start + duration)
-            
+            end_td = dt.timedelta(seconds=scene_end)
+
             start_str = format_ass_time(start_td)
             end_str = format_ass_time(end_td)
             
@@ -739,7 +852,13 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
                     for chunk in chunks:
                         # chunk_start = offset of first word, chunk_end = offset + duration of last word
                         chunk_start_td = dt.timedelta(seconds=scene_start + chunk[0]["offset"])
-                        chunk_end_td = dt.timedelta(seconds=scene_start + chunk[-1]["offset"] + chunk[-1]["duration"])
+                        # Kẹp về scene_end để chunk cuối không tràn sang phụ đề cảnh sau
+                        chunk_end_td = dt.timedelta(
+                            seconds=min(
+                                scene_start + chunk[-1]["offset"] + chunk[-1]["duration"],
+                                scene_end,
+                            )
+                        )
                         chunk_start_str = format_ass_time(chunk_start_td)
                         chunk_end_str = format_ass_time(chunk_end_td)
 

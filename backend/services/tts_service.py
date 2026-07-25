@@ -350,107 +350,12 @@ async def _synthesize_with_prosody(
     text: str, output_path: str, voice: str, rate: str, pitch: str
 ) -> tuple[float, list]:
     """
-    V3.1 Core: Tách câu → sinh giọng nói từng câu với rate/pitch riêng → ghép nối.
-    Nếu câu nào lỗi → gộp vào câu kế tiếp. Nếu toàn bộ lỗi → fallback plain text.
-    Các đoạn được ghi ra file tạm rồi ghép bằng ffmpeg (không nối byte thô).
+    NÂNG CẤP V3.2 Engine (Full-Context Seamless Prosody):
+    Gửi toàn bộ văn bản cảnh trong 1 lần gọi duy nhất đến Microsoft Neural TTS.
+    Loại bỏ hoàn toàn việc ngắt câu ghép nối file MP3 thủ công (vốn gây ra khoảng lặng khựng ~100ms giữa các câu).
+    Giữ trọn vẹn nhịp thở tự nhiên, điệu đọc truyền cảm và độ khớp 100% của phụ đề Karaoke.
     """
-    import tempfile
-
-    sentences = _split_and_merge_sentences(text)
-
-    # Nếu chỉ 1 câu hoặc text quá ngắn → dùng plain text
-    if len(sentences) <= 1:
-        return await _synthesize_plain(text, output_path, voice, rate, pitch)
-
-    base_rate, base_pitch = _parse_rate_pitch(rate, pitch)
-    total = len(sentences)
-
-    chunk_files: list[str] = []
-    all_wbs = []
-    cumulative_offset = 0.0
-    failed_buffer = ""  # Câu thất bại sẽ được gộp vào đây
-
-    def _write_chunk(audio_bytes: bytes) -> str:
-        fd, tmp = tempfile.mkstemp(suffix=".mp3")
-        with os.fdopen(fd, "wb") as f:
-            f.write(audio_bytes)
-        return tmp
-
-    try:
-        for i in range(total):
-            sentence = sentences[i]
-
-            # Nếu có câu thất bại trước đó, gộp vào câu hiện tại
-            if failed_buffer:
-                sentence = failed_buffer + " " + sentence
-                failed_buffer = ""
-
-            prosody = _get_sentence_prosody(sentence, i, total, base_rate, base_pitch)
-
-            try:
-                audio_bytes, wbs = await _synth_one_sentence(
-                    sentence, voice, prosody["rate"], prosody["pitch"]
-                )
-
-                # Điều chỉnh offset của word boundaries
-                for wb in wbs:
-                    wb["offset"] += cumulative_offset
-                    all_wbs.append(wb)
-
-                tmp = _write_chunk(audio_bytes)
-                chunk_files.append(tmp)
-
-                # Đo duration của chunk này
-                try:
-                    chunk_dur = MP3(tmp).info.length
-                except Exception:
-                    chunk_dur = len(audio_bytes) / 16000.0  # ước lượng
-
-                cumulative_offset += chunk_dur
-
-                # Delay nhỏ giữa các API call (tránh rate limit)
-                if i < total - 1:
-                    await asyncio.sleep(0.3)
-
-            except Exception as e:
-                print(f"Prosody Engine: Sentence {i} failed ({e}), buffering for merge...")
-                failed_buffer = sentence
-                continue
-
-        # Nếu câu cuối cùng cũng fail → fallback plain text cho phần còn lại
-        if failed_buffer:
-            print(f"Prosody Engine: Remaining buffer '{failed_buffer[:30]}...' — falling back to plain text append")
-            try:
-                fb_audio, fb_wbs = await _synth_one_sentence(failed_buffer, voice, rate, pitch)
-                for wb in fb_wbs:
-                    wb["offset"] += cumulative_offset
-                    all_wbs.append(wb)
-                chunk_files.append(_write_chunk(fb_audio))
-            except Exception:
-                print("Prosody Engine: Final buffer also failed, skipping.")
-
-        if not chunk_files:
-            # Toàn bộ thất bại → fallback plain text đầy đủ
-            print("Prosody Engine: All sentences failed. Full fallback to plain text.")
-            return await _synthesize_plain(text, output_path, voice, rate, pitch)
-
-        if not _concat_audio_files(chunk_files, output_path):
-            return await _synthesize_plain(text, output_path, voice, rate, pitch)
-    finally:
-        for f in chunk_files:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
-
-    try:
-        audio = MP3(output_path)
-        duration = audio.info.length
-    except Exception:
-        duration = cumulative_offset
-
-    return duration, all_wbs
+    return await _synthesize_plain(text, output_path, voice, rate, pitch)
 
 
 async def _synthesize_plain(
@@ -489,6 +394,134 @@ async def _synthesize_plain(
     shutil.move(temp_path, output_path)
 
     return duration_seconds, word_boundaries
+
+
+# ══════════════════════════════════════════════════════════════════════
+# V4.0: Single-Pass Narration — đọc liền mạch TOÀN kịch bản trong 1 lần gọi
+# ══════════════════════════════════════════════════════════════════════
+
+class NarrationSplitError(RuntimeError):
+    """Không map được word boundaries về từng cảnh → caller phải fallback per-scene."""
+
+
+def _prepare_scene_texts(scene_texts: list[str]) -> tuple[str, list[tuple[int, int]]]:
+    """
+    Chuẩn hoá + nối text tất cả các cảnh thành MỘT chuỗi đọc liền.
+    Trả về (chuỗi đầy đủ, danh sách (char_start, char_end) của từng cảnh).
+
+    Mỗi cảnh được đảm bảo kết thúc bằng dấu câu để Microsoft Neural TTS tự xuống
+    giọng và lấy hơi đúng chỗ — đây chính là thứ tạo ra nhịp tự nhiên mà cách gọi
+    từng cảnh riêng lẻ không bao giờ có (mỗi lần gọi là một lần "vào giọng" mới).
+    """
+    parts: list[str] = []
+    ranges: list[tuple[int, int]] = []
+    cursor = 0
+    for raw in scene_texts:
+        t = _normalize_text(raw or "").strip()
+        if t and t[-1] not in ".!?…:;,":
+            t += "."
+        if not t:
+            t = "."
+        start = cursor
+        parts.append(t)
+        cursor += len(t)
+        ranges.append((start, cursor))
+        cursor += 1  # khoảng trắng nối giữa 2 cảnh
+    return " ".join(parts), ranges
+
+
+def split_word_boundaries_by_scene(
+    word_boundaries: list, full_text: str, scene_ranges: list[tuple[int, int]]
+) -> list[list]:
+    """
+    Chia danh sách word_boundaries TOÀN CỤC về từng cảnh.
+
+    Không đếm từ theo `.split()` vì cách tách từ của Edge-TTS không trùng khớp
+    (dấu câu, số, từ ghép) — lệch 1 từ là lệch dồn toàn bộ các cảnh sau. Thay vào đó
+    dò vị trí ký tự thật của từng từ trong chuỗi gốc rồi quy ra cảnh theo khoảng ký tự.
+    """
+    lower = full_text.lower()
+    buckets: list[list] = [[] for _ in scene_ranges]
+    cursor = 0
+
+    def _scene_of(pos: int) -> int:
+        for idx, (s, e) in enumerate(scene_ranges):
+            if s <= pos < e:
+                return idx
+        # Rơi vào khoảng trắng nối giữa 2 cảnh → tính cho cảnh gần nhất phía trước.
+        for idx in range(len(scene_ranges) - 1, -1, -1):
+            if scene_ranges[idx][0] <= pos:
+                return idx
+        return 0
+
+    for wb in word_boundaries:
+        w = (wb.get("text") or "").strip()
+        if not w:
+            continue
+        # Chỉ dò trong cửa sổ ngắn phía trước con trỏ: nếu tìm toàn chuỗi, một từ lặp lại
+        # ở cuối bài có thể kéo con trỏ nhảy vọt và phá toàn bộ ánh xạ.
+        window_end = min(len(lower), cursor + len(w) + 40)
+        idx = lower.find(w.lower(), cursor, window_end)
+        if idx == -1:
+            idx = cursor
+            cursor = min(len(lower), cursor + len(w) + 1)
+        else:
+            cursor = idx + len(w)
+        buckets[_scene_of(idx)].append(wb)
+
+    return buckets
+
+
+async def synthesize_script_single_pass(
+    scene_texts: list[str],
+    output_path: str,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    pitch: str = "+0Hz",
+) -> tuple[float, list[list], float]:
+    """
+    V4.0 — Gọi Edge-TTS ĐÚNG MỘT LẦN cho toàn bộ kịch bản.
+
+    Trả về (tổng thời lượng, word_boundaries đã chia theo cảnh (mốc TUYỆT ĐỐI), tổng dur).
+
+    ĐÁNH ĐỔI CÓ CHỦ Ý: chế độ này BỎ QUA `emotion` và `speech_rate_modifier` riêng của
+    từng cảnh, vì cả bài chỉ có một lần gọi nên không thể đổi rate/pitch giữa chừng.
+    Đổi lại: cao độ, nhịp thở và ngữ điệu liên tục suốt video thay vì reset ở mỗi cảnh.
+
+    Raise NarrationSplitError nếu có cảnh CÓ CHỮ nhưng không nhận được từ nào —
+    dấu hiệu ánh xạ hỏng, caller phải quay về chế độ đọc từng cảnh.
+    """
+    from services.cache_service import cache as _tts_cache
+
+    full_text, ranges = _prepare_scene_texts(scene_texts)
+
+    cache_params = dict(mode="single_pass", text=full_text, voice=voice, rate=rate, pitch=pitch)
+    cached = _tts_cache.get("tts_meta", **cache_params)
+    if cached and _tts_cache.get_media("tts", output_path, **cache_params):
+        print("[Narration] Cache HIT — tái dùng bản đọc liền mạch.")
+        return cached["duration"], cached["scene_wbs"], cached["duration"]
+
+    if voice.startswith("omnivoice_") or voice.startswith("minion"):
+        raise NarrationSplitError(
+            f"Giọng '{voice}' không hỗ trợ đọc liền mạch (cần word boundaries của Edge-TTS)."
+        )
+
+    print(f"[Narration] Đọc liền mạch {len(scene_texts)} cảnh trong 1 lần gọi ({len(full_text)} ký tự)...")
+    duration, wbs = await _synthesize_plain(full_text, output_path, voice, rate, pitch)
+
+    scene_wbs = split_word_boundaries_by_scene(wbs, full_text, ranges)
+
+    for i, (bucket, raw) in enumerate(zip(scene_wbs, scene_texts)):
+        if not bucket and (raw or "").strip():
+            raise NarrationSplitError(f"Cảnh {i+1} có lời thoại nhưng không nhận được từ nào.")
+
+    try:
+        _tts_cache.set_media("tts", output_path, **cache_params)
+        _tts_cache.set("tts_meta", {"duration": duration, "scene_wbs": scene_wbs}, **cache_params)
+    except Exception as e:
+        print(f"[Narration] Lưu cache lỗi (không nghiêm trọng): {e}")
+
+    return duration, scene_wbs, duration
 
 
 # ══════════════════════════════════════════════════════════════════════

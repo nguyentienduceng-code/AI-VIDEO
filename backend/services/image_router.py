@@ -180,30 +180,77 @@ async def generate_image_with_fallback(
         _create_artistic_gradient_image(output_path, aspect_ratio)
         return output_path
 
-async def fetch_pexels_video(query: str, output_path: str, aspect_ratio: str, api_key: str) -> str:
+ASPECT_TARGETS = {
+    "9:16": ("portrait", 1080, 1920),
+    "16:9": ("landscape", 1920, 1080),
+    "1:1": ("square", 1080, 1080),
+}
+
+
+def _score_stock_candidate(video: dict, target_ratio: float, target_h: int, needed_dur: float) -> float:
+    """
+    Điểm PHẠT của 1 ứng viên video Pexels — càng THẤP càng tốt.
+
+    Trước đây pipeline luôn lấy `videos[0]` dù đã tải sẵn 5 kết quả: clip đầu bảng
+    thường là clip phổ biến nhất chứ không phải clip vừa khung, đủ dài hay đủ nét.
+    Ba tiêu chí dưới đây là 3 thứ người xem nhận ra ngay khi sai.
+    """
+    w = video.get("width") or 0
+    h = video.get("height") or 0
+    src_dur = float(video.get("duration") or 0)
+
+    # 1) Lệch tỉ lệ khung — nặng nhất: lệch nhiều là phải bù nền mờ hoặc cắt sâu.
+    if w and h:
+        ratio_penalty = abs(target_ratio - (w / h)) * 3.0
+    else:
+        ratio_penalty = 1.0
+
+    # 2) Ngắn hơn thời lượng cảnh → phải ping-pong/lặp, kém tự nhiên hơn clip đủ dài.
+    if needed_dur > 0 and src_dur > 0 and src_dur < needed_dur:
+        dur_penalty = min((needed_dur - src_dur) / needed_dur, 1.0) * 0.8
+    else:
+        dur_penalty = 0.0
+
+    # 3) Độ phân giải thấp hơn khung đích → phóng to sẽ vỡ/mờ.
+    best_h = max((vf.get("height") or 0) for vf in video.get("video_files", [])) if video.get("video_files") else h
+    res_penalty = max(0.0, (target_h - best_h) / target_h) * 1.2 if target_h else 0.0
+
+    return ratio_penalty + dur_penalty + res_penalty
+
+
+async def fetch_pexels_video(
+    query: str,
+    output_path: str,
+    aspect_ratio: str,
+    api_key: str,
+    needed_duration: float = 0.0,
+    used_ids: Optional[set] = None,
+) -> str:
     """
     Tìm và tải video từ Pexels API. Trả về đường dẫn file .mp4.
 
     QUAN TRỌNG: Pexels API trả 403 Forbidden nếu request THIẾU User-Agent.
     (Đây là lý do trước đây video stock không bao giờ xuất hiện — pipeline luôn
     rơi về ảnh AI tĩnh.) Bắt buộc gửi kèm User-Agent như trình duyệt thật.
+
+    `used_ids`: tập id video đã dùng trong CÙNG một job — để 2 cảnh có từ khoá gần
+    giống nhau không nhận về đúng một đoạn phim (lỗi lộ liễu nhất của video stock).
     """
     import requests
-    orientation = "portrait"
-    if aspect_ratio == "16:9":
-        orientation = "landscape"
-    elif aspect_ratio == "1:1":
-        orientation = "square"
+
+    orientation, target_w, target_h = ASPECT_TARGETS.get(aspect_ratio, ASPECT_TARGETS["9:16"])
+    target_ratio = target_w / target_h
 
     clean_query = query.replace("\n", " ").strip()[:100]
-    url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(clean_query)}&per_page=5&orientation={orientation}"
+    # per_page 5 → 15: cần đủ ứng viên để chấm điểm mới có cái để chọn.
+    url = (
+        f"https://api.pexels.com/videos/search?query={urllib.parse.quote(clean_query)}"
+        f"&per_page=15&orientation={orientation}"
+    )
     headers = {
         "Authorization": api_key,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
-
-    # Kích thước mục tiêu theo tỉ lệ để chọn file gần nhất (tránh tải file 4K quá nặng)
-    target_h = 1920 if orientation == "portrait" else (1080 if orientation == "landscape" else 1080)
 
     def _fetch():
         r = requests.get(url, headers=headers, timeout=15)
@@ -213,16 +260,35 @@ async def fetch_pexels_video(query: str, output_path: str, aspect_ratio: str, ap
         if not videos:
             raise RuntimeError(f"Pexels không có video cho từ khóa: '{clean_query}'")
 
-        video = videos[0]
+        seen = used_ids if used_ids is not None else set()
+        fresh = [v for v in videos if v.get("id") not in seen]
+        # Hết clip mới thì thà dùng lại còn hơn không có hình — nhưng chỉ khi hết thật.
+        pool = fresh or videos
+        if not fresh:
+            logger.info(f"[StockCurator] Hết clip mới cho '{clean_query}', buộc phải dùng lại.")
+
+        video = min(pool, key=lambda v: _score_stock_candidate(v, target_ratio, target_h, needed_duration))
         files = video.get("video_files", [])
         if not files:
             raise RuntimeError("Không tìm thấy link video trong kết quả Pexels.")
 
-        # Chọn file có chiều cao gần target nhất (API mới trả quality=None nên không lọc theo 'hd')
-        def _score(vf):
+        if used_ids is not None and video.get("id") is not None:
+            used_ids.add(video["id"])
+
+        # Ưu tiên file ĐỦ độ phân giải rồi mới tới gần target nhất (tránh tải 4K vô ích)
+        def _file_score(vf):
             h = vf.get("height") or 0
-            return abs(h - target_h) if h else 10 ** 9
-        selected = sorted(files, key=_score)[0]
+            if not h:
+                return 10 ** 9
+            return (h - target_h) if h >= target_h else (target_h - h) * 4
+        selected = sorted(files, key=_file_score)[0]
+
+        vw, vh = video.get("width") or 0, video.get("height") or 0
+        logger.info(
+            f"[StockCurator] '{clean_query}': chọn id={video.get('id')} "
+            f"{vw}x{vh} {video.get('duration')}s trong {len(pool)} ứng viên "
+            f"(cần ~{needed_duration:.1f}s)"
+        )
 
         download_url = selected["link"]
         tmp_path = output_path if output_path.endswith(".mp4") else output_path + ".mp4"

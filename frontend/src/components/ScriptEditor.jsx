@@ -35,6 +35,9 @@ export default function ScriptEditor() {
         use_breathing: ctx.useBreathing, hook_effect: ctx.hookEffect, hook_quote: ctx.hookQuote,
         hook_text: ctx.hookText,
         prefer_stock_video: ctx.preferStockVideo,
+        visual_source: ctx.visualSource,
+        use_single_pass_narration: ctx.useSinglePassNarration,
+        hook_reel_sfx: ctx.hookReelSfx,
       };
 
       const res = await fetch(`${API_BASE}/api/render-video`, {

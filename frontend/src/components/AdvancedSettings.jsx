@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAppContext } from '../AppContext';
-import { SUBTITLE_STYLES, COLOR_GRADINGS } from '../constants';
+import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_REEL_SOUNDS } from '../constants';
 
 export default function AdvancedSettings() {
   const ctx = useAppContext();
@@ -52,6 +52,12 @@ export default function AdvancedSettings() {
           tooltip="Tự chèn tiếng Riser dâng trào ở cảnh mở màn (khi bật Hook Zoom Boost). Lưu ý: SFX bạn chọn RIÊNG cho từng cảnh trong phần Kịch bản LUÔN phát, không phụ thuộc nút này."
         />
         <ToggleRow
+          label={<span>🎙️ Đọc <b>liền mạch cả bài</b> (1 lần gọi)</span>}
+          checked={ctx.useSinglePassNarration}
+          onChange={ctx.setUseSinglePassNarration}
+          tooltip="Đọc toàn bộ kịch bản trong MỘT lần gọi thay vì từng cảnh riêng lẻ: ngữ điệu, cao độ và nhịp thở liên tục suốt video, không còn 'vào giọng' lại ở mỗi cảnh. Mốc cắt cảnh sẽ tự bám theo giọng đọc. ĐÁNH ĐỔI: bỏ qua cảm xúc và tốc độ đọc riêng mà AI gán cho từng cảnh. Không dùng được với giọng Minion / OmniVoice."
+        />
+        <ToggleRow
           label="Lấy hơi tự nhiên (Breathing)"
           checked={ctx.useBreathing}
           onChange={ctx.setUseBreathing}
@@ -63,15 +69,35 @@ export default function AdvancedSettings() {
           onChange={ctx.setHookZoomBoost}
           tooltip="Cảnh đầu zoom mạnh (1.0→1.35) + tự thêm tiếng Riser dâng trào để giữ chân người xem trong 3 giây đầu"
         />
-        <ToggleRow
-          label={<span>🎬 Dùng <b>video nền thật</b> (Pexels stock)</span>}
-          checked={ctx.preferStockVideo}
-          onChange={ctx.setPreferStockVideo}
-          tooltip="Thay ảnh AI tĩnh bằng video stock chuyển động thật từ Pexels cho MỌI cảnh (không cần Veo/billing). Hợp nhất với chủ đề đời thực; cảnh nào không tìm được video sẽ tự dùng ảnh AI."
-        />
       </div>
 
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
+        <div className="input-group">
+          <label className="field-label">TIẾNG TRỤC QUAY (HOOK MÁY XÈNG)</label>
+          <select
+            className="form-select form-select-sm"
+            value={ctx.hookReelSfx}
+            onChange={e => ctx.setHookReelSfx(e.target.value)}
+            title="Âm thanh phát trong 1 giây trục quay đầu video. Chỉ có tác dụng khi Hiệu ứng mở màn là 'Máy Xèng (carousel_quote)'. Dù chọn tiếng nào, hệ thống cũng tự cắt để nó tắt trước khi lời dẫn bắt đầu."
+          >
+            {HOOK_REEL_SOUNDS.map(s => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="input-group">
+          <label className="field-label">NGUỒN HÌNH ẢNH</label>
+          <select
+            className="form-select form-select-sm"
+            value={ctx.visualSource}
+            onChange={e => ctx.setVisualSource(e.target.value)}
+            title="Quyết định mỗi cảnh dùng ảnh AI hay video thật tải từ Pexels. 'Xen kẽ thông minh' để cảnh trầm/kết dùng video thật, cảnh hook/cao trào dùng ảnh AI (giữ quyền kiểm soát bố cục). Cảnh nào không tìm được video stock sẽ tự rơi về ảnh AI."
+          >
+            {VISUAL_SOURCES.map(vs => (
+              <option key={vs.value} value={vs.value}>{vs.label}</option>
+            ))}
+          </select>
+        </div>
         <div className="input-group">
           <label className="field-label">BỘ LỌC MÀU (COLOR GRADING)</label>
           <select className="form-select form-select-sm" value={ctx.colorGrading} onChange={e => ctx.setColorGrading(e.target.value)}>

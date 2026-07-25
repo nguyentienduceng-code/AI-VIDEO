@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Bookmark, Save, Trash2 } from 'lucide-react';
+import { Bookmark, Save, Trash2, Mic, Music } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { API_BASE } from '../constants';
 
@@ -54,6 +54,9 @@ export default function PresetManager() {
         subtitle_style: ctx.subtitleStyle,
         color_grading: ctx.colorGrading,
         prefer_stock_video: ctx.preferStockVideo,
+        visual_source: ctx.visualSource,
+        use_single_pass_narration: ctx.useSinglePassNarration,
+        hook_reel_sfx: ctx.hookReelSfx,
         use_sfx: ctx.useSfx,
         sfx_volume: 8,
         use_ken_burns: ctx.useKenBurns,

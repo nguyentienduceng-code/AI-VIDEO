@@ -227,6 +227,10 @@ for _p in DEFAULT_PRESETS:
     _p.setdefault("use_ken_burns", True)
     _p.setdefault("hook_zoom_boost", False)
     _p.setdefault("use_breathing", False)
+    # "auto" giữ nguyên hành vi cũ: vẫn tôn trọng prefer_stock_video của từng preset.
+    _p.setdefault("visual_source", "auto")
+    _p.setdefault("use_single_pass_narration", False)
+    _p.setdefault("hook_reel_sfx", "tick_wood")
 
 
 def load_presets() -> List[Dict[str, Any]]:

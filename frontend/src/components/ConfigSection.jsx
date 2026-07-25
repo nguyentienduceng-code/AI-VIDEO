@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Smartphone, Monitor, Square, Play, Mic, Loader } from 'lucide-react';
+import { Smartphone, Monitor, Square, Play, Mic, Music, Loader } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, NICHE_OPTIONS, API_BASE } from '../constants';
 import PresetManager from './PresetManager';
 
 export default function ConfigSection() {
   const ctx = useAppContext();
-  const minScenes = 4, maxScenes = 20;
+  // Trần 30 (khớp MAX_SCENES của backend): trần 20 cũ khiến video từ 3 phút trở lên
+  // buộc mỗi cảnh phải gánh 25-40 từ, tức 8-13 giây/cảnh.
+  const minScenes = 4, maxScenes = 30;
   const sliderPercent = ((ctx.numScenes - minScenes) / (maxScenes - minScenes)) * 100;
 
   // ── Voice Cloning: danh sách giọng clone cá nhân + upload mẫu ──
@@ -220,7 +222,24 @@ export default function ConfigSection() {
               <option value="comedy_cartoon">Comedy Cartoon</option>
             </optgroup>
           </select>
-          {ctx.bgm !== 'none' && <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.bgm)}><Play size={18} /></button>}
+          {ctx.bgm !== 'none' && (
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.bgm)} title="Nghe thử nhạc nền độc lập">
+                <Play size={18} />
+              </button>
+              <button 
+                className="btn-icon" 
+                style={{ color: '#FF69B4', background: 'rgba(255,105,180,0.1)' }}
+                onClick={() => ctx.playMixPreview(ctx.voice, ctx.bgm)} 
+                title="Nghe lồng tiếng (Mix Voice + BGM) để test âm lượng nền"
+              >
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                  <Mic size={14} style={{ marginRight: -4 }} />
+                  <Music size={14} />
+                </div>
+              </button>
+            </div>
+          )}
           {ctx.bgm !== 'none' && <input type="range" className="vol-slider" min="0" max="100" value={ctx.bgmVolume} onChange={e => ctx.setBgmVolume(Number(e.target.value))} style={{ width: 80 }} />}
         </div>
       </div>

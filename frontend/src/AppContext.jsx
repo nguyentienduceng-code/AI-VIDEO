@@ -51,6 +51,9 @@ export const AppProvider = ({ children }) => {
   const [useBreathing, setUseBreathing] = useState(false);
   const [hookEffect, setHookEffect] = useState('word_by_word');
   const [preferStockVideo, setPreferStockVideo] = useState(false);
+  const [visualSource, setVisualSource] = useState('auto');
+  const [useSinglePassNarration, setUseSinglePassNarration] = useState(false);
+  const [hookReelSfx, setHookReelSfx] = useState('tick_wood');
   
   const [scenes, setScenes] = useState([]);
   const [scriptLoading, setScriptLoading] = useState(false);
@@ -63,21 +66,56 @@ export const AppProvider = ({ children }) => {
   const [srtUrl, setSrtUrl] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const audioRef = useRef(null);
+  const voiceRef = useRef(null);
+  const bgmRef = useRef(null);
+
+  const stopAllAudio = useCallback(() => {
+    if (voiceRef.current) {
+      voiceRef.current.pause();
+      voiceRef.current.currentTime = 0;
+    }
+    if (bgmRef.current) {
+      bgmRef.current.pause();
+      bgmRef.current.currentTime = 0;
+    }
+  }, []);
 
   const playPreview = useCallback((type, id) => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
+    stopAllAudio();
     const audioUrl = `${API_BASE}/api/preview/${type}/${id}`;
     const audio = new Audio(audioUrl);
     if (type === 'bgm') {
       audio.volume = bgmVolume / 100;
+      bgmRef.current = audio;
+    } else {
+      voiceRef.current = audio;
     }
     audio.play().catch(e => alert("Lỗi phát audio: " + e.message + "\n(Vui lòng tương tác với trang web trước khi nghe hoặc kiểm tra kết nối tới Backend)"));
-    audioRef.current = audio;
-  }, [bgmVolume]);
+  }, [bgmVolume, stopAllAudio]);
+
+  const playMixPreview = useCallback((voiceId, bgmId) => {
+    stopAllAudio();
+    const voiceAudio = new Audio(`${API_BASE}/api/preview/voice/${voiceId}`);
+    const bgmAudio = new Audio(`${API_BASE}/api/preview/bgm/${bgmId}`);
+    bgmAudio.volume = bgmVolume / 100;
+    
+    voiceRef.current = voiceAudio;
+    bgmRef.current = bgmAudio;
+    
+    let loopCount = 0;
+    voiceAudio.addEventListener('ended', () => {
+      if (loopCount < 1) {
+        loopCount++;
+        voiceAudio.currentTime = 0;
+        voiceAudio.play().catch(e => console.log(e));
+      } else {
+        bgmAudio.pause(); // Dừng BGM khi giọng đọc kết thúc vòng lặp
+      }
+    });
+
+    voiceAudio.play().catch(e => console.log(e));
+    bgmAudio.play().catch(e => console.log(e));
+  }, [bgmVolume, stopAllAudio]);
 
   const handleReset = () => {
     setStep('config');
@@ -113,6 +151,9 @@ export const AppProvider = ({ children }) => {
     if (preset.subtitle_style) setSubtitleStyle(preset.subtitle_style);
     if (preset.color_grading) setColorGrading(preset.color_grading);
     if (preset.prefer_stock_video !== undefined) setPreferStockVideo(preset.prefer_stock_video);
+    if (preset.visual_source) setVisualSource(preset.visual_source);
+    if (preset.use_single_pass_narration !== undefined) setUseSinglePassNarration(preset.use_single_pass_narration);
+    if (preset.hook_reel_sfx) setHookReelSfx(preset.hook_reel_sfx);
     if (preset.use_sfx !== undefined) setUseSfx(preset.use_sfx);
     if (preset.sfx_volume !== undefined) setSfxVolume(preset.sfx_volume);
     
@@ -145,7 +186,7 @@ export const AppProvider = ({ children }) => {
     uploadLoading, setUploadLoading, scenes, setScenes, scriptLoading, setScriptLoading,
     status, setStatus, progress, setProgress, jobMessage, setJobMessage,
     progressLog, setProgressLog, videoUrl, setVideoUrl, srtUrl, setSrtUrl,
-    errorMsg, setErrorMsg, playPreview, handleReset, applyPreset,
+    errorMsg, setErrorMsg, playPreview, playMixPreview, stopAllAudio, handleReset, applyPreset,
     needsUpload, needsScript, needsTopic,
     coverImageSessionId, setCoverImageSessionId,
     coverImageName, setCoverImageName,
@@ -153,7 +194,10 @@ export const AppProvider = ({ children }) => {
     coverImagePosition, setCoverImagePosition,
     useBreathing, setUseBreathing,
     hookEffect, setHookEffect,
-    preferStockVideo, setPreferStockVideo
+    preferStockVideo, setPreferStockVideo,
+    visualSource, setVisualSource,
+    useSinglePassNarration, setUseSinglePassNarration,
+    hookReelSfx, setHookReelSfx
   };
 
   return (

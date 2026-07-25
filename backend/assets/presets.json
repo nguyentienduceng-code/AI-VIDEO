@@ -25,7 +25,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_finance",
@@ -53,7 +56,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_history",
@@ -81,7 +87,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_psychology",
@@ -109,7 +118,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_truecrime",
@@ -137,7 +149,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_travel",
@@ -165,7 +180,10 @@
     "is_default": true,
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
-    "use_frame_chaining": true
+    "use_frame_chaining": true,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_viral_short",
@@ -193,7 +211,10 @@
     "created_at": "2026-07-25T00:00:00",
     "use_veo": false,
     "use_frame_chaining": true,
-    "use_beat_sync": false
+    "use_beat_sync": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   },
   {
     "id": "preset_import_json",
@@ -221,6 +242,9 @@
     "use_beat_sync": true,
     "is_default": true,
     "created_at": "2026-07-25T00:00:00",
-    "use_veo": false
+    "use_veo": false,
+    "visual_source": "auto",
+    "use_single_pass_narration": false,
+    "hook_reel_sfx": "tick_wood"
   }
 ]

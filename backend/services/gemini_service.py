@@ -99,7 +99,7 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
 # ---------------------------------------------------------------------------
 class Scene(BaseModel):
     scene: int = Field(description="Số thứ tự phân cảnh, bắt đầu từ 1")
-    text: str = Field(description="Lời thoại tiếng Việt sẽ được đọc bằng TTS. TUYỆT ĐỐI KHÔNG chèn emoji, icon, hoặc ký tự đặc biệt Unicode vào trường này. Chỉ dùng chữ cái, số, dấu câu tiêu chuẩn.")
+    text: str = Field(description="Lời thoại tiếng Việt (CÓ DẤU ĐẦY ĐỦ) sẽ được đọc bằng TTS. TUYỆT ĐỐI KHÔNG chèn emoji, icon. Chỉ dùng chữ cái tiếng Việt, số, và dấu câu tiêu chuẩn.")
     image_prompt: str = Field(
         description="Mô tả hình ảnh bằng tiếng Anh, dùng để sinh ảnh AI (Imagen)"
     )
@@ -227,17 +227,64 @@ def get_enhanced_art_style(style: str) -> str:
 
 # 3. MODE: Storyteller (mặc định) + Quiz/Listicle
 # ---------------------------------------------------------------------------
-# ── Bảng cấu hình thời lượng → số từ + số cảnh đề xuất ──────────────
+# ── Bảng cấu hình thời lượng → số từ ────────────────────────────────
+# Đổi chuỗi này mỗi khi luật prompt thay đổi → cache kịch bản cũ tự hết hiệu lực.
+PROMPT_REVISION = "2026-07-25-word-budget"
+
+# Tốc độ đọc thực đo trên chính pipeline này (Edge-TTS giọng Việt, rate 0%): ~3.0 từ/giây.
+# Luật cũ ghi "15-20 từ ≈ 3-5 giây" là BẤT KHẢ THI về số học — 18 từ cần ~6 giây, không
+# thể 3-5 giây. Chính sự sai lệch đó khiến cảnh dài gấp rưỡi so với ý đồ. Muốn nhịp
+# 3-5 giây/cảnh thật thì ngân sách phải là ~12 từ.
+VIETNAMESE_WORDS_PER_SECOND = 3.0
+WORDS_PER_SCENE_TARGET = 12   # ≈ 4 giây/cảnh
+
+# Trần số cảnh. Nâng 20 → 30 vì video dài (từ 180s) bị trần 20 ép mỗi cảnh phải gánh
+# 25-40 từ, tức 8-13 giây/cảnh — chậm lê thê dù prompt có nói gì đi nữa.
+MAX_SCENES = 30
+MIN_SCENES = 4
+
 DURATION_CONFIG = {
-    "15s":  {"words": "30-40",    "suggested_scenes": 4},
-    "30s":  {"words": "70-80",    "suggested_scenes": 5},
-    "60s":  {"words": "140-160",  "suggested_scenes": 7},
-    "90s":  {"words": "210-240",  "suggested_scenes": 9},
-    "120s": {"words": "280-320",  "suggested_scenes": 12},
-    "180s": {"words": "420-480",  "suggested_scenes": 16},
-    "240s": {"words": "560-640",  "suggested_scenes": 18},   # Long-form kể chuyện
-    "300s": {"words": "700-800",  "suggested_scenes": 20},   # Long-form kể chuyện
+    "15s":  {"words": "30-40"},
+    "30s":  {"words": "70-80"},
+    "60s":  {"words": "140-160"},
+    "90s":  {"words": "210-240"},
+    "120s": {"words": "280-320"},
+    "180s": {"words": "420-480"},
+    "240s": {"words": "560-640"},   # Long-form kể chuyện
+    "300s": {"words": "700-800"},   # Long-form kể chuyện
 }
+
+
+def _parse_word_range(words: str) -> tuple[int, int]:
+    lo, _, hi = words.partition("-")
+    return int(lo), int(hi or lo)
+
+
+# `suggested_scenes` SUY RA từ tổng số từ chứ không đặt tay nữa.
+# LÝ DO: bảng cũ đặt cứng cả hai nên chúng đá nhau — VD 300s ghi 700-800 từ / 20 cảnh
+# = 35-40 từ/cảnh, trong khi prompt lại ra lệnh "tuyệt đối không quá 15-20 từ/cảnh".
+# Từ mốc 90s trở lên là mâu thuẫn, và Gemini chọn phá luật số từ → cảnh dài 8+ giây,
+# video ì. Giờ chỉ còn MỘT nguồn chân lý: tổng số từ ÷ WORDS_PER_SCENE_TARGET.
+for _cfg in DURATION_CONFIG.values():
+    _lo, _hi = _parse_word_range(_cfg["words"])
+    _cfg["suggested_scenes"] = max(
+        MIN_SCENES, min(MAX_SCENES, round(((_lo + _hi) / 2) / WORDS_PER_SCENE_TARGET))
+    )
+
+
+def scene_word_budget(target_duration: str, num_scenes: int) -> tuple[int, int]:
+    """
+    Số từ cho phép MỖI CẢNH, tính từ tổng số từ của thời lượng mục tiêu chia cho
+    số cảnh user thực sự chọn. Nhờ vậy luật số từ và luật tổng thời lượng không thể
+    mâu thuẫn nữa, dù user chọn số cảnh bất kỳ.
+    """
+    cfg = DURATION_CONFIG.get(target_duration)
+    if not cfg or num_scenes <= 0:
+        return 15, 20
+    lo, hi = _parse_word_range(cfg["words"])
+    per_lo = max(6, round(lo / num_scenes))
+    per_hi = max(per_lo + 2, round(hi / num_scenes))
+    return per_lo, per_hi
 
 # ── Bảng tone kể chuyện ─────────────────────────────────────────────
 NARRATION_TONE_PROMPTS = {
@@ -293,13 +340,15 @@ TONE_EFFECT_PALETTES = {
 NICHE_BLUEPRINTS = {
     "book": (
         "NICHE: REVIEW/KỂ CHUYỆN SÁCH-PHIM.\n"
-        "BẢN VẼ VỊ TRÍ (bắt buộc bám theo): Cảnh 1 = bìa/biểu tượng + móc nghịch lý (image_prompt tả bìa sách hoặc "
-        "vật biểu tượng, transition 'fade_black'). ~15% đầu = bối cảnh nhân vật (calm, crossfade). "
+        "BẢN VẼ VỊ TRÍ (bắt buộc bám theo): Cảnh 1 = Lời giới thiệu/dẫn đề cuốn hút (VÍ DỤ: 'Hôm nay chúng ta cùng khám phá...'). "
+        "TUYỆT ĐỐI KHÔNG mô tả bìa sách ở Cảnh 1 nữa, vì 3.5 giây đầu video đã được hệ thống chèn hiệu ứng Máy Xèng (Slot Machine) hiển thị bìa rồi. "
+        "Hãy tập trung mô tả hình ảnh tác giả, bối cảnh hoặc hình tượng nội dung cho image_prompt của Cảnh 1. "
+        "~15% đầu = bối cảnh nhân vật (calm, crossfade). "
         "Giữa = mỗi cảnh 1 nút thắt kết bằng soft cliffhanger; dùng 'page_flip' khi sang chương mới. "
         "~45% = MINI-TWIST giữ chân (suspense, sfx 'suspense', 'fade_black'). "
         "~80% = CAO TRÀO tiết lộ lớn nhất (sfx 'riser' ngay trước, transition 'zoom_punch' hoặc 'fade_white', rate '-3%'). "
         "Sau cao trào = dư âm (sfx 'shimmer' 1 lần lúc ngộ ra, transition 'droplet'). "
-        "Cuối = đúc kết 1 câu đắt + mời đọc (closing, 'fade_black', rate '-5%'). SFX để trống mọi cảnh còn lại."
+        "Cảnh cuối = BẮT BUỘC phải là KẾT BÀI (tổng kết bài học hoặc kêu gọi hành động - Call to Action) để video không bị cụt (closing, 'fade_black', rate '-5%'). SFX để trống mọi cảnh còn lại."
     ),
     "finance": (
         "NICHE: TÀI CHÍNH/LÀM GIÀU/KINH DOANH.\n"
@@ -352,6 +401,7 @@ BASE_STORYTELLING = (
     "3. CAO TRÀO: Nút thắt lớn nhất, tình tiết bất ngờ nhất.\n"
     "4. KẾT & ĐÚC KẾT: Gỡ nút + một câu suy ngẫm đọng lại, rồi mời người xem đọc/tìm hiểu thêm.\n\n"
     "QUY TẮC VĂN KỂ (BẮT BUỘC):\n"
+    "- LỖI CHẾT NGƯỜI: {SCENE_WORD_RULE} Nếu câu dài, BẮT BUỘC tách thành nhiều cảnh liên tiếp để video đổi cảnh liên tục.\n"
     "- Mỗi cảnh kết bằng một câu tạo tò mò nhẹ (soft cliffhanger), VD: 'Nhưng điều cô không ngờ tới là...', "
     "'Câu trả lời anh nhận được nghe thật vô lý...'.\n"
     "- Văn nói tự nhiên, trầm lắng, mạch lạc. TUYỆT ĐỐI không dùng Markdown, không emoji.\n"
@@ -364,8 +414,7 @@ BASE_STORYTELLING = (
     "vì sẽ không tìm được footage thật khớp.\n"
     "- Ưu tiên: bàn tay, ánh đèn, khung cửa sổ, thư từ, đường phố, thiên nhiên, đồ vật gợi hoài niệm — "
     "khớp CẢM XÚC của lời kể hơn là minh hoạ đúng từng chữ.\n\n"
-    "QUY TẮC ÂM THANH: KHÔNG lạm dụng sfx. Để trống 'sfx' ở hầu hết cảnh, chỉ dùng 'riser' hoặc 'suspense' "
-    "ở đúng 1-2 điểm cao trào.\n"
+    "QUY TẮC ÂM THANH (RẤT QUAN TRỌNG): TUYỆT ĐỐI KHÔNG lạm dụng sfx. Hầu hết các cảnh PHẢI ĐỂ TRỐNG trường 'sfx' (để giá trị rỗng). Chỉ được phép chèn sfx ở Cảnh 1 và đúng 1 cảnh Cao trào.\n"
     "QUY TẮC CẢM XÚC: 'emotion' phần lớn là 'calm' hoặc 'dramatic'/'suspense' ở cao trào; 'closing' ở cảnh cuối.\n"
 )
 
@@ -386,7 +435,17 @@ async def generate_script(
     Hỗ trợ mode: storyteller, quiz_listicle.
     Trả về list[dict] đã được validate đúng schema Scene.
     """
-    num_scenes = max(4, min(20, num_scenes))
+    num_scenes = max(MIN_SCENES, min(MAX_SCENES, num_scenes))
+
+    # Ngân sách từ MỖI CẢNH suy ra từ (tổng số từ của thời lượng ÷ số cảnh thực tế).
+    # Con số này thay cho luật cứng "15-20 từ" trước đây — xem scene_word_budget().
+    _w_lo, _w_hi = scene_word_budget(target_duration, num_scenes)
+    _sec_lo = _w_lo / (VIETNAMESE_WORDS_PER_SECOND + 0.2)
+    _sec_hi = _w_hi / (VIETNAMESE_WORDS_PER_SECOND - 0.4)
+    scene_word_rule = (
+        f"Mỗi phân cảnh tuyệt đối KHÔNG ĐƯỢC VƯỢT QUÁ {_w_hi} từ "
+        f"(lý tưởng {_w_lo}-{_w_hi} từ, tương đương {_sec_lo:.1f}-{_sec_hi:.1f} giây đọc)."
+    )
 
     # ── Master Storyteller Base Prompt ──
     base_storyteller = (
@@ -397,11 +456,12 @@ async def generate_script(
         "3. CLIMAX (Cảnh áp chót): Đưa ra Sự thật bất ngờ nhất (Plot Twist) hoặc Giải pháp tột đỉnh.\n"
         "4. CTA (Cảnh cuối): Kêu gọi hành động khéo léo và tự nhiên nhất có thể.\n\n"
         "QUY TẮC CẤM KỴ (BẮT BUỘC TUÂN THỦ):\n"
+        "- LỖI CHẾT NGƯỜI: Cảnh quá dài. {SCENE_WORD_RULE} Nếu câu văn dài, BẮT BUỘC phải cắt đôi thành 2-3 cảnh liên tiếp!\n"
         "- CẤM dùng các câu mở đầu sáo rỗng: 'Xin chào các bạn', 'Hôm nay mình sẽ chia sẻ', 'Cùng tìm hiểu nhé', 'Bạn có biết'.\n"
         "- CẤM nói đạo lý suông, cấm dùng từ ngữ hàn lâm. Mọi luận điểm phải đính kèm hình ảnh so sánh thực tế.\n\n"
         "QUY TẮC ĐẠO DIỄN HÌNH ẢNH (CINEMATIC CAMERA - BẮT BUỘC):\n"
         "- BẮT BUỘC mở đầu mỗi 'image_prompt' bằng các góc máy điện ảnh chuyên nghiệp. Ví dụ: 'Extreme close-up shot of...', 'Low-angle drone shot of...', 'Over-the-shoulder shot of...', 'Wide establishing shot of...'\n"
-        "- BẮT BUỘC tả LẶP LẠI ngoại hình nhân vật chính xuyên suốt các cảnh.\n"
+        "- BẮT BUỘC giữ TÍNH NHẤT QUÁN: Nếu có nhân vật, phải tả lặp lại chính xác ngoại hình (tuổi, giới tính, trang phục) xuyên suốt TẤT CẢ các cảnh.\n"
         "- BẮT BUỘC dùng chung 1 tông màu ánh sáng cho toàn video (VD: 'cinematic teal and orange lighting, volumetric dust').\n"
         "- Kết hợp: Góc máy + Đối tượng + Hành động + Ánh sáng + Bối cảnh + Phẩm chất nghệ thuật (8k, photorealistic, Unreal Engine 5).\n\n"
         "QUY TẮC NHỊP ĐỘ GIỌNG ĐỌC (DYNAMIC PACING):\n"
@@ -414,8 +474,7 @@ async def generate_script(
         "- Chuyển chủ đề/bất ngờ → 'fade_black'\n"
         "- Liên tục/kể tiếp → 'crossfade'\n"
         "- Cao trào/chi tiết → 'zoom_through'\n\n"
-        "QUY TẮC ÂM THANH (SOUND DESIGN):\n"
-        "- Hạn chế lạm dụng 'sfx' liên tục. Cảnh đầu (hook): nên dùng 'whoosh' hoặc 'riser'. Cảnh cuối (closing): dùng 'ding' hoặc 'bell'.\n"
+        "- CẤM lạm dụng SFX liên tục. Đa số các cảnh phải ĐỂ TRỐNG sfx. Chỉ dùng sfx ở Cảnh 1 (Hook) và đúng 1-2 cảnh có Plot Twist hoặc Câu chốt.\n"
     )
 
     # Chế độ KỂ CHUYỆN long-form (tone=storytelling): dùng base prompt riêng, style @sachhay_chondoc
@@ -475,8 +534,11 @@ async def generate_script(
         )
         system_prompt += f"\n\n{consistency_guide}"
 
+    # Thay token ngân sách từ (có mặt trong cả base_storyteller lẫn BASE_STORYTELLING).
+    system_prompt = system_prompt.replace("{SCENE_WORD_RULE}", scene_word_rule)
+
     def _call():
-        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "")
+        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", prompt_rev=PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for generate_script")
             return cached_result
@@ -499,7 +561,7 @@ async def generate_script(
                 pass
             parsed: ScriptResponse = response.parsed
             result = parsed.model_dump()
-            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "")
+            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", prompt_rev=PROMPT_REVISION)
             return result
         except Exception as e:
             # KHÔNG trả kịch bản mock (trước đây trả video "Python" bất kể chủ đề, âm thầm

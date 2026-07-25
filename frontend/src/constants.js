@@ -62,15 +62,18 @@ export const NARRATION_TONES = [
   { value: 'humorous', label: '😂 Hài hước', desc: 'Dí dỏm, bất ngờ' },
 ];
 
+// `scenes` PHẢI khớp DURATION_CONFIG[...]['suggested_scenes'] của backend
+// (gemini_service.py). Số cũ cho ~24 từ/cảnh ≈ 8.5 giây/cảnh — video ì như slideshow.
+// Số mới nhắm ~12 từ/cảnh ≈ 4 giây/cảnh, đúng nhịp short.
 export const DURATION_OPTIONS = [
   { value: '15s',  label: '15s',  scenes: 4 },
-  { value: '30s',  label: '30s',  scenes: 5 },
-  { value: '60s',  label: '60s',  scenes: 7 },
-  { value: '90s',  label: '90s',  scenes: 9 },
-  { value: '120s', label: '2 min', scenes: 12 },
-  { value: '180s', label: '3 min', scenes: 16 },
-  { value: '240s', label: '4 min', scenes: 18 },
-  { value: '300s', label: '5 min', scenes: 20 },
+  { value: '30s',  label: '30s',  scenes: 6 },
+  { value: '60s',  label: '60s',  scenes: 12 },
+  { value: '90s',  label: '90s',  scenes: 19 },
+  { value: '120s', label: '2 min', scenes: 25 },
+  { value: '180s', label: '3 min', scenes: 30 },
+  { value: '240s', label: '4 min', scenes: 30 },
+  { value: '300s', label: '5 min', scenes: 30 },
 ];
 
 export const SUBTITLE_STYLES = [
@@ -114,6 +117,23 @@ export const SFX_OPTIONS = [
   { value: 'suspense', label: '😱 Hồi hộp (Suspense)' },
   { value: 'heartbeat', label: '🫀 Nhịp tim (Heartbeat)' },
   { value: 'laugh', label: '😂 Cười (Laugh)' },
+];
+
+// Tiếng trục quay Hook Máy Xèng — đồng bộ với backend video_service.HOOK_REEL_SOUNDS.
+// Thêm tiếng mới: chạy `python tools/fit_hook_sfx.py <file> --name <id>` rồi khai báo
+// 1 dòng ở đây và 1 dòng trong video_service.py.
+export const HOOK_REEL_SOUNDS = [
+  { value: 'tick_wood', label: '🪵 Gõ mộc (khớp từng bìa lướt qua)' },
+  { value: 'money_counter', label: '💵 Máy đếm tiền' },
+  { value: 'arcade_8bit', label: '🕹️ Arcade 8-bit (bản cũ)' },
+];
+
+// Nguồn hình cho từng cảnh — đồng bộ với backend main.VALID_VISUAL_SOURCES
+export const VISUAL_SOURCES = [
+  { value: 'auto', label: '⚙️ Tự động (theo Phong cách ảnh)' },
+  { value: 'mixed', label: '🎭 Xen kẽ thông minh (theo cảm xúc cảnh)' },
+  { value: 'ai_image', label: '🖼️ Chỉ ảnh AI (không dùng video tải về)' },
+  { value: 'stock_video', label: '🎬 Chỉ video thật (Pexels stock)' },
 ];
 
 export const COLOR_GRADINGS = [
