@@ -1,7 +1,7 @@
 import React from 'react';
+import { Play } from 'lucide-react';
 import { useAppContext } from '../AppContext';
 import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_REEL_SOUNDS } from '../constants';
-
 export default function AdvancedSettings() {
   const ctx = useAppContext();
 
@@ -72,19 +72,27 @@ export default function AdvancedSettings() {
       </div>
 
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
-        <div className="input-group">
-          <label className="field-label">TIẾNG TRỤC QUAY (HOOK MÁY XÈNG)</label>
-          <select
-            className="form-select form-select-sm"
-            value={ctx.hookReelSfx}
-            onChange={e => ctx.setHookReelSfx(e.target.value)}
-            title="Âm thanh phát trong 1 giây trục quay đầu video. Chỉ có tác dụng khi Hiệu ứng mở màn là 'Máy Xèng (carousel_quote)'. Dù chọn tiếng nào, hệ thống cũng tự cắt để nó tắt trước khi lời dẫn bắt đầu."
-          >
-            {HOOK_REEL_SOUNDS.map(s => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
-        </div>
+        {ctx.hookEffect === 'carousel_quote' && (
+          <div className="input-group">
+            <label className="field-label">TIẾNG TRỤC QUAY (HOOK MÁY XÈNG)</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                className="form-select form-select-sm"
+                value={ctx.hookReelSfx}
+                onChange={e => ctx.setHookReelSfx(e.target.value)}
+                style={{ flex: 1 }}
+                title="Âm thanh phát trong 1 giây trục quay đầu video. Chỉ có tác dụng khi Hiệu ứng mở màn là 'Máy Xèng (carousel_quote)'. Dù chọn tiếng nào, hệ thống cũng tự cắt để nó tắt trước khi lời dẫn bắt đầu."
+              >
+                {HOOK_REEL_SOUNDS.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+              <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này">
+                <Play size={18} />
+              </button>
+            </div>
+          </div>
+        )}
         <div className="input-group">
           <label className="field-label">NGUỒN HÌNH ẢNH</label>
           <select

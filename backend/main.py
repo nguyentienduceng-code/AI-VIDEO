@@ -1102,6 +1102,12 @@ async def preview_media(type: str, id: str):
         sfx_path = os.path.join(ASSETS_DIR, "sfx", f"{safe_id}.wav")
         if os.path.isfile(sfx_path):
             return FileResponse(sfx_path)
+    elif type == "hook_sfx":
+        from services.video_service import HOOK_REEL_SOUNDS, DEFAULT_HOOK_REEL
+        filename = HOOK_REEL_SOUNDS.get(safe_id, HOOK_REEL_SOUNDS.get(DEFAULT_HOOK_REEL, "reel_spin.wav"))
+        hook_sfx_path = os.path.join(ASSETS_DIR, "sfx", filename)
+        if os.path.isfile(hook_sfx_path):
+            return FileResponse(hook_sfx_path)
 
     raise HTTPException(status_code=404, detail="Không tìm thấy file nghe thử.")
 
