@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Smartphone, Monitor, Square, Play, Mic, Loader } from 'lucide-react';
 import { useAppContext } from '../AppContext';
-import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, API_BASE } from '../constants';
+import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, NICHE_OPTIONS, API_BASE } from '../constants';
 import PresetManager from './PresetManager';
 
 export default function ConfigSection() {
@@ -113,7 +113,7 @@ export default function ConfigSection() {
             <label className="field-label">PHONG CÁCH KỂ CHUYỆN</label>
             <div className="ratio-group" style={{ flexWrap: 'wrap' }}>
               {NARRATION_TONES.map(t => (
-                <button 
+                <button
                   key={t.value}
                   className={`ratio-btn ${ctx.narrationTone === t.value ? 'active' : ''}`}
                   onClick={() => ctx.setNarrationTone(t.value)}
@@ -123,6 +123,18 @@ export default function ConfigSection() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="input-group">
+            <label className="field-label">THỂ LOẠI NỘI DUNG (NICHE) — hiệu ứng & cấu trúc tự khớp</label>
+            <select
+              className="form-select form-select-sm"
+              value={ctx.contentNiche}
+              onChange={e => ctx.setContentNiche(e.target.value)}
+              title="Chọn thể loại để AI dùng bản vẽ cấu trúc + hiệu ứng chuyển cảnh/SFX đúng chất (mini-twist giữa bài, cao trào ~80%...). Để trống nếu muốn tự do theo tone."
+            >
+              {NICHE_OPTIONS.map(n => <option key={n.value} value={n.value}>{n.label}</option>)}
+            </select>
           </div>
         </>
       )}

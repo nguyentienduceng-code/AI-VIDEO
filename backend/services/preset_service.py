@@ -7,10 +7,167 @@ from typing import List, Dict, Any
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRESETS_FILE = os.path.join(BASE_DIR, "assets", "presets.json")
 
+# ─────────────────────────────────────────────────────────────────────
+# Preset MẪU CHUẨN — chỉnh theo 6 khung niche của skill content-cinematic
+# (references/content-frameworks.md). Mỗi preset khớp palette riêng của niche:
+# voice + nhịp + BGM + subtitle + color + hook_effect + prefer_stock_video.
+# ─────────────────────────────────────────────────────────────────────
 DEFAULT_PRESETS = [
     {
+        "id": "preset_book_storytelling",
+        "content_niche": "book",
+        "name": "📚 Kể Chuyện Sách (Carousel + Video thật)",
+        "aspect_ratio": "9:16",
+        "voice": "omnivoice_male_podcast_vi",
+        "art_style": "Cinematic realistic documentary footage, moody warm lighting",
+        "bgm_track": "deep_abstract_ambient",
+        "target_duration": "240s",
+        "narration_tone": "storytelling",
+        "speech_rate": "-5%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 18,
+        "subtitle_style": "cinematic_box",
+        "color_grading": "warm_cinematic",
+        "prefer_stock_video": True,
+        "hook_effect": "carousel_quote",
+        "use_sfx": False,
+        "sfx_volume": 12,
+        "use_ken_burns": True,
+        "hook_zoom_boost": False,
+        "use_breathing": False,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
+        "id": "preset_finance",
+        "content_niche": "finance",
+        "name": "💰 Tài Chính/Làm Giàu (Số liệu, dồn dập)",
+        "aspect_ratio": "9:16",
+        "voice": "vi-VN-NamMinhNeural",
+        "art_style": "Photorealistic, cinematic lighting, business documentary",
+        "bgm_track": "type_beat",
+        "target_duration": "60s",
+        "narration_tone": "educational",
+        "speech_rate": "+10%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 16,
+        "subtitle_style": "karaoke_bold",
+        "color_grading": "vivid_pop",
+        "prefer_stock_video": True,
+        "hook_effect": "word_by_word",
+        "use_sfx": True,
+        "sfx_volume": 18,
+        "use_ken_burns": True,
+        "hook_zoom_boost": True,
+        "use_breathing": False,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
+        "id": "preset_history",
+        "content_niche": "history",
+        "name": "🏛️ Lịch Sử/Bí Ẩn (Trầm, hồi hộp)",
+        "aspect_ratio": "9:16",
+        "voice": "omnivoice_male_elderly_vi",
+        "art_style": "Photorealistic documentary, ancient, cinematic moody lighting",
+        "bgm_track": "deep_abstract_ambient",
+        "target_duration": "180s",
+        "narration_tone": "storytelling",
+        "speech_rate": "-3%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 18,
+        "subtitle_style": "cinematic_box",
+        "color_grading": "cool_matrix",
+        "prefer_stock_video": True,
+        "hook_effect": "word_by_word",
+        "use_sfx": True,
+        "sfx_volume": 15,
+        "use_ken_burns": True,
+        "hook_zoom_boost": False,
+        "use_breathing": False,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
+        "id": "preset_psychology",
+        "content_niche": "psychology",
+        "name": "🧠 Tâm Lý/Self-help (Sâu lắng)",
+        "aspect_ratio": "9:16",
+        "voice": "omnivoice_female_whisper_vi",
+        "art_style": "Photorealistic, soft natural light, intimate lifestyle",
+        "bgm_track": "moment_of_peace",
+        "target_duration": "60s",
+        "narration_tone": "emotional",
+        "speech_rate": "-5%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 16,
+        "subtitle_style": "cinematic_box",
+        "color_grading": "warm_cinematic",
+        "prefer_stock_video": True,
+        "hook_effect": "word_by_word",
+        "use_sfx": False,
+        "sfx_volume": 10,
+        "use_ken_burns": True,
+        "hook_zoom_boost": False,
+        "use_breathing": True,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
+        "id": "preset_truecrime",
+        "content_niche": "truecrime",
+        "name": "🔪 True Crime/Vụ Án (Căng thẳng)",
+        "aspect_ratio": "9:16",
+        "voice": "omnivoice_male_podcast_vi",
+        "art_style": "Photorealistic, dark cinematic, moody night, film noir",
+        "bgm_track": "no_sleep_hiphop",
+        "target_duration": "90s",
+        "narration_tone": "storytelling",
+        "speech_rate": "+5%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 17,
+        "subtitle_style": "cinematic_box",
+        "color_grading": "noir_dramatic",
+        "prefer_stock_video": True,
+        "hook_effect": "full_shake",
+        "use_sfx": True,
+        "sfx_volume": 18,
+        "use_ken_burns": True,
+        "hook_zoom_boost": False,
+        "use_breathing": False,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
+        "id": "preset_travel",
+        "content_niche": "travel",
+        "name": "🌍 Du Lịch/Khám Phá (Rực rỡ)",
+        "aspect_ratio": "9:16",
+        "voice": "vi-VN-HoaiMyNeural",
+        "art_style": "Photorealistic, vibrant travel cinematography, golden hour",
+        "bgm_track": "new_age_nature",
+        "target_duration": "30s",
+        "narration_tone": "viral",
+        "speech_rate": "+0%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 20,
+        "subtitle_style": "minimal_white",
+        "color_grading": "vivid_pop",
+        "prefer_stock_video": True,
+        "hook_effect": "word_by_word",
+        "use_sfx": True,
+        "sfx_volume": 15,
+        "use_ken_burns": True,
+        "hook_zoom_boost": False,
+        "use_breathing": False,
+        "use_beat_sync": True,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
+    },
+    {
         "id": "preset_viral_short",
-        "name": "🔥 Short TikTok Viral (Nam Minh + Anime)",
+        "content_niche": "",
+        "name": "🔥 Short Viral Nhanh (Anime + Nam Minh)",
         "aspect_ratio": "9:16",
         "voice": "vi-VN-NamMinhNeural",
         "art_style": "Anime illustration, vibrant colors, Studio Ghibli inspired",
@@ -21,53 +178,20 @@ DEFAULT_PRESETS = [
         "speech_pitch": "+0Hz",
         "bgm_volume": 15,
         "subtitle_style": "karaoke_bold",
+        "color_grading": "vivid_pop",
+        "prefer_stock_video": False,
+        "hook_effect": "word_by_word",
         "use_sfx": True,
         "sfx_volume": 15,
+        "use_ken_burns": True,
+        "hook_zoom_boost": True,
+        "use_breathing": False,
         "is_default": True,
-        "created_at": "2026-07-21T00:00:00"
-    },
-    {
-        "id": "preset_cinematic_story",
-        "name": "🎬 Kể Chuyện Cinematic (Hoài My + Realistic)",
-        "aspect_ratio": "16:9",
-        "voice": "vi-VN-HoaiMyNeural",
-        "art_style": "Photorealistic, cinematic lighting, 8K UHD",
-        "bgm_track": "auto",
-        "target_duration": "60s",
-        "narration_tone": "emotional",
-        "speech_rate": "+0%",
-        "speech_pitch": "+0Hz",
-        "bgm_volume": 20,
-        "subtitle_style": "cinematic_box",
-        "use_sfx": True,
-        "sfx_volume": 15,
-        "is_default": True,
-        "created_at": "2026-07-21T00:00:00"
-    },
-    {
-        # Preset tái tạo style viral @sachhay_chondoc: kể chuyện sách/phim long-form,
-        # footage thật (Pexels), phụ đề hộp mờ, giọng nam trầm ấm, nhịp chậm.
-        "id": "preset_book_storytelling",
-        "name": "📖 Kể Chuyện Sách/Phim (Long-form + Video thật)",
-        "aspect_ratio": "16:9",
-        "voice": "omnivoice_male_podcast_vi",
-        "art_style": "Cinematic, realistic documentary footage, moody warm lighting",
-        "bgm_track": "deep_abstract_ambient",
-        "target_duration": "240s",
-        "narration_tone": "storytelling",
-        "speech_rate": "-5%",
-        "speech_pitch": "+0Hz",
-        "bgm_volume": 18,
-        "subtitle_style": "cinematic_box",
-        "color_grading": "warm_cinematic",
-        "prefer_stock_video": True,
-        "use_sfx": False,
-        "sfx_volume": 15,
-        "is_default": True,
-        "created_at": "2026-07-24T00:00:00"
+        "created_at": "2026-07-25T00:00:00"
     },
     {
         "id": "preset_import_json",
+        "content_niche": "",
         "name": "🤖 Kịch Bản AI (Chuyên dụng Import JSON)",
         "aspect_ratio": "9:16",
         "voice": "vi-VN-NamMinhNeural",
@@ -81,6 +205,7 @@ DEFAULT_PRESETS = [
         "subtitle_style": "karaoke_bold",
         "color_grading": "none",
         "prefer_stock_video": False,
+        "hook_effect": "word_by_word",
         "use_sfx": False,
         "sfx_volume": 15,
         "use_ken_burns": False,
@@ -93,27 +218,37 @@ DEFAULT_PRESETS = [
     }
 ]
 
+# Bổ sung tường minh các toggle hiệu ứng còn thiếu cho MỌI preset default —
+# tránh preset "kế thừa ngầm" trạng thái UI cũ khi user chuyển preset.
+for _p in DEFAULT_PRESETS:
+    _p.setdefault("use_veo", False)              # Veo cần billing — mặc định tắt
+    _p.setdefault("use_frame_chaining", True)
+    _p.setdefault("use_beat_sync", False)
+    _p.setdefault("use_ken_burns", True)
+    _p.setdefault("hook_zoom_boost", False)
+    _p.setdefault("use_breathing", False)
+
+
 def load_presets() -> List[Dict[str, Any]]:
-    """Đọc danh sách presets từ file JSON. Nếu chưa có thì tạo các mẫu mặc định.
-    Tự động merge các preset MẶC ĐỊNH mới (theo id) vào file đã seed từ trước."""
+    """Đọc danh sách presets. Preset MẶC ĐỊNH luôn ĐỒNG BỘ từ code (add/update/remove theo
+    DEFAULT_PRESETS), preset do USER tự lưu được giữ nguyên. Nhờ vậy mọi tinh chỉnh preset
+    trong code tự động lan tới file đã seed từ trước."""
     if not os.path.exists(PRESETS_FILE):
         save_all_presets(DEFAULT_PRESETS)
-        return DEFAULT_PRESETS
+        return list(DEFAULT_PRESETS)
     try:
         with open(PRESETS_FILE, "r", encoding="utf-8") as f:
             presets = json.load(f)
-            if not isinstance(presets, list):
-                return DEFAULT_PRESETS
-        # Migration: bổ sung preset mặc định mới chưa có trong file (giữ nguyên preset user)
-        existing_ids = {p.get("id") for p in presets}
-        missing = [dp for dp in DEFAULT_PRESETS if dp["id"] not in existing_ids]
-        if missing:
-            # Chèn preset mặc định mới lên đầu để dễ thấy
-            presets = missing + presets
-            save_all_presets(presets)
-        return presets
+        if not isinstance(presets, list):
+            return list(DEFAULT_PRESETS)
+        # Giữ preset user (không phải default); default lấy nguyên từ code (nguồn chân lý)
+        user_presets = [p for p in presets if not p.get("is_default", False)]
+        synced = list(DEFAULT_PRESETS) + user_presets
+        if synced != presets:
+            save_all_presets(synced)
+        return synced
     except Exception:
-        return DEFAULT_PRESETS
+        return list(DEFAULT_PRESETS)
 
 def save_all_presets(presets: List[Dict[str, Any]]):
     """Ghi danh sách presets ra file JSON."""

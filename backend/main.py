@@ -128,6 +128,7 @@ class GenerateScriptRequest(BaseModel):
     target_duration: Optional[str] = "30s"
     narration_tone: Optional[str] = "viral"
     sync_characters: bool = False
+    content_niche: Optional[str] = None  # book|finance|history|psychology|truecrime|travel — palette hiệu ứng chính xác
 
 class RenderVideoRequest(BaseModel):
     scenes: List[dict]
@@ -181,8 +182,14 @@ class PresetRequest(BaseModel):
     subtitle_style: str = "karaoke_bold"
     color_grading: str = "warm_cinematic"
     prefer_stock_video: bool = False
+    hook_effect: str = "word_by_word"
     use_sfx: bool = True
     sfx_volume: float = 8
+    use_ken_burns: bool = True
+    hook_zoom_boost: bool = True
+    use_breathing: bool = False
+    use_frame_chaining: bool = True
+    use_beat_sync: bool = False
 
 VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle", "manual"}
 VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
@@ -672,7 +679,8 @@ async def generate_script(req: GenerateScriptRequest):
                 target_duration=req.target_duration,
                 narration_tone=req.narration_tone or "viral",
                 character_description=req.character_description,
-                sync_characters=req.sync_characters
+                sync_characters=req.sync_characters,
+                content_niche=req.content_niche,
             )
 
         elif req.mode == "script_video":

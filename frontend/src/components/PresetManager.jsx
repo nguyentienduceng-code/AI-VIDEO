@@ -60,7 +60,8 @@ export default function PresetManager() {
         hook_zoom_boost: ctx.hookZoomBoost,
         use_breathing: ctx.useBreathing,
         use_frame_chaining: ctx.useFrameChaining,
-        use_beat_sync: ctx.useBeatSync
+        use_beat_sync: ctx.useBeatSync,
+        hook_effect: ctx.hookEffect
       };
 
       const res = await fetch(`${API_BASE}/api/presets`, {

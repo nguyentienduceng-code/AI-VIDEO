@@ -13,6 +13,7 @@ export const AppProvider = ({ children }) => {
   const [numScenes, setNumScenes] = useState(6);
   const [targetDuration, setTargetDuration] = useState('30s');
   const [narrationTone, setNarrationTone] = useState('viral');
+  const [contentNiche, setContentNiche] = useState('');
   const [voice, setVoice] = useState('vi-VN-NamMinhNeural');
   const [style, setStyle] = useState(STYLES[0].value);
   const [bgm, setBgm] = useState('auto');
@@ -121,12 +122,15 @@ export const AppProvider = ({ children }) => {
     if (preset.use_breathing !== undefined) setUseBreathing(preset.use_breathing);
     if (preset.use_frame_chaining !== undefined) setUseFrameChaining(preset.use_frame_chaining);
     if (preset.use_beat_sync !== undefined) setUseBeatSync(preset.use_beat_sync);
+    if (preset.hook_effect) setHookEffect(preset.hook_effect);
+    if (preset.use_veo !== undefined) setUseVeo(preset.use_veo);
+    if (preset.content_niche !== undefined) setContentNiche(preset.content_niche);
   }, []);
 
   const contextValue = {
     step, setStep, activeMode, setActiveMode, topic, setTopic, scriptText, setScriptText,
     ratio, setRatio, numScenes, setNumScenes, targetDuration, setTargetDuration,
-    narrationTone, setNarrationTone, voice, setVoice, style, setStyle,
+    narrationTone, setNarrationTone, contentNiche, setContentNiche, voice, setVoice, style, setStyle,
     bgm, setBgm, apiKey, setApiKey, showApiKey, setShowApiKey,
     useVeo, setUseVeo, useAnimatedCaptions, setUseAnimatedCaptions, ctaText, setCtaText,
     speechRate, setSpeechRate, speechPitch, setSpeechPitch, bgmVolume, setBgmVolume,

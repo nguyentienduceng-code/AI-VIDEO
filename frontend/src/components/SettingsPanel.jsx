@@ -30,6 +30,7 @@ export default function SettingsPanel() {
       const payload = {
         topic: ctx.topic, mode: MODE_MAP[ctx.activeMode], num_scenes: ctx.numScenes, art_style: ctx.style,
         target_duration: ctx.targetDuration, narration_tone: ctx.narrationTone,
+        content_niche: ctx.contentNiche || undefined,
         script_text: ctx.scriptText || undefined, upload_session_id: ctx.uploadSessionId || undefined,
         gemini_api_key: ctx.apiKey || undefined, character_description: ctx.characterDescription || undefined,
       };

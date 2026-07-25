@@ -125,7 +125,13 @@ class Scene(BaseModel):
     )
     transition: str = Field(
         default="crossfade",
-        description="Kiểu chuyển cảnh SAU cảnh này sang cảnh tiếp theo: crossfade, fade_black, zoom_through. Cảnh cuối dùng fade_black."
+        description=(
+            "Kiểu chuyển cảnh SAU cảnh này sang cảnh tiếp theo. CHỈ ĐƯỢC DÙNG 1 trong: "
+            "crossfade (hoà tan, kể tiếp), fade_black (chuyển chủ đề/lắng), fade_white (chớp sáng bất ngờ), "
+            "zoom_through (lao xuyên), zoom_punch (giật zoom cao trào), slide_left, slide_right, slide_up, slide_down, "
+            "wipe_right, wipe_down (gạt màn), whip_pan (quét nhanh dồn dập), page_flip (lật trang — hợp kể chuyện sách), "
+            "droplet (giọt nước lan — hợp cảm xúc/kết). Cảnh cuối dùng fade_black hoặc droplet."
+        )
     )
 
 
@@ -243,6 +249,97 @@ NARRATION_TONE_PROMPTS = {
 }
 
 
+# ── PALETTE HIỆU ỨNG THEO TONE ──────────────────────────────────────
+# Chỉ dẫn cho AI chọn transition/sfx/nhịp ĐÚNG CHẤT từng thể loại (đồng bộ với
+# .agents/skills/content-cinematic/references/content-frameworks.md).
+# Nhờ vậy "hiệu ứng đi kèm" tự khớp niche thay vì mặc định crossfade toàn bộ.
+TONE_EFFECT_PALETTES = {
+    "viral": (
+        "PALETTE HIỆU ỨNG (viral): transition chủ đạo 'whip_pan'/'zoom_punch' ở các cú chuyển dồn dập, "
+        "'fade_white' cho khoảnh khắc bất ngờ, 'crossfade' cho đoạn nối thường. "
+        "sfx: hook dùng 'riser', twist dùng 'bass_drop' hoặc 'impact', chốt dùng 'ding'. "
+        "speech_rate_modifier: hook '+15%', thân '0%', climax '+10%'."
+    ),
+    "storytelling": (
+        "PALETTE HIỆU ỨNG (kể chuyện): transition chủ đạo 'crossfade' và 'fade_black' (chuyển đoạn), "
+        "'page_flip' khi sang chương/bước ngoặt mới (hợp review sách), 'droplet' cho khoảnh khắc cảm xúc/kết. "
+        "sfx: ĐỂ TRỐNG hầu hết cảnh; chỉ 'riser' hoặc 'suspense' ở đúng 1-2 điểm cao trào, 'shimmer' ở khoảnh khắc nhận ra. "
+        "speech_rate_modifier: mở '+5%', thân '0%' hoặc '-5%', cao trào '-3%' (chậm để nhấn)."
+    ),
+    "educational": (
+        "PALETTE HIỆU ỨNG (giáo dục/tài chính): transition 'slide_left'/'slide_right' khi liệt kê ý, "
+        "'zoom_punch' khi nêu CON SỐ gây sốc, 'wipe_right' khi so sánh 2 vế, 'crossfade' mặc định. "
+        "sfx: 'tick' khi liệt kê, 'bass_drop' khi chốt con số quan trọng, 'ding' ở kết luận. "
+        "speech_rate_modifier: hook '+10%', giải thích '0%', số liệu '-3%'."
+    ),
+    "emotional": (
+        "PALETTE HIỆU ỨNG (cảm xúc/tâm lý): transition 'crossfade' chậm rãi chủ đạo, 'droplet' ở khoảnh khắc chạm, "
+        "'fade_black' khi lắng đọng. TRÁNH whip_pan/zoom_punch (phá cảm xúc). "
+        "sfx: gần như KHÔNG dùng; tối đa 'shimmer' 1 lần ở insight, 'heartbeat' nếu hồi hộp nội tâm. "
+        "speech_rate_modifier: toàn bài '-5%', câu đắt nhất '-8%'."
+    ),
+    "humorous": (
+        "PALETTE HIỆU ỨNG (hài hước): transition 'zoom_punch'/'whip_pan' cho cú bẻ lái, 'slide_up' cho ý mới. "
+        "sfx: 'pop' cho tình huống ngộ nghĩnh, 'laugh' SAU cú đấm hài (dùng tiết chế 1-2 lần), 'ding' cho chốt. "
+        "speech_rate_modifier: setup '0%', punchline '+10%'."
+    ),
+}
+
+
+# ── PALETTE + BLUEPRINT THEO NICHE (chính xác hơn tone) ─────────────
+# Khi FE truyền content_niche, dùng palette + bản vẽ vị trí riêng của niche đó
+# (đồng bộ .agents/skills/content-cinematic/references/scene-blueprints.md).
+# "N" = tổng số cảnh; các mốc % được AI tự quy ra vị trí cảnh.
+NICHE_BLUEPRINTS = {
+    "book": (
+        "NICHE: REVIEW/KỂ CHUYỆN SÁCH-PHIM.\n"
+        "BẢN VẼ VỊ TRÍ (bắt buộc bám theo): Cảnh 1 = bìa/biểu tượng + móc nghịch lý (image_prompt tả bìa sách hoặc "
+        "vật biểu tượng, transition 'fade_black'). ~15% đầu = bối cảnh nhân vật (calm, crossfade). "
+        "Giữa = mỗi cảnh 1 nút thắt kết bằng soft cliffhanger; dùng 'page_flip' khi sang chương mới. "
+        "~45% = MINI-TWIST giữ chân (suspense, sfx 'suspense', 'fade_black'). "
+        "~80% = CAO TRÀO tiết lộ lớn nhất (sfx 'riser' ngay trước, transition 'zoom_punch' hoặc 'fade_white', rate '-3%'). "
+        "Sau cao trào = dư âm (sfx 'shimmer' 1 lần lúc ngộ ra, transition 'droplet'). "
+        "Cuối = đúc kết 1 câu đắt + mời đọc (closing, 'fade_black', rate '-5%'). SFX để trống mọi cảnh còn lại."
+    ),
+    "finance": (
+        "NICHE: TÀI CHÍNH/LÀM GIÀU/KINH DOANH.\n"
+        "BẮT BUỘC mỗi cảnh có CON SỐ/tỉ lệ/mốc thời gian cụ thể. "
+        "BẢN VẼ: Cảnh 1 = nghịch lý tiền + con số sốc (sfx 'riser', 'whip_pan', rate '+15%'). "
+        "Kế = đào sâu nỗi đau ('slide_left'). Giữa = cơ chế từng ý ('slide_right'/'wipe_right' khi so sánh, sfx 'tick' khi liệt kê). "
+        "Con số chốt = sfx 'bass_drop' + 'zoom_punch' (rate '-3%'). Nguyên tắc vàng = sfx 'impact' + 'fade_white'. "
+        "Kết = hành động cụ thể + CTA (sfx 'ding', 'fade_black')."
+    ),
+    "history": (
+        "NICHE: LỊCH SỬ/BÍ ẨN.\n"
+        "BẢN VẼ: Cảnh 1 = bí ẩn mở màn kiểu 'suốt X năm...' (sfx 'suspense', 'fade_black'). "
+        "~25% đầu = dựng bối cảnh (calm, crossfade). Giữa = chuỗi manh mối, mỗi cảnh 1 manh mối + câu hỏi "
+        "(suspense, sfx 'heartbeat' đúng 1 lần giữa chuỗi). ~70% = manh mối LẬT NGƯỢC ('wipe_down'). "
+        "~85% = TIẾT LỘ sự thật (sfx 'impact', 'zoom_punch'). Kết = ý nghĩa hiện tại + câu hỏi mở ('droplet' rồi 'fade_black', rate '-5%')."
+    ),
+    "psychology": (
+        "NICHE: TÂM LÝ/SELF-HELP.\n"
+        "BẢN VẼ: Cảnh 1 = insight khoét nỗi đau thầm kín (KHÔNG sfx). Kế = đồng cảm 'không phải vì bạn lười...' (rate '-5%'). "
+        "Giữa = giải thích hiện tượng CÓ TÊN GỌI (hiệu ứng X). ~70% = khoảnh khắc NGỘ RA (sfx 'shimmer', transition 'droplet', rate '-8%'). "
+        "Kế = 1 hành động nhỏ áp dụng được ngay. Kết = câu hỏi tự vấn (closing, 'fade_black'). "
+        "TRÁNH whip_pan/zoom_punch; transition chủ đạo 'crossfade' chậm."
+    ),
+    "truecrime": (
+        "NICHE: TRUE CRIME/VỤ ÁN (nếu vụ án có thật: KHÔNG bịa chi tiết, không nêu tên chưa xác thực).\n"
+        "BẢN VẼ: Cảnh 1 = hiện trường/biến mất + 1 chi tiết rùng mình (sfx 'heartbeat', 'fade_black'). "
+        "Kế = dòng thời gian (suspense, crossfade). Giữa = nghi vấn → manh mối (sfx 'suspense'). "
+        "~70% = manh mối LẬT NGƯỢC (sfx 'bass_drop', 'whip_pan'). ~85% = sự thật (sfx 'impact', 'zoom_punch'). "
+        "Kết = kết cục + suy ngẫm ('droplet', rate '-5%')."
+    ),
+    "travel": (
+        "NICHE: DU LỊCH/KHÁM PHÁ.\n"
+        "BẢN VẼ: Cảnh 1 = teaser cảnh đẹp nhất + lời thách 'nơi này...' (sfx 'swoosh_soft', 'slide_up', rate '+10%'). "
+        "Kế = đường đến/không khí ('wipe_right'). Giữa = điểm độc nhất (sfx 'pop', 'zoom_through') "
+        "+ chi tiết GIÁC QUAN mùi/vị/âm thanh (sfx 'shimmer', crossfade, rate '-3%'). "
+        "Kết = chốt + rủ đi/tag bạn (sfx 'ding', 'fade_black')."
+    ),
+}
+
+
 # ── Base prompt riêng cho chế độ KỂ CHUYỆN LONG-FORM (style @sachhay_chondoc) ──
 # Khác hẳn base_storyteller (tối ưu hook giật gân 15-60s): đây là kể lại cốt truyện
 # sách/phim dạng dài, trầm lắng, footage thật khớp cảm xúc.
@@ -282,6 +379,7 @@ async def generate_script(
     narration_tone: str = "viral",
     character_description: Optional[str] = None,
     sync_characters: bool = False,
+    content_niche: Optional[str] = None,
 ) -> List[dict]:
     """
     Gọi Gemini để sinh N phân cảnh từ 1 chủ đề (topic).
@@ -350,6 +448,14 @@ async def generate_script(
     if tone_prompt:
         system_prompt += f"\n\n{tone_prompt}"
 
+    # ── Inject palette hiệu ứng: ưu tiên NICHE BLUEPRINT (chính xác vị trí cảnh),
+    # fallback palette theo tone nếu FE không truyền niche ──
+    if content_niche and content_niche in NICHE_BLUEPRINTS:
+        system_prompt += f"\n\n{NICHE_BLUEPRINTS[content_niche]}"
+    else:
+        effect_palette = TONE_EFFECT_PALETTES.get(narration_tone, TONE_EFFECT_PALETTES["viral"])
+        system_prompt += f"\n\n{effect_palette}"
+
     # ── Thêm hướng dẫn về số lượng từ dựa trên thời lượng mục tiêu ──
     dur_cfg = DURATION_CONFIG.get(target_duration)
     if dur_cfg:
@@ -370,7 +476,7 @@ async def generate_script(
         system_prompt += f"\n\n{consistency_guide}"
 
     def _call():
-        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone)
+        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "")
         if cached_result:
             logger.info("Using cached result for generate_script")
             return cached_result
@@ -393,7 +499,7 @@ async def generate_script(
                 pass
             parsed: ScriptResponse = response.parsed
             result = parsed.model_dump()
-            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone)
+            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "")
             return result
         except Exception as e:
             # KHÔNG trả kịch bản mock (trước đây trả video "Python" bất kể chủ đề, âm thầm

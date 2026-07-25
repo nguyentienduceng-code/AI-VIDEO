@@ -39,6 +39,7 @@ SLIDESHOW_CROSSFADE = 0.8      # giây — crossfade dài hơn cho slideshow
 AUDIO_FADEOUT_DURATION = 0.3   # giây — audio fade-out cuối mỗi cảnh để tránh ngắt đột ngột
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
 HOOK_CAROUSEL_DURATION = 3.5   # giây — độ dài clip hook carousel_quote chèn đầu video
+SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)
 
 # QUAN TRỌNG: font hỗ trợ dấu tiếng Việt (Unicode Latin Extended).
 # Windows: segoeuib.ttf. Linux: DejaVuSans.ttf
@@ -400,6 +401,14 @@ def render_final_video(
             clips.append(hook_clip.with_start(0.0))
             hook_duration = HOOK_CAROUSEL_DURATION
             final_duration = HOOK_CAROUSEL_DURATION
+            # Audio cho hook: tiếng trục quay (reel_spin) 0-1s + tiếng "chốt" (ding) khi bìa dừng
+            sfx_dir = os.path.join(BASE_DIR, "assets", "sfx")
+            reel = os.path.join(sfx_dir, "reel_spin.wav")
+            ding = os.path.join(sfx_dir, "ding.wav")
+            if os.path.isfile(reel):
+                audio_placements.append((reel, 0.0, 0.6, 0.0))
+            if os.path.isfile(ding):
+                audio_placements.append((ding, 1.0, 0.45, 0.0))
         except Exception as e:
             print(f"Hook Engine Error: {e}")
 
@@ -430,7 +439,8 @@ def render_final_video(
         if sfx_name:
             sfx_path = os.path.join(BASE_DIR, "assets", "sfx", f"{sfx_name}.wav")
             if os.path.isfile(sfx_path):
-                audio_placements.append((sfx_path, start_time, sfx_volume, 0.0))
+                # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc
+                audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN, 0.0))
 
         
         # Transition của scene[i] nghĩa là "chuyển cảnh SANG cảnh sau" (đúng như UI).

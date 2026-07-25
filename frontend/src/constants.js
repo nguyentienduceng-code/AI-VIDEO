@@ -43,6 +43,17 @@ export const VOICES = [
   { value: 'minion_pro', label: 'Đặc biệt - Minion Pro (Nhấn nhá)' },
 ];
 
+// Niche nội dung — kích hoạt palette hiệu ứng + bản vẽ cấu trúc cảnh riêng (backend NICHE_BLUEPRINTS)
+export const NICHE_OPTIONS = [
+  { value: '', label: '— Tự do (theo tone) —' },
+  { value: 'book', label: '📚 Review Sách/Phim' },
+  { value: 'finance', label: '💰 Tài chính/Làm giàu' },
+  { value: 'history', label: '🏛️ Lịch sử/Bí ẩn' },
+  { value: 'psychology', label: '🧠 Tâm lý/Self-help' },
+  { value: 'truecrime', label: '🔪 True Crime/Vụ án' },
+  { value: 'travel', label: '🌍 Du lịch/Khám phá' },
+];
+
 export const NARRATION_TONES = [
   { value: 'viral', label: '🔥 Viral Hook', desc: 'Gây sốc, cuốn hút, FOMO' },
   { value: 'storytelling', label: '📖 Kể chuyện', desc: 'Trầm lắng, cliffhanger, style review sách/phim' },

@@ -78,6 +78,7 @@ Mặc định (A) khi user nhắc "app", "render", "payload".
 ## 4. Tài nguyên (đọc khi cần — progressive disclosure)
 
 - `references/content-frameworks.md` — **khung nội dung theo niche** (Sách/Tài chính/Lịch sử/Tâm lý/True Crime/Du lịch). Đọc để content cụ thể, đúng chất.
+- `references/scene-blueprints.md` — **bản vẽ cảnh-theo-cảnh** cho từng niche: vai trò mỗi cảnh theo vị trí + emotion/sfx/transition/rate đúng chỗ. Điền lời vào khung này để cấu trúc chuẩn nhất (khớp preset cùng tên trong app).
 - `references/app-schema.md` — **nguồn chân lý** field + whitelist sfx/emotion/transition/bgm/hook_effect/tone/duration.
 - `references/stock-footage-guide.md` — viết mô tả tìm được trên Pexels (bảng "jargon → searchable").
 - `references/ai-image-keywords.md` — kho keyword cinematic cho chế độ ảnh AI.
