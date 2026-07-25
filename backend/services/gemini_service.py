@@ -105,7 +105,7 @@ class Scene(BaseModel):
     )
     sfx: str = Field(
         default="",
-        description="Hiệu ứng âm thanh tại cảnh này. CHỈ ĐƯỢC DÙNG 1 trong các giá trị: whoosh, pop, ding, riser, suspense, impact, bell, laugh. Bỏ trống nếu không cần."
+        description="Hiệu ứng âm thanh tại cảnh này. CHỈ ĐƯỢC DÙNG 1 trong các giá trị: whoosh, swoosh_soft, pop, tick, ding, bell, shimmer, riser, bass_drop, impact, suspense, heartbeat, laugh. Bỏ trống nếu không cần."
     )
     visual_effect: str = Field(
         default="zoom_in",

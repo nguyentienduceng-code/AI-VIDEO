@@ -55,7 +55,12 @@ export default function PresetManager() {
         color_grading: ctx.colorGrading,
         prefer_stock_video: ctx.preferStockVideo,
         use_sfx: ctx.useSfx,
-        sfx_volume: ctx.sfxVolume
+        sfx_volume: 8,
+        use_ken_burns: ctx.useKenBurns,
+        hook_zoom_boost: ctx.hookZoomBoost,
+        use_breathing: ctx.useBreathing,
+        use_frame_chaining: ctx.useFrameChaining,
+        use_beat_sync: ctx.useBeatSync
       };
 
       const res = await fetch(`${API_BASE}/api/presets`, {

@@ -45,11 +45,11 @@ export default function AdvancedSettings() {
           onChange={ctx.setUseKenBurns} 
           tooltip="Tự động zoom/pan nhẹ trên ảnh tĩnh nếu không dùng Veo"
         />
-        <ToggleRow 
-          label="Hiệu ứng âm thanh (SFX)" 
-          checked={ctx.useSfx} 
-          onChange={ctx.setUseSfx} 
-          tooltip="Bật hoặc tắt các tiếng vèo (whoosh), chuông (ding), nổ (pop) chèn giữa các cảnh"
+        <ToggleRow
+          label="Tự thêm SFX mở màn (Hook)"
+          checked={ctx.useSfx}
+          onChange={ctx.setUseSfx}
+          tooltip="Tự chèn tiếng Riser dâng trào ở cảnh mở màn (khi bật Hook Zoom Boost). Lưu ý: SFX bạn chọn RIÊNG cho từng cảnh trong phần Kịch bản LUÔN phát, không phụ thuộc nút này."
         />
         <ToggleRow
           label="Lấy hơi tự nhiên (Breathing)"
@@ -93,16 +93,27 @@ export default function AdvancedSettings() {
           <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
             <option value="word_by_word">Từng từ đập vào (Word-by-word)</option>
             <option value="full_shake">Rung lắc cả câu (Full shake)</option>
+            <option value="carousel_quote">Slot Machine & Bìa sách (Carousel Quote)</option>
           </select>
         </div>
         <div className="input-group" style={{ gridColumn: '1 / -1' }}>
-          <label className="field-label">TIÊU ĐỀ HOOK 3S ĐẦU (Tùy chọn)</label>
+          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (Áp dụng Từng từ/Rung lắc)</label>
           <input 
             type="text" 
             className="form-input form-input-sm" 
             value={ctx.hookText} 
             onChange={e => ctx.setHookText(e.target.value)} 
             placeholder="VD: BÍ MẬT ĐỘNG TRỜI VỀ ROCKEFELLER!..." 
+          />
+        </div>
+        <div className="input-group" style={{ gridColumn: '1 / -1' }}>
+          <label className="field-label">TRÍCH DẪN HOOK BÌA SÁCH (Quote - Áp dụng Carousel)</label>
+          <input 
+            type="text" 
+            className="form-input form-input-sm" 
+            value={ctx.hookQuote} 
+            onChange={e => ctx.setHookQuote(e.target.value)} 
+            placeholder="VD: GIÁ TRỊ NẰM Ở SỰ LỰA CHỌN..." 
           />
         </div>
         <div className="input-group">

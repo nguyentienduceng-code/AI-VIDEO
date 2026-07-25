@@ -34,11 +34,12 @@ export const AppProvider = ({ children }) => {
   const [useGpuEncode, setUseGpuEncode] = useState(true);
   const [hookZoomBoost, setHookZoomBoost] = useState(true);
   const [useSfx, setUseSfx] = useState(true);
-  const [sfxVolume, setSfxVolume] = useState(50);
+  const [sfxVolume, setSfxVolume] = useState(8);
   const [subtitleStyle, setSubtitleStyle] = useState('karaoke_bold');
   const [colorGrading, setColorGrading] = useState('warm_cinematic');
   const [watermarkText, setWatermarkText] = useState('');  
   const [hookText, setHookText] = useState('');
+  const [hookQuote, setHookQuote] = useState('');
   const [uploadSessionId, setUploadSessionId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [uploadLoading, setUploadLoading] = useState(false);
@@ -113,6 +114,13 @@ export const AppProvider = ({ children }) => {
     if (preset.prefer_stock_video !== undefined) setPreferStockVideo(preset.prefer_stock_video);
     if (preset.use_sfx !== undefined) setUseSfx(preset.use_sfx);
     if (preset.sfx_volume !== undefined) setSfxVolume(preset.sfx_volume);
+    
+    // Nâng cao (Dành riêng cho preset đặc biệt như Import JSON)
+    if (preset.use_ken_burns !== undefined) setUseKenBurns(preset.use_ken_burns);
+    if (preset.hook_zoom_boost !== undefined) setHookZoomBoost(preset.hook_zoom_boost);
+    if (preset.use_breathing !== undefined) setUseBreathing(preset.use_breathing);
+    if (preset.use_frame_chaining !== undefined) setUseFrameChaining(preset.use_frame_chaining);
+    if (preset.use_beat_sync !== undefined) setUseBeatSync(preset.use_beat_sync);
   }, []);
 
   const contextValue = {
@@ -128,7 +136,7 @@ export const AppProvider = ({ children }) => {
     useGpuEncode, setUseGpuEncode, hookZoomBoost, setHookZoomBoost,
     useSfx, setUseSfx, sfxVolume, setSfxVolume,
     subtitleStyle, setSubtitleStyle, colorGrading, setColorGrading, watermarkText, setWatermarkText,
-    hookText, setHookText,
+    hookText, setHookText, hookQuote, setHookQuote,
     uploadSessionId, setUploadSessionId, uploadedFiles, setUploadedFiles,
     uploadLoading, setUploadLoading, scenes, setScenes, scriptLoading, setScriptLoading,
     status, setStatus, progress, setProgress, jobMessage, setJobMessage,

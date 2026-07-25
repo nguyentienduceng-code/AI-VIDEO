@@ -931,8 +931,8 @@ async def _synthesize_speech_internal(
     # Chuẩn hóa text
     text = _normalize_text(text)
 
-    # Xử lý giọng ảo (Minion) — bypass prosody engine
-    use_prosody = True
+    # Xử lý giọng ảo (Minion) & Disable Prosody Engine mặc định để giữ độ mượt mà toàn cục (full-context TTS)
+    use_prosody = False
     if voice == "minion":
         voice = "vi-VN-HoaiMyNeural"
         rate = "+30%"

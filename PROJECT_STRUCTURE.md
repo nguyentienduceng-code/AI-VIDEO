@@ -1,6 +1,6 @@
 áa
 
-# Bảng Giải Trình Cấu Trúc Dự Án AI-VIDEO-MAKER (Toàn Diện v2.0)
+# Bảng Giải Trình Cấu Trúc Dự Án AI-VIDEO-MAKER (Toàn Diện v2.3+)
 
 *Tài liệu dành cho chuyên gia AI & IT phục vụ việc đánh giá tổng thể, bảo trì và lên kế hoạch nâng cấp.*
 
@@ -28,6 +28,11 @@
 
 ```text
 AI-VIDEO-MAKER/
+├── USER_GUIDE.md                 # Hướng dẫn sử dụng cho người dùng (Cách dùng App & AI Skill)
+├── PROJECT_STRUCTURE.md          # Sơ đồ kiến trúc tổng thể (file này)
+├── ROADMAP.md                    # Lịch trình phát triển và nâng cấp hệ thống
+├── ARCHITECTURE.md               # Kiến trúc luồng dữ liệu chuyên sâu
+├── .agents/skills/               # Nơi chứa các AI Skill (vd: content-cinematic)
 ├── frontend/                     # UI Application (React + Vite)
 │   ├── src/App.jsx               # Toàn bộ logic giao diện, cài đặt hiệu ứng và kết nối API.
 │   ├── src/index.css             # Định dạng UI bằng Tailwind CSS.
@@ -43,9 +48,11 @@ AI-VIDEO-MAKER/
 │   │   ├── audio_mix_service.py  # FFmpeg Mastering Engine: Xử lý BGM Auto-ducking, EQ, Loudnorm & ASS Burn-in.
 │   │   ├── beat_sync.py          # Phân tích Audio peak tạo điểm nhấn hình ảnh.
 │   │   ├── motion_effects.py     # Source of Truth cho Timeline, Zoom, Ken Burns, Transitions.
+│   │   ├── preset_service.py     # Hệ thống quản lý và tự động merge Presets người dùng.
+│   │   ├── project_service.py    # Hệ thống Smart Resume Checkpoints (lưu trạng thái job).
 │   │   └── key_manager.py        # Quản lý xoay vòng API Keys.
 │   ├── assets/                   # Kho lưu trữ tài nguyên tạm và thành phẩm.
-│   │   ├── audio/, images/, bgm/, voices_preview/, output/
+│   │   ├── audio/, images/, bgm/, voices_preview/, output/, cache/, presets.json
 │   └── .env                      # Lưu biến môi trường.
 ├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình.
 └── export_context.py             # Script tự động trích xuất mã nguồn ra file AI_CONTEXT.md.
@@ -62,12 +69,15 @@ Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pi
 1. `GET /api/bgm-list`: Lấy danh sách nhạc nền có sẵn.
 2. `GET /api/voices`: Lấy danh sách giọng đọc tiếng Việt.
 3. `POST /api/upload-images`: Tải ảnh cục bộ lên server (Dành cho mode Photo Narration / Slideshow).
+4. `POST /api/voice-clone`: Upload mẫu âm thanh 5-10s tạo giọng clone tự động bằng Whisper.
+5. `GET/POST/DELETE /api/presets`: Quản lý cấu hình lưu sẵn.
+6. `GET /api/quota`: Kiểm tra quota & giới hạn API.
 
 ### Nhóm API Core Pipeline:
 
 4. **Bước 1: Sinh Kịch bản (`POST /api/generate-script`)**
    - **Đầu vào:** Chủ đề, Mô tả nhân vật, Mode.
-   - **Hoạt động:** Chạy đồng bộ (Sync). Gọi Gemini phân tích và trả về ngay mảng JSON chứa các cảnh (Scenes) chi tiết (Hình ảnh, Lời bình).
+   - **Hoạt động:** Chạy đồng bộ (Sync). Gọi Gemini phân tích và trả về ngay mảng JSON chứa các cảnh (Scenes) chi tiết (Hình ảnh, Lời bình, SFX, Chuyển cảnh riêng).
 5. **Bước 2: Kết xuất Video (`POST /api/render-video`)**
    - **Đầu vào:** Danh sách Scenes, Cấu hình hiệu ứng.
    - **Hoạt động:**
@@ -86,11 +96,13 @@ Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pi
 
 *Các lỗi lớn ở bản MVP như Event Loop crash, HTTP Timeout, Tràn bộ nhớ temp file đã được fix dứt điểm ở v2.0.*
 
-### ✅ Đã xử lý (v2.1 — 2026-07-23):
+### ✅ Đã xử lý (v2.3+ — 2026-07-24):
 
 1. **~~Quản lý State Frontend~~:** `App.jsx` đã được tách thành 9 components + `AppContext.jsx` quản lý state tập trung.
 2. **~~Offload Render~~:** `render_worker.py` chạy MoviePy/FFmpeg trong `multiprocessing.Process` riêng biệt, giao tiếp qua file JSON.
 3. **~~Cache AI~~:** `cache_service.py` V2 cache binary media (ảnh/video) theo hash prompt. Auto-cleanup khi > 5GB.
+4. **~~Smart Resume Checkpoint~~:** Lưu tiến trình render vào JSON (`project_service.py`) để tránh chạy lại TTS/Hình ảnh từ đầu khi lỗi.
+5. **~~Pexels Video Stock Fix~~:** Fix lỗi HTTP 403 bằng cách thêm `User-Agent` chuẩn, hỗ trợ `prefer_stock_video` ép dùng video thật.
 
 ### 🟢 Định hướng mở rộng:
 
@@ -120,6 +132,13 @@ class RenderVideoRequest(BaseModel):
     hook_zoom_boost: bool = False
     use_ken_burns: bool = False
     use_animated_captions: bool = True
+    subtitle_style: str = "karaoke_bold"
+    prefer_stock_video: bool = False
+    use_sfx: bool = True
+    sfx_volume: float = 0.5
+    color_grading: str = "warm_cinematic"
+    hook_effect: str = "word_by_word"
+    use_breathing: bool = False
 ```
 
 ### Phụ lục 2: Đồng bộ nhịp tim nhạc - Beat Sync (backend/services/beat_sync.py)
@@ -136,4 +155,4 @@ peak_times = librosa.frames_to_time(peaks, sr=sr)
 
 ---
 
-*Tài liệu được kết xuất tự động - Đã cập nhật v2.0 Điện Ảnh.*
+*Tài liệu được kết xuất tự động - Đã cập nhật v2.3+ Điện Ảnh.*

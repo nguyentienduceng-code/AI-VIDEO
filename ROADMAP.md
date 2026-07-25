@@ -123,6 +123,8 @@
 - **Đường dẫn asset phải tuyệt đối** theo `__file__`, KHÔNG dùng path tương đối (phụ thuộc CWD/pm2).
 - **`subprocess.run` FFmpeg phải có `timeout=`** (tránh treo vô hạn).
 - **Transition "fancy" phải bọc `try/except` fallback crossfade** — không để hiệu ứng lạ làm hỏng render.
+- **KHÔNG dùng `CompositeAudioClip` để trộn SFX ngắn** (MoviePy 2.1.2 bug: `frame_function` đọc clip vượt cửa sổ khi t là mảng → crash với file <1s như tick.wav). Trộn audio bằng numpy trong `_mix_audio_tracks` (đọc `soundfile`, resample `librosa`). `AudioFileClip.to_soundarray` cũng đọc buffer 50000 mẫu vượt file ngắn → tránh cho SFX ngắn.
+- **SFX per-scene phải LUÔN phát** (không gate bởi `use_sfx` global). Transition per-scene: `scene[i].transition` = biên i→i+1 (dùng transition cảnh TRƯỚC cho lối vào cảnh sau).
 - **Veo cần billing** — key free-tier trả 429 với mọi model Veo. `_do_visuals` tự tắt Veo + báo UI khi gặp 429/403.
 
 **Backtest offline (không cần chạy server):**
@@ -177,6 +179,13 @@ PYTHONPATH=<abs backend> PYTHONIOENCODING=utf-8 venv/Scripts/python.exe <script>
 | 38 | Toggle "Dùng video nền thật (Pexels stock)" — ép video thật cho MỌI cảnh không cần Veo/billing, fallback ảnh AI nếu không có | `main.py`, `AdvancedSettings.jsx`, `AppContext.jsx` | 2026-07-24 |
 | 39 | **Tầng A — Bắt kịp style viral kể chuyện sách/phim (@sachhay_chondoc)**: tone `storytelling` + base prompt long-form (cliffhanger, footage thật) + duration 240s/300s | `gemini_service.py`, `constants.js` | 2026-07-24 |
 | 40 | Preset "📖 Kể Chuyện Sách/Phim" (16:9 + cinematic_box + warm + OmniVoice trầm + rate -5% + prefer_stock_video) + migration merge preset default mới | `preset_service.py`, `main.py`, `AppContext.jsx`, `PresetManager.jsx` | 2026-07-24 |
+| 41 | **FIX transition per-scene off-by-one**: `scene[i].transition` giờ điều khiển đúng biên i→i+1 (trước đây transition cảnh 0 bị bỏ, mỗi lựa chọn lệch 1 cảnh) | `video_service.py` `render_final_video` | 2026-07-25 |
+| 42 | **FIX SFX per-scene không phát khi tắt SFX global**: SFX chọn riêng từng cảnh LUÔN phát; toggle global chỉ còn điều khiển auto-riser mở màn | `video_service.py`, `AdvancedSettings.jsx` | 2026-07-25 |
+| 43 | Bổ sung transition (14 kiểu): +zoom_punch, slide_down, wipe_right, wipe_down | `video_service.py`, `constants.js` | 2026-07-25 |
+| 44 | Bổ sung 5 SFX tổng hợp: swoosh_soft, bass_drop, tick, shimmer, heartbeat (có envelope) | `assets/sfx/`, `constants.js`, `gemini_service.py` (whitelist) | 2026-07-25 |
+| 45 | **FIX crash "Accessing time t=... tick.wav"**: MoviePy 2.1.2 CompositeAudioClip đọc SFX ngắn vượt cửa sổ + to_soundarray đọc buffer vượt file ngắn. Refactor sang TRỘN AUDIO BẰNG NUMPY (đọc bằng soundfile, đúng độ dài, resample librosa) | `video_service.py` `_mix_audio_tracks` | 2026-07-25 |
+| 46 | **FIX hook carousel_quote không render**: `render_kwargs` thiếu `hook_effect`/`hook_quote` → hàm dựng carousel không nhận → feature chết âm thầm (bìa sách full-screen thay vì slot-machine+quote). Thêm vào cả worker path + inline path | `main.py` | 2026-07-25 |
+| 47 | **FIX phụ đề lệch 3.5s khi carousel** + bỏ mutate `asset["start_time"]` (gây double-offset & cộng dồn khi render lại). Offset xác định qua `hook_effect` trong `generate_ass_file` (idempotent) | `video_service.py`, hằng `HOOK_CAROUSEL_DURATION` | 2026-07-25 |
 
 ---
 

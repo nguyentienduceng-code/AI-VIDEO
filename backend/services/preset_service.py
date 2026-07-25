@@ -22,7 +22,7 @@ DEFAULT_PRESETS = [
         "bgm_volume": 15,
         "subtitle_style": "karaoke_bold",
         "use_sfx": True,
-        "sfx_volume": 50,
+        "sfx_volume": 15,
         "is_default": True,
         "created_at": "2026-07-21T00:00:00"
     },
@@ -40,7 +40,7 @@ DEFAULT_PRESETS = [
         "bgm_volume": 20,
         "subtitle_style": "cinematic_box",
         "use_sfx": True,
-        "sfx_volume": 40,
+        "sfx_volume": 15,
         "is_default": True,
         "created_at": "2026-07-21T00:00:00"
     },
@@ -62,9 +62,34 @@ DEFAULT_PRESETS = [
         "color_grading": "warm_cinematic",
         "prefer_stock_video": True,
         "use_sfx": False,
-        "sfx_volume": 30,
+        "sfx_volume": 15,
         "is_default": True,
         "created_at": "2026-07-24T00:00:00"
+    },
+    {
+        "id": "preset_import_json",
+        "name": "🤖 Kịch Bản AI (Chuyên dụng Import JSON)",
+        "aspect_ratio": "9:16",
+        "voice": "vi-VN-NamMinhNeural",
+        "art_style": "Anime illustration, vibrant colors, Studio Ghibli inspired",
+        "bgm_track": "auto",
+        "target_duration": "60s",
+        "narration_tone": "storytelling",
+        "speech_rate": "+0%",
+        "speech_pitch": "+0Hz",
+        "bgm_volume": 15,
+        "subtitle_style": "karaoke_bold",
+        "color_grading": "none",
+        "prefer_stock_video": False,
+        "use_sfx": False,
+        "sfx_volume": 15,
+        "use_ken_burns": False,
+        "hook_zoom_boost": False,
+        "use_breathing": True,
+        "use_frame_chaining": True,
+        "use_beat_sync": True,
+        "is_default": True,
+        "created_at": "2026-07-25T00:00:00"
     }
 ]
 

@@ -1,6 +1,6 @@
-# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.0)
+# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.3+)
 
-Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.0 - Đã tích hợp các tính năng điện ảnh nâng cao).
+Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.3+ - Đã tích hợp các tính năng điện ảnh nâng cao, router 4 tầng và cache thông minh).
 
 ---
 
@@ -26,13 +26,12 @@ Quy trình từ ý tưởng thành video hoàn chỉnh diễn ra hoàn toàn t�
 - Hệ thống phân tích chủ đề và trả về các phân cảnh chi tiết (lời thoại, mô tả hình ảnh).
 
 ### Bước 3: Tạo Âm thanh & Hình ảnh tĩnh/động (TTS & AI Generation)
-- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.2** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) nếu GPU quá tải.
-- **Images:** `image_router.py` gọi **Google Imagen 3** để sinh ảnh minh hoạ có độ nhất quán cao dựa trên mô tả nhân vật.
-- **Video (Tuỳ chọn):** `veo_service.py` gọi **Google Veo 3.1** để biến ảnh tĩnh thành video clip ngắn chuyển động chân thực.
+- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.3** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) và TTS Cache. Hỗ trợ Voice Cloning qua API chuyên biệt.
+- **Images/Video Router 4 Tầng:** `image_router.py` quản lý luồng fallback: **Veo 3.1** (ưu tiên nếu bật) $\rightarrow$ **Pexels Stock Video** (video thật) $\rightarrow$ **Google Imagen 3** (ảnh AI chất lượng cao) $\rightarrow$ **Pollinations AI** (ảnh AI siêu tốc). Hỗ trợ chế độ `prefer_stock_video` ép dùng video stock cho 100% cảnh.
 
 ### Bước 4: Render Video (Video Service)
 - Dịch vụ `video_service.py` sử dụng thư viện **MoviePy v2.x**.
-- **Hiệu ứng & Chuyển cảnh:** Áp dụng Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining (chuyển cảnh mượt), và Beat Sync (giật theo nhịp nhạc nền).
+- **Hiệu ứng & Chuyển cảnh:** Áp dụng Transition Engine 10 kiểu (slide, whip_pan, page_flip...), Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining, và Beat Sync. Hỗ trợ thay đổi từng cảnh.
 - **Subtitles & BGM:** Tự động Auto-ducking nhạc nền khi có giọng đọc, render phụ đề động (Karaoke effect).
 - Xuất file `.mp4` (hỗ trợ tăng tốc GPU NVENC) ở định dạng khung hình dọc (Tiktok/Reels) về thư mục `assets/output`.
 
@@ -56,6 +55,8 @@ AI-VIDEO-MAKER/
 │   │   ├── audio_mix_service.py  # Xử lý Smart Audio Mixing (Auto-ducking)
 │   │   ├── beat_sync.py          # Logic đồng bộ hình ảnh/video theo nhịp bass (Beat Sync)
 │   │   ├── motion_effects.py     # Hiệu ứng chuyển động (Ken Burns, Zoom Boost)
+│   │   ├── preset_service.py     # Quản lý cấu hình lưu sẵn của người dùng
+│   │   ├── project_service.py    # Quản lý Checkpoint Smart Resume
 │   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
 │   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
 │   ├── assets/                   # Nơi lưu trữ tài nguyên
@@ -70,12 +71,13 @@ AI-VIDEO-MAKER/
 ## 4. Các tính năng Nâng cao (Advanced Features)
 
 Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiên tiến:
-1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường).
-2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence dựa trên ngữ cảnh câu), và Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác. Emotion Profiles V2 kích hoạt pitch_delta ±3-5Hz cho giọng Edge-TTS diễn cảm hơn.
+1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường). Tự động cảnh báo UI khi hết quota billing.
+2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence), Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác, và kho giọng custom.
 3. **Beat Sync & Audio Mixing:** Phân tích Peak âm thanh của BGM để giật hình/chuyển cảnh khớp nhịp nhạc (Hype Drill, Phonk).
-4. **Motion Dynamics:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video để giữ chân người xem).
-5. **Hardware Acceleration:** Hỗ trợ render tốc độ cao qua GPU NVENC.
-6. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
+4. **Motion Dynamics & Transitions:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video), và Transition Engine 10 kiểu.
+5. **Stock Video Router & Prefer Stock Mode:** Xử lý luồng tải video stock thông minh, tự động lọc từ khóa, kèm toggle ép dùng footage thực tế tạo sự chân thực.
+6. **Smart Resume Checkpoints:** Khôi phục render dang dở không cần tốn API chạy lại các bước TTS/Hình ảnh đã xong.
+7. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
 
 ---
 
@@ -83,10 +85,11 @@ Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiê
 
 Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đứt gãy Event Loop, HTTP Timeout, rò rỉ bộ nhớ), vẫn còn một số điểm cần tối ưu:
 
-### ✅ Đã xử lý (v2.1 — 2026-07-23):
+### ✅ Đã xử lý (v2.3+ — 2026-07-24):
 1. **~~Tách Component Frontend~~:** `App.jsx` đã được tái cấu trúc thành 9 components riêng biệt + `AppContext.jsx` quản lý state tập trung.
-2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con. FastAPI poll file status JSON để broadcast WebSocket, không bị block event loop. Fallback inline nếu đạt giới hạn worker.
-3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt. Tích hợp vào `image_router.py` và `veo_service.py`. Auto-cleanup khi cache > 5GB.
+2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con.
+3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt.
+4. **~~Smart Resume & Preset System~~:** Đã bổ sung cơ chế lưu file project tự động để nối tiếp render nếu lỗi, cùng hệ thống preset.
 
 ### 🟢 Định hướng tiếp theo:
 1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.

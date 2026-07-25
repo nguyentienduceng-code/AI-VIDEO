@@ -173,21 +173,40 @@ export default function ConfigSection() {
           <select className="form-select" value={ctx.bgm} onChange={e => ctx.setBgm(e.target.value)} style={{ flex: 1 }}>
             <option value="auto">✨ Tự động chọn bằng AI</option>
             <option value="none">Không dùng nhạc nền</option>
-            <option value="afro_pop">Afro Pop</option>
-            <option value="black_light_all_good_folks_main">Black Light (All Good Folks)</option>
-            <option value="comedy_cartoon">Comedy Cartoon</option>
-            <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
-            <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
-            <option value="hype_drill">Hype Drill</option>
-            <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
-            <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
-            <option value="moment_of_peace">Moment Of Peace</option>
-            <option value="music_promotion">Music Promotion</option>
-            <option value="new_age_nature">New Age Nature</option>
-            <option value="no_sleep_hiphop">No Sleep Hip-Hop</option>
-            <option value="rap_beat">Rap Beat</option>
-            <option value="running_night">Running Night</option>
-            <option value="type_beat">Type Beat</option>
+
+            <optgroup label="🧘‍♀️ Thiền định & Chữa lành (Ambient)">
+              <option value="moment_of_peace">Moment Of Peace</option>
+              <option value="new_age_nature">New Age Nature</option>
+              <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
+            </optgroup>
+
+            <optgroup label="🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)">
+              <option value="ghost_piano_yeti_music_main_version">Ghost Piano (Yeti Music)</option>
+              <option value="black_light_all_good_folks_main">Black Light (All Good Folks)</option>
+              <option value="running_night">Running Night</option>
+            </optgroup>
+
+            <optgroup label="☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)">
+              <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
+              <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
+            </optgroup>
+
+            <optgroup label="🎉 Năng động & Tích cực (Upbeat)">
+              <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
+              <option value="afro_pop">Afro Pop</option>
+              <option value="music_promotion">Music Promotion</option>
+            </optgroup>
+
+            <optgroup label="🎧 Hip-hop & Đường phố (Rap/Trap)">
+              <option value="hype_drill">Hype Drill</option>
+              <option value="no_sleep_hiphop">No Sleep Hip-Hop</option>
+              <option value="rap_beat">Rap Beat</option>
+              <option value="type_beat">Type Beat</option>
+            </optgroup>
+
+            <optgroup label="🤡 Vui nhộn (Funny)">
+              <option value="comedy_cartoon">Comedy Cartoon</option>
+            </optgroup>
           </select>
           {ctx.bgm !== 'none' && <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.bgm)}><Play size={18} /></button>}
           {ctx.bgm !== 'none' && <input type="range" className="vol-slider" min="0" max="100" value={ctx.bgmVolume} onChange={e => ctx.setBgmVolume(Number(e.target.value))} style={{ width: 80 }} />}

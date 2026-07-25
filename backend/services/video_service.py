@@ -1,4 +1,4 @@
-﻿"""
+"""
 video_service.py
 -----------------
 NÂNG CẤP V2:
@@ -21,7 +21,6 @@ from moviepy import (
     VideoFileClip,
     ImageClip,
     CompositeVideoClip,
-    CompositeAudioClip,
     TextClip,
     concatenate_videoclips,
 )
@@ -39,6 +38,7 @@ CROSSFADE_DURATION = 0.4       # giây — crossfade mượt giữa 2 cảnh (t�
 SLIDESHOW_CROSSFADE = 0.8      # giây — crossfade dài hơn cho slideshow
 AUDIO_FADEOUT_DURATION = 0.3   # giây — audio fade-out cuối mỗi cảnh để tránh ngắt đột ngột
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
+HOOK_CAROUSEL_DURATION = 3.5   # giây — độ dài clip hook carousel_quote chèn đầu video
 
 # QUAN TRỌNG: font hỗ trợ dấu tiếng Việt (Unicode Latin Extended).
 # Windows: segoeuib.ttf. Linux: DejaVuSans.ttf
@@ -65,8 +65,8 @@ class SceneAsset(TypedDict):
 # Danh sách transition hợp lệ (đồng bộ với frontend constants.TRANSITIONS)
 VALID_TRANSITIONS = {
     "crossfade", "fade_black", "fade_white", "zoom_through",
-    "slide_left", "slide_right", "slide_up", "whip_pan",
-    "page_flip", "droplet",
+    "slide_left", "slide_right", "slide_up", "slide_down", "whip_pan",
+    "page_flip", "droplet", "zoom_punch", "wipe_right", "wipe_down",
 }
 
 
@@ -102,18 +102,31 @@ def _apply_transition(scene, transition, add_crossfade_in, crossfade_dur, video_
         if transition == "zoom_through":
             return scene.with_effects([CrossFadeIn(cf * 0.8), CrossFadeOut(cf * 0.8)])
 
-        if transition in ("slide_left", "slide_right", "slide_up", "whip_pan", "page_flip"):
+        if transition == "zoom_punch":
+            # Giật zoom vào: cảnh phóng to 1.4 rồi thu về 1.0 khi xuất hiện (đấm thị giác)
+            def _punch(t, d=cf):
+                p = min(t / d, 1.0) if d > 0 else 1.0
+                ease = 1 - (1 - p) ** 3
+                return 1.4 - 0.4 * ease
+
+            scene = scene.resized(_punch).with_position("center")
+            scene = scene.with_effects([CrossFadeIn(cf * 0.5), CrossFadeOut(cf)])
+            return CompositeVideoClip([scene], size=(video_width, video_height)).with_duration(scene.duration)
+
+        if transition in ("slide_left", "slide_right", "slide_up", "slide_down", "whip_pan", "page_flip"):
             slide_dur = cf * (0.5 if transition == "whip_pan" else 1.0)
 
             def _pos(t, tr=transition, d=slide_dur):
                 p = min(t / d, 1.0) if d > 0 else 1.0
                 ease = 1 - (1 - p) ** 3  # ease-out cubic cho cảm giác "đẩy" mượt
                 if tr in ("slide_left", "whip_pan", "page_flip"):
-                    return (int(video_width * (1 - ease)), 0)     # vào từ phải
+                    return (int(video_width * (1 - ease)), 0)      # vào từ phải
                 if tr == "slide_right":
-                    return (int(-video_width * (1 - ease)), 0)    # vào từ trái
+                    return (int(-video_width * (1 - ease)), 0)     # vào từ trái
                 if tr == "slide_up":
-                    return (0, int(video_height * (1 - ease)))    # vào từ dưới
+                    return (0, int(video_height * (1 - ease)))     # vào từ dưới
+                if tr == "slide_down":
+                    return (0, int(-video_height * (1 - ease)))    # vào từ trên
                 return (0, 0)
 
             scene = scene.with_position(_pos)
@@ -129,19 +142,32 @@ def _apply_transition(scene, transition, add_crossfade_in, crossfade_dur, video_
             scene = scene.with_effects([CrossFadeOut(cf)])
             return CompositeVideoClip([scene], size=(video_width, video_height)).with_duration(scene.duration)
 
-        if transition == "droplet":
-            # Giọt nước: mặt nạ hình tròn lan rộng từ tâm ra (ripple reveal)
+        if transition in ("droplet", "wipe_right", "wipe_down"):
+            # Mặt nạ reveal: droplet=tròn lan từ tâm; wipe_right=lộ trái→phải; wipe_down=trên→dưới
             import numpy as np
             from moviepy import VideoClip
             w, h = video_width, video_height
-            max_r = ((w ** 2 + h ** 2) ** 0.5) / 2.0
-            yy, xx = np.ogrid[:h, :w]
-            dist = np.sqrt((xx - w / 2.0) ** 2 + (yy - h / 2.0) ** 2)
+            if transition == "droplet":
+                max_r = ((w ** 2 + h ** 2) ** 0.5) / 2.0
+                yy, xx = np.ogrid[:h, :w]
+                dist = np.sqrt((xx - w / 2.0) ** 2 + (yy - h / 2.0) ** 2)
 
-            def _mask_frame(t, d=cf):
-                p = min(t / d, 1.0) if d > 0 else 1.0
-                ease = 1 - (1 - p) ** 2
-                return (dist <= ease * max_r).astype(float)
+                def _mask_frame(t, d=cf):
+                    p = min(t / d, 1.0) if d > 0 else 1.0
+                    ease = 1 - (1 - p) ** 2
+                    return (dist <= ease * max_r).astype(float)
+            else:
+                col_idx = np.arange(w).reshape(1, w)
+                row_idx = np.arange(h).reshape(h, 1)
+
+                def _mask_frame(t, d=cf, tr=transition):
+                    p = min(t / d, 1.0) if d > 0 else 1.0
+                    ease = 1 - (1 - p) ** 2
+                    if tr == "wipe_right":
+                        m = (col_idx <= ease * w).astype(float)
+                        return np.broadcast_to(m, (h, w)).copy()
+                    m = (row_idx <= ease * h).astype(float)
+                    return np.broadcast_to(m, (h, w)).copy()
 
             mask = VideoClip(_mask_frame, is_mask=True).with_duration(scene.duration)
             return scene.with_mask(mask).with_effects([CrossFadeOut(cf)])
@@ -181,21 +207,25 @@ def _build_scene_clip(
             loops = math.ceil(duration / media_clip.duration)
             media_clip = concatenate_videoclips([media_clip] * loops)
         media_clip = media_clip.subclipped(0, duration)
-        media_clip = media_clip.resized(height=video_height)
+        media_ratio = media_clip.w / media_clip.h
     else:
         media_clip = (
             ImageClip(asset["image_path"])
             .with_duration(duration)
-            .resized(height=video_height)
         )
-        
-    # Cắt để tỷ lệ luôn đúng trước khi zoom
-    if media_clip.w < video_width:
-        media_clip = media_clip.resized(width=video_width)
+        media_ratio = media_clip.w / media_clip.h
 
-    # Hiệu ứng chuyển động (Ken Burns) đã được xử lý bằng FFmpeg trong motion_effects.py trước đó
-    # Nên media_clip ở đây (dù là ảnh tĩnh hay video .mp4) chỉ cần giữ đúng tỷ lệ và center
-    media_clip = media_clip.with_position("center")
+    # KHẮC PHỤC LỖI CẮT ẢNH SẢN PHẨM: Dùng kỹ thuật Fit (chèn viền đen) thay vì Crop Fill
+    target_ratio = video_width / video_height
+    if abs(target_ratio - media_ratio) > 0.05:
+        from moviepy import ColorClip
+        bg = ColorClip((video_width, video_height), color=(0, 0, 0)).with_duration(duration)
+        scale_fit = min(video_width / media_clip.w, video_height / media_clip.h)
+        fg = media_clip.resized(scale_fit).with_position("center")
+        media_clip = CompositeVideoClip([bg, fg], size=(video_width, video_height)).with_duration(duration)
+    else:
+        scale_fill = max(video_width / media_clip.w, video_height / media_clip.h)
+        media_clip = media_clip.resized(scale_fill).with_position("center")
 
     layers = [media_clip]
     
@@ -243,6 +273,84 @@ def _build_scene_clip(
 # BGM Mix and Mastering are now delegated to FFmpeg in audio_mix_service.py
 
 
+def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
+    """
+    Trộn nhiều đoạn audio (path, start_time, volume, fadeout) thành 1 AudioArrayClip bằng numpy.
+
+    LÝ DO KHÔNG dùng CompositeAudioClip: MoviePy 2.1.2 có bug — frame_function dùng
+    `if (part is not False)` mà `part` là mảng numpy khi ghi audio theo chunk, khiến nó gọi
+    get_frame trên MỌI clip cho MỌI thời điểm (kể cả ngoài cửa sổ). SFX ngắn (vd tick.wav
+    0.05s) bị đọc tại t=1.0s → lỗi "Accessing time t=... with clip duration=...".
+    Trộn thủ công bằng numpy đọc mỗi file ĐÚNG độ dài của nó nên tuyệt đối an toàn.
+    """
+    import math
+    import numpy as np
+    import soundfile as sf
+    from moviepy.audio.AudioClip import AudioArrayClip
+
+    def _read(path):
+        """Đọc audio ĐÚNG độ dài file bằng soundfile (WAV & MP3), resample về sr nếu lệch.
+        soundfile không đọc chunk vượt biên như MoviePy nên an toàn với file ngắn (tick 0.05s)."""
+        data, file_sr = sf.read(path, dtype="float32", always_2d=True)  # (n, ch)
+        if file_sr != sr and len(data) > 0:
+            import librosa
+            data = librosa.resample(data.T, orig_sr=file_sr, target_sr=sr).T
+        return np.ascontiguousarray(data, dtype=np.float32)
+
+    total_samples = int(math.ceil(max(total_duration, 0.1) * sr)) + sr  # +1s đệm an toàn
+    master = np.zeros((total_samples, 2), dtype=np.float32)
+    used = False
+
+    for path, start, volume, fadeout in placements:
+        try:
+            arr = _read(path)
+        except Exception as e:
+            # Fallback: đọc qua MoviePy nếu soundfile không xử lý được định dạng
+            try:
+                from moviepy.audio.io.AudioFileClip import AudioFileClip
+                clip = AudioFileClip(path)
+                arr = np.asarray(clip.to_soundarray(fps=sr), dtype=np.float32)
+                clip.close()
+                if arr.ndim == 1:
+                    arr = arr[:, None]
+            except Exception as e2:
+                print(f"[AudioMix] Bỏ qua {os.path.basename(path)}: {e2}")
+                continue
+
+        # Chuẩn hoá về stereo (n, 2)
+        if arr.ndim == 1:
+            arr = np.column_stack([arr, arr])
+        elif arr.shape[1] == 1:
+            arr = np.repeat(arr, 2, axis=1)
+        elif arr.shape[1] > 2:
+            arr = arr[:, :2]
+
+        if volume != 1.0:
+            arr = arr * float(volume)
+
+        if fadeout and fadeout > 0:
+            fs = int(fadeout * sr)
+            if 0 < fs < len(arr):
+                arr[-fs:] *= np.linspace(1.0, 0.0, fs)[:, None]
+
+        s = int(start * sr)
+        if s >= total_samples or len(arr) == 0:
+            continue
+        e = min(s + len(arr), total_samples)
+        master[s:e] += arr[: e - s]
+        used = True
+
+    if not used:
+        return None
+
+    # Chống vỡ tiếng (clipping) nếu tổng biên độ vượt 1.0
+    peak = float(np.max(np.abs(master))) if master.size else 0.0
+    if peak > 1.0:
+        master /= peak
+
+    return AudioArrayClip(master, fps=sr)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Main render function
 # ─────────────────────────────────────────────────────────────────────
@@ -277,50 +385,59 @@ def render_final_video(
         bgm_volume = 0.8
 
     clips = []
-    audio_tracks = []
+    audio_placements = []  # (path, start_time, volume, fadeout) — trộn bằng numpy sau vòng lặp
     speech_segments = []
     final_duration = 0.0
 
+    # ── Hook Engine (Prepend clip carousel_quote vào đầu video) ──
+    hook_duration = 0.0
+    if kwargs.get("hook_effect") == "carousel_quote":
+        try:
+            from services.hook_engine import build_carousel_hook
+            cover_img = scene_assets[0]["image_path"]
+            hook_quote = kwargs.get("hook_quote", "")
+            hook_clip = build_carousel_hook(cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
+            clips.append(hook_clip.with_start(0.0))
+            hook_duration = HOOK_CAROUSEL_DURATION
+            final_duration = HOOK_CAROUSEL_DURATION
+        except Exception as e:
+            print(f"Hook Engine Error: {e}")
+
     for i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
-        start_time = asset.get("start_time", 0.0)
+        # KHÔNG mutate asset["start_time"] (gây cộng dồn nếu render lại + double-offset với
+        # generate_ass_file). Chỉ dùng biến local; phụ đề tự cộng offset qua hook_effect.
+        start_time = asset.get("start_time", 0.0) + hook_duration
         has_audio = bool(asset.get("audio_path"))
         
         # Audio ducking tracking
         if has_audio:
             speech_segments.append((start_time, start_time + dur))
             
-        # ── Build Audio Track (Đảm bảo các file âm thanh KHÔNG chồng lên nhau) ──
-        scene_audio_clips = []
+        # ── Build Audio Track ──
+        # QUAN TRỌNG: KHÔNG composite giọng đọc + SFX vào chung 1 clip. Composite chung khiến
+        # MoviePy đọc SFX NGẮN (vd tick.wav 0.05s) vượt quá độ dài của nó khi giọng đọc dài hơn
+        # → lỗi "Accessing time t=... with clip duration=...". Đặt mỗi thứ thành TRACK RIÊNG
+        # trên timeline tổng; composite ngoài tôn trọng cửa sổ start/end nên không đọc quá.
+        # Thu thập vị trí audio để TRỘN bằng numpy sau vòng lặp (xem _mix_audio_tracks).
+        # Track giọng đọc (TTS) — fade-out nhẹ cuối để không cụt chữ.
         if has_audio and os.path.isfile(asset["audio_path"]):
-            from moviepy.audio.io.AudioFileClip import AudioFileClip
-            scene_audio_clips.append(AudioFileClip(asset["audio_path"]))
-            
+            audio_placements.append((asset["audio_path"], start_time, 1.0, AUDIO_FADEOUT_DURATION))
+
+        # SFX chọn RIÊNG cho từng cảnh LUÔN phát (không bị toggle global chặn). Muốn tắt riêng
+        # 1 cảnh thì chọn "Không tiếng". Toggle use_sfx global chỉ điều khiển riser mở màn (main.py).
         sfx_name = asset.get("sfx", "")
-        if use_sfx and sfx_name:
+        if sfx_name:
             sfx_path = os.path.join(BASE_DIR, "assets", "sfx", f"{sfx_name}.wav")
             if os.path.isfile(sfx_path):
-                from moviepy.audio.io.AudioFileClip import AudioFileClip
-                scene_audio_clips.append(AudioFileClip(sfx_path).with_volume_scaled(sfx_volume))
-                
-        if scene_audio_clips:
-            from moviepy.audio.AudioClip import CompositeAudioClip
-            from moviepy.audio.fx.AudioFadeOut import AudioFadeOut
-            
-            if len(scene_audio_clips) > 1:
-                ac = CompositeAudioClip(scene_audio_clips)
-            else:
-                ac = scene_audio_clips[0]
-                
-            # Không cắt cụt audio (đặc biệt là giọng đọc TTS) để tránh mất chữ cuối
-            # Dù Hình ảnh bị rút ngắn do Beat Sync, Audio vẫn phát đủ câu nói.
-            ac = ac.with_effects([AudioFadeOut(AUDIO_FADEOUT_DURATION)])
-            
-            # Đặt đúng vị trí trên timeline tổng
-            ac = ac.with_start(start_time)
-            audio_tracks.append(ac)
+                audio_placements.append((sfx_path, start_time, sfx_volume, 0.0))
 
         
+        # Transition của scene[i] nghĩa là "chuyển cảnh SANG cảnh sau" (đúng như UI).
+        # Biên i→i+1 hiển thị qua LỐI VÀO của cảnh i+1, nên lối vào của cảnh hiện tại
+        # phải dùng transition của cảnh TRƯỚC nó (sửa off-by-one: trước đây cảnh 0 bị bỏ).
+        entrance_transition = scene_assets[i - 1].get("transition", "crossfade") if i > 0 else "crossfade"
+
         c = _build_scene_clip(
             asset,
             add_crossfade_in=(i > 0),
@@ -330,7 +447,7 @@ def render_final_video(
             show_subtitle=show_subtitle,
             subtitle_font_size=subtitle_font_size,
             subtitle_color=subtitle_color,
-            transition=asset.get("transition", "crossfade"),
+            transition=entrance_transition,
         )
         
         c = c.with_start(start_time)
@@ -339,11 +456,11 @@ def render_final_video(
         
     final = CompositeVideoClip(clips, size=(video_width, video_height)).with_duration(final_duration)
 
-    # Gắn track âm thanh tuần tự vào video
-    if audio_tracks:
-        from moviepy.audio.AudioClip import CompositeAudioClip
-        final_audio = CompositeAudioClip(audio_tracks)
-        final = final.with_audio(final_audio)
+    # Trộn toàn bộ audio (giọng đọc + SFX) bằng numpy → 1 track duy nhất (an toàn, không bug)
+    if audio_placements:
+        final_audio = _mix_audio_tracks(audio_placements, final_duration)
+        if final_audio is not None:
+            final = final.with_audio(final_audio)
 
     # Nếu dùng Continuous TTS (có master_audio_path)
     if master_audio_path and os.path.exists(master_audio_path):
@@ -490,7 +607,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         return f"{hours:01d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
     # Add hook_text (duration 3 seconds max)
-    if hook_text and hook_text.strip():
+    if hook_text and hook_text.strip() and hook_effect != "carousel_quote":
         import textwrap
         wrapped_hook = "\\N".join(textwrap.wrap(hook_text.strip().upper(), width=16))
         
@@ -541,6 +658,10 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
                 event_line = f"Dialogue: 1,{format_ass_time(start_td)},{format_ass_time(end_td)},HookTitle,,0,0,0,,{fad_tag}{full_text_formatted}"
                 ass_content.append(event_line)
 
+    # Hook carousel_quote chèn HOOK_CAROUSEL_DURATION giây vào ĐẦU video (render_final_video
+    # dời start_time của mọi cảnh thêm ngần đó). Phụ đề phải dời theo, nếu không sẽ lệch 3.5s.
+    hook_offset = HOOK_CAROUSEL_DURATION if hook_effect == "carousel_quote" else 0.0
+
     cursor = 0.0
     for asset in scene_assets:
         duration = asset["duration"]
@@ -550,6 +671,7 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         scene_start = asset.get("start_time")
         if scene_start is None:
             scene_start = cursor
+        scene_start += hook_offset
         if asset.get("text") and asset["text"].strip():
             start_td = dt.timedelta(seconds=scene_start)
             end_td = dt.timedelta(seconds=scene_start + duration)

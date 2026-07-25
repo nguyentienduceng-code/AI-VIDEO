@@ -159,11 +159,12 @@ class RenderVideoRequest(BaseModel):
     cover_image_session_id: Optional[str] = None
     cover_image_position: str = "start"  # "start", "end", "both"
     use_sfx: bool = True
-    sfx_volume: float = 0.5
+    sfx_volume: float = 0.08
     color_grading: str = "warm_cinematic"
     topic: Optional[str] = None
     use_breathing: bool = False
     hook_effect: str = "word_by_word"
+    hook_quote: Optional[str] = None
     prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
 
 class PresetRequest(BaseModel):
@@ -181,7 +182,7 @@ class PresetRequest(BaseModel):
     color_grading: str = "warm_cinematic"
     prefer_stock_video: bool = False
     use_sfx: bool = True
-    sfx_volume: float = 50
+    sfx_volume: float = 8
 
 VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle", "manual"}
 VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
@@ -513,6 +514,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             hook_text=req.hook_text,
             use_sfx=req.use_sfx,
             sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
+            hook_effect=req.hook_effect,   # để render_final_video dựng hook carousel_quote
+            hook_quote=req.hook_quote,
         )
         master_kwargs = dict(
             bgm_path=bgm_path,
@@ -543,6 +546,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 aspect_ratio=aspect_ratio, bgm_path=None, mode=mode,
                 hook_text=req.hook_text, use_sfx=req.use_sfx,
                 sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
+                hook_effect=req.hook_effect, hook_quote=req.hook_quote,
             )
             if mode != "photo_slideshow":
                 await asyncio.to_thread(
@@ -915,6 +919,10 @@ async def preview_media(type: str, id: str):
         voice_path = os.path.join(ASSETS_DIR, "voices_preview", f"{safe_id}.mp3")
         if os.path.isfile(voice_path):
             return FileResponse(voice_path)
+    elif type == "sfx":
+        sfx_path = os.path.join(ASSETS_DIR, "sfx", f"{safe_id}.wav")
+        if os.path.isfile(sfx_path):
+            return FileResponse(sfx_path)
 
     raise HTTPException(status_code=404, detail="Không tìm thấy file nghe thử.")
 
