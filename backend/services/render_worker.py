@@ -85,6 +85,41 @@ def cleanup_status(job_id: str):
 # ---------------------------------------------------------------------------
 # Worker function — chạy trong process con
 # ---------------------------------------------------------------------------
+def _make_progress_logger(job_id: str, total_frames: int):
+    """
+    Logger tương thích proglog để MoviePy báo tiến độ thật ra file status.
+    Ánh xạ số khung đã ghi vào dải 80-88% (phần còn lại dành cho phụ đề + master).
+    Trả về "bar" nếu không có proglog (không làm chết render vì một cái thanh tiến độ).
+    """
+    try:
+        from proglog import ProgressBarLogger
+    except Exception:
+        return "bar"
+
+    class _StatusLogger(ProgressBarLogger):
+        def __init__(self):
+            super().__init__()
+            self._last_pct = -1
+            self._last_write = 0.0
+
+        def bars_callback(self, bar, attr, value, old_value=None):
+            if attr != "index" or not total_frames:
+                return
+            pct = 80 + int(min(value / total_frames, 1.0) * 8)
+            now = time.time()
+            # Ghi tối đa 1 lần/giây và chỉ khi % đổi — tránh spam I/O
+            if pct != self._last_pct and now - self._last_write > 1.0:
+                self._last_pct = pct
+                self._last_write = now
+                eta = ""
+                write_status(
+                    job_id, status="rendering", progress=pct,
+                    message=f"[Worker] Đang dựng khung hình {value}/{total_frames}{eta}",
+                )
+
+    return _StatusLogger()
+
+
 def _worker_main(
     job_id: str,
     scene_assets: list,
@@ -104,7 +139,16 @@ def _worker_main(
         write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")
 
         # ── Phase 1: MoviePy render RAW ──
+        # Tiến độ THẬT: trước đây progress bị đặt cứng 80 trước khi render và 85 sau khi
+        # xong, nên với video dài người dùng nhìn "80%" đứng yên hàng chục phút mà không
+        # biết máy còn sống hay đã treo. Giờ bám theo số khung hình MoviePy đã ghi.
+        total_frames = 0
+        for a in scene_assets:
+            total_frames = max(total_frames, int((a.get("start_time", 0.0) + a.get("duration", 0.0)) * 30))
+
         from services.video_service import render_final_video
+        render_kwargs = dict(render_kwargs)
+        render_kwargs["progress_logger"] = _make_progress_logger(job_id, total_frames)
         render_final_video(scene_assets, raw_video_path, **render_kwargs)
 
         write_status(job_id, progress=85, message="[Worker] Render RAW hoàn tất. Đang tạo phụ đề...")
@@ -134,6 +178,9 @@ def _worker_main(
             bgm_volume=master_kwargs.get("bgm_volume", 0.15),
             watermark_text=master_kwargs.get("watermark_text"),
             color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
+            add_vignette=master_kwargs.get("add_vignette", True),
+            progress_bar=master_kwargs.get("progress_bar", True),
+            total_duration=master_kwargs.get("total_duration", 0.0),
         )
 
         # Dọn file thô

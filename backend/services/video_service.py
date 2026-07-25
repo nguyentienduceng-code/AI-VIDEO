@@ -280,7 +280,19 @@ def _build_scene_clip(
     target_ratio = video_width / video_height
     if abs(target_ratio - media_ratio) <= CROP_FILL_TOLERANCE:
         scale_fill = max(video_width / media_clip.w, video_height / media_clip.h)
-        media_clip = media_clip.resized(scale_fill).with_position("center")
+        # BỎ QUA resize khi media đã ĐÚNG khung sẵn.
+        # LÝ DO: từ khi normalize_stock_clip/apply_ken_burns xuất ra đúng 1080x1920,
+        # scale_fill = 1.0 — nhưng MoviePy vẫn chạy PIL resize đủ 2 triệu điểm ảnh MỖI
+        # KHUNG chỉ để trả lại đúng ảnh cũ. Đo thực tế: 165 fps → 60 fps, tức mất 2.75 lần
+        # tốc độ cho một phép biến đổi không đổi gì cả.
+        already_exact = (
+            abs(scale_fill - 1.0) < 0.005
+            and media_clip.w == video_width
+            and media_clip.h == video_height
+        )
+        if not already_exact:
+            media_clip = media_clip.resized(scale_fill)
+        media_clip = media_clip.with_position("center")
     else:
         try:
             first_frame = media_clip.get_frame(0)
@@ -431,12 +443,32 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
     if not used:
         return None
 
+    # CẮT về đúng thời lượng video.
+    # `total_samples` cộng thêm 1 giây đệm để mọi SFX đặt sát cuối vẫn ghi được trọn vẹn,
+    # NHƯNG nếu trả nguyên phần đệm đó thì track audio dài hơn hình 1 giây — MoviePy ghi
+    # hình tới 21.1s còn container kéo tới 22.1s, thành ra mọi video đều thừa 1 giây câm
+    # ở cuối. Đệm chỉ để tính toán an toàn, không được lọt ra ngoài.
+    keep = int(math.ceil(max(total_duration, 0.1) * sr))
+    master = master[:keep]
+
     # Chống vỡ tiếng (clipping) nếu tổng biên độ vượt 1.0
     peak = float(np.max(np.abs(master))) if master.size else 0.0
     if peak > 1.0:
         master /= peak
 
     return AudioArrayClip(master, fps=sr)
+
+
+def _all_placements(audio_placements, master_audio_path, total_duration):
+    """
+    Danh sách track audio đầy đủ = SFX/giọng từng cảnh + dải giọng liền mạch (nếu có).
+    Tách ra hàm riêng để đường nhanh (FFmpeg) và đường chậm (MoviePy) dùng CHUNG một
+    nguồn sự thật, không sợ hai nhánh trộn ra hai bản khác nhau.
+    """
+    out = list(audio_placements)
+    if master_audio_path and os.path.exists(master_audio_path):
+        out.append((master_audio_path, 0.0, 1.0, 0.0))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -452,6 +484,7 @@ def render_final_video(
     master_audio_path: Optional[str] = None,
     use_sfx: bool = True,
     sfx_volume: float = 0.5,
+    progress_logger="bar",
     **kwargs
 ) -> str:
     """
@@ -542,7 +575,59 @@ def render_final_video(
                 # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc
                 audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN, 0.0))
 
-        
+        final_duration = max(final_duration, start_time + dur)
+
+    # ══════════════════════════════════════════════════════════════════
+    # ĐƯỜNG NHANH: dựng cả timeline bằng MỘT lệnh FFmpeg (xfade + NVENC).
+    # Chỉ chạy được khi mọi cảnh đã là video đúng khung hình đích — điều mà
+    # normalize_stock_clip/apply_ken_burns đã bảo đảm. Hỏng ở bất kỳ bước nào thì
+    # rơi êm về MoviePy bên dưới, không làm chết render.
+    # ══════════════════════════════════════════════════════════════════
+    if kwargs.get("use_fast_assembly", True):
+        try:
+            from services import ffmpeg_assembler as fa
+            ok, why = fa.can_assemble(scene_assets, video_width, video_height)
+            if not ok:
+                print(f"[FastAssembly] Bỏ qua, dùng MoviePy: {why}")
+            else:
+                mixed = _mix_audio_tracks(_all_placements(audio_placements, master_audio_path,
+                                                          final_duration), final_duration)
+                audio_wav = None
+                if mixed is not None:
+                    audio_wav = output_path + ".mix.wav"
+                    mixed.write_audiofile(audio_wav, fps=44100, logger=None)
+
+                hook_mp4 = None
+                if hook_clip_overlay is not None:
+                    # Hook chỉ ~105 khung, để MoviePy dựng riêng ra file rồi FFmpeg phủ lên
+                    hook_mp4 = output_path + ".hook.mp4"
+                    hook_clip_overlay.write_videofile(
+                        hook_mp4, fps=FPS, codec="libx264", preset="veryfast",
+                        audio=False, logger=None,
+                    )
+
+                fa.assemble(
+                    scene_assets, output_path,
+                    width=video_width, height=video_height, fps=FPS,
+                    crossfade_dur=crossfade_dur, audio_path=audio_wav,
+                    hook_video=hook_mp4, hook_duration=HOOK_CAROUSEL_DURATION,
+                    use_gpu=kwargs.get("use_gpu_encode", True),
+                )
+                for tmp_f in (audio_wav, hook_mp4):
+                    if tmp_f and os.path.exists(tmp_f):
+                        try:
+                            os.remove(tmp_f)
+                        except OSError:
+                            pass
+                if hook_clip_overlay is not None:
+                    hook_clip_overlay.close()
+                return output_path
+        except Exception as fast_err:
+            print(f"[FastAssembly] Thất bại ({fast_err}). Quay về MoviePy.")
+
+    # ── Đường chậm (MoviePy) — giữ nguyên làm lưới an toàn ──
+    for i, asset in enumerate(scene_assets):
+        start_time = asset.get("start_time", 0.0) + hook_duration
         # Transition của scene[i] nghĩa là "chuyển cảnh SANG cảnh sau" (đúng như UI).
         # Biên i→i+1 hiển thị qua LỐI VÀO của cảnh i+1, nên lối vào của cảnh hiện tại
         # phải dùng transition của cảnh TRƯỚC nó (sửa off-by-one: trước đây cảnh 0 bị bỏ).
@@ -559,11 +644,9 @@ def render_final_video(
             subtitle_color=subtitle_color,
             transition=entrance_transition,
         )
-        
-        c = c.with_start(start_time)
-        clips.append(c)
-        final_duration = max(final_duration, start_time + dur)
-        
+
+        clips.append(c.with_start(start_time))
+
     final = CompositeVideoClip(clips, size=(video_width, video_height)).with_duration(final_duration)
 
     # Chế độ đọc liền mạch (Single-Pass Narration): cả bài chỉ có 1 dải giọng duy nhất,
@@ -571,64 +654,38 @@ def render_final_video(
     # TRƯỚC ĐÂY nhánh này gọi `final.with_audio(master_audio)` SAU khi đã trộn xong —
     # tức là THAY TRẮNG toàn bộ track vừa trộn, xoá sạch SFX từng cảnh lẫn tiếng Máy Xèng
     # mở màn. Giờ nó tham gia vào cùng một lần trộn nên mọi thứ cùng vang lên.
+    slow_placements = _all_placements(audio_placements, master_audio_path, final_duration)
     if master_audio_path and os.path.exists(master_audio_path):
-        audio_placements.append((master_audio_path, 0.0, 1.0, 0.0))
         speech_segments = [(0.0, final_duration)]
 
     # Trộn toàn bộ audio (giọng đọc + SFX) bằng numpy → 1 track duy nhất (an toàn, không bug)
-    if audio_placements:
-        final_audio = _mix_audio_tracks(audio_placements, final_duration)
+    if slow_placements:
+        final_audio = _mix_audio_tracks(slow_placements, final_duration)
         if final_audio is not None:
             final = final.with_audio(final_audio)
 
     # BGM mixing now happens via FFmpeg in audio_mix_service.py
 
-    # ── Thêm Hiệu ứng Hình ảnh (Vignette & Progress Bar) ──
-    import numpy as np
-    from moviepy.video.VideoClip import ImageClip, VideoClip
-    
-    # ── OVERLAYS (Vignette, Text Hook, Progress Bar, Carousel Hook) ──
-    overlays = [final]
-    
+    # ── OVERLAYS còn lại trong MoviePy ──
+    # CHỈ hook carousel ở đây, vì nó là clip động thật sự.
+    # Vignette và thanh tiến trình ĐÃ CHUYỂN sang bước FFmpeg cuối (audio_mix_service):
+    # cả hai phủ lên TOÀN BỘ video nên MoviePy phải trộn chúng ở mọi khung hình bằng
+    # Python — đo thực tế mất 1.93 lần tốc độ (6.83 fps → 3.54 fps). FFmpeg làm cùng việc
+    # đó bằng C, trong chính lượt encode vốn đã phải chạy, nên gần như miễn phí.
     if hook_clip_overlay is not None:
-        overlays.append(hook_clip_overlay)
-
-    # 1. Vignette (Làm tối 4 góc)
-    # Tối ưu Memory: dùng broadcasting + float32 để không bị MemoryError (15.8 MiB float64)
-    x = np.linspace(-1, 1, video_width, dtype=np.float32)[np.newaxis, :]
-    y = np.linspace(-1, 1, video_height, dtype=np.float32)[:, np.newaxis]
-    radius = np.sqrt(x**2 + y**2)
-    opacity = np.clip(radius - 0.6, 0.0, 1.0) * 0.7
-    vig_img = np.zeros((video_height, video_width, 4), dtype=np.uint8)
-    vig_img[:, :, 3] = (opacity * 255).astype(np.uint8)
-    vig_clip = ImageClip(vig_img, is_mask=False).with_duration(final.duration)
-    overlays.append(vig_clip)
-    
-    # 2. Progress Bar (Dưới cùng)
-    bar_height = 12
-    def make_progress_frame(t):
-        w = int(video_width * (t / final.duration))
-        if w == 0: w = 1
-        frame = np.zeros((bar_height, video_width, 4), dtype=np.uint8)
-        frame[:, :w, 0] = 255
-        frame[:, :w, 1] = 215
-        frame[:, :w, 2] = 0
-        frame[:, :w, 3] = 255
-        return frame
-        
-    progress_clip = VideoClip(make_progress_frame, is_mask=False, has_constant_size=True).with_duration(final.duration).with_position(("left", "bottom"))
-    overlays.append(progress_clip)
-    
-    final = CompositeVideoClip(overlays, size=(video_width, video_height)).with_audio(final.audio)
-
+        final = CompositeVideoClip(
+            [final, hook_clip_overlay], size=(video_width, video_height)
+        ).with_duration(final_duration).with_audio(final.audio)
 
     final.write_videofile(
         output_path,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        threads=4,
-        preset="medium",
+        threads=os.cpu_count() or 4,
+        preset="veryfast",   # bản RAW trung gian — sẽ bị encode lại ở bước master,
+                             # nên "medium" chỉ tốn CPU cho một file dùng một lần rồi bỏ
+        logger=progress_logger,
     )
 
     # Giải phóng tài nguyên ngay sau khi render xong (giảm áp lực RAM)

@@ -231,6 +231,12 @@ def get_enhanced_art_style(style: str) -> str:
 # Đổi chuỗi này mỗi khi luật prompt thay đổi → cache kịch bản cũ tự hết hiệu lực.
 PROMPT_REVISION = "2026-07-25-word-budget"
 
+# Cùng vai trò cho split_script_to_scenes. Tách riêng để sửa prompt chia cảnh không xoá
+# oan cache của generate_script (và ngược lại). LỖI CŨ: cache key của "split_script" hoàn
+# toàn không có trường revision, nên mọi lần sửa prompt đều bị cache cũ đè — sửa xong
+# không thấy gì thay đổi.
+SPLIT_PROMPT_REVISION = "2026-07-26-niche-effects"
+
 # Tốc độ đọc thực đo trên chính pipeline này (Edge-TTS giọng Việt, rate 0%): ~3.0 từ/giây.
 # Luật cũ ghi "15-20 từ ≈ 3-5 giây" là BẤT KHẢ THI về số học — 18 từ cần ~6 giây, không
 # thể 3-5 giây. Chính sự sai lệch đó khiến cảnh dài gấp rưỡi so với ý đồ. Muốn nhịp
@@ -656,12 +662,21 @@ async def split_script_to_scenes(
     num_scenes: int = 6,
     art_style: str = "Cinematic",
     api_key: Optional[str] = None,
-) -> List[dict]:
+    narration_tone: str = "viral",
+    content_niche: Optional[str] = None,
+) -> dict:
     """
     Nhận đoạn văn dài (script viết sẵn bởi user).
     Gemini chia thành N scenes hợp lý + sinh image_prompt cho mỗi scene.
+
+    Lời thoại LUÔN được giữ nguyên văn 100%; narration_tone/content_niche CHỈ dùng để
+    chọn hiệu ứng (sfx, transition, emotion, nhịp đọc) — xem effect_guide bên dưới.
     """
-    num_scenes = max(3, min(20, num_scenes))
+    # Trần 30 khớp MAX_SCENES của generate_script và slider của Frontend (max 30).
+    # LỖI CŨ: trần cứng 20 ở đây trong khi FE cho kéo tới 30 → user chọn 26 cảnh thì bị
+    # âm thầm hạ xuống 20, mỗi cảnh phải gánh gấp rưỡi số từ (~13 giây/cảnh với kịch bản
+    # 800 từ) mà không có cảnh báo nào.
+    num_scenes = max(MIN_SCENES, min(MAX_SCENES, num_scenes))
 
     system_prompt = (
         "Bạn là biên kịch video chuyên nghiệp. "
@@ -674,13 +689,43 @@ async def split_script_to_scenes(
         "2. Sử dụng các chỉ dẫn đạo diễn (Chuyển động, Hình ảnh) để dịch chuẩn xác 100% sang tiếng Anh thành `image_prompt`. "
         "KHÔNG được tự phóng tác thêm chi tiết hình ảnh mà người dùng không yêu cầu. "
         "3. Nếu kịch bản chỉ là văn xuôi bình thường, hãy chia mỗi cảnh 1-3 câu liên tiếp và giữ nguyên văn nhiều nhất có thể. "
+        "Chia sao cho số từ giữa các cảnh xấp xỉ bằng nhau, để nhịp đổi cảnh của video đều đặn. "
         "4. Tuyệt đối không đưa chỉ dẫn đạo diễn vào trường `text`. "
+        "5. Nếu một cảnh có nhãn 'Text on-screen:' (hoặc 'Chữ trên màn hình:'), BẮT BUỘC đưa nguyên văn "
+        "phần đó vào trường `highlight_text` (viết HOA, tối đa 3 từ) và KHÔNG đưa vào `text`. "
+        "Nếu nhãn đó để trống hoặc không có, để `highlight_text` rỗng — KHÔNG tự bịa từ giật tít. "
+        "6. Nếu kịch bản có dòng 'BGM:' hoặc 'CTA:' (thường ở cuối), đó là chỉ dẫn cho hệ thống, "
+        "KHÔNG phải lời thoại: đưa vào `recommended_bgm` và `cta_text`, và TUYỆT ĐỐI không để lẫn "
+        "vào `text` của cảnh cuối. "
         f"image_prompt: luôn mô tả bằng tiếng Anh theo phong cách '{art_style}' nhưng phải trung thành tuyệt đối với mô tả của người dùng."
     )
 
+    # ── Bản vẽ hiệu ứng theo niche/tone ─────────────────────────────
+    # CHỈ dùng để chọn sfx/transition/emotion/speech_rate_modifier. Phải bọc trong guard vì
+    # NICHE_BLUEPRINTS còn chứa cả chỉ dẫn NỘI DUNG ("Cảnh 1 = nghịch lý tiền + con số sốc",
+    # "BẮT BUỘC mỗi cảnh có CON SỐ"). Không có guard, Gemini sẽ viết lại lời thoại của user
+    # cho khớp bản vẽ — phá đúng cái đảm bảo duy nhất của mode Script → Video.
+    blueprint = None
+    if content_niche and content_niche in NICHE_BLUEPRINTS:
+        blueprint = NICHE_BLUEPRINTS[content_niche]
+    elif narration_tone in TONE_EFFECT_PALETTES:
+        blueprint = TONE_EFFECT_PALETTES[narration_tone]
+
+    if blueprint:
+        system_prompt += (
+            "\n\n── BẢN VẼ HIỆU ỨNG (chỉ áp cho hiệu ứng, KHÔNG áp cho lời thoại) ──\n"
+            "Dùng bản vẽ dưới đây để chọn `sfx`, `transition`, `emotion` và `speech_rate_modifier` "
+            "cho từng cảnh, bằng cách chiếu vị trí tương đối của cảnh trong tổng số cảnh.\n"
+            "GIỚI HẠN TUYỆT ĐỐI: bản vẽ KHÔNG cho bạn quyền sửa, thêm, bớt, đảo thứ tự hay viết lại "
+            "một chữ nào trong lời thoại của người dùng. Nếu bản vẽ đòi một loại nội dung mà kịch bản "
+            "gốc không có (con số, plot twist, câu hỏi mở...), BỎ QUA đòi hỏi đó và chỉ giữ phần "
+            "hướng dẫn hiệu ứng. Lời thoại gốc luôn thắng.\n\n"
+            f"{blueprint}"
+        )
+
     def _call():
         # Trim script_text for hashing to avoid too long string issue, or hash it inside _get_key
-        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style)
+        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for split_script_to_scenes")
             return cached_result
@@ -702,8 +747,11 @@ async def split_script_to_scenes(
         except Exception:
             pass
         parsed: ScriptResponse = response.parsed
-        result = [scene.model_dump() for scene in parsed.scenes]
-        cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style)
+        # Trả về TOÀN BỘ response (dict) chứ không chỉ list scenes: main.py có nhánh
+        # `isinstance(scenes, dict)` để chuyển thẳng lên FE, nhờ đó `recommended_bgm`,
+        # `hook_text` và `cta_text` mà kịch bản dán vào có sẵn không còn bị vứt bỏ.
+        result = parsed.model_dump()
+        cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
         return result
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)

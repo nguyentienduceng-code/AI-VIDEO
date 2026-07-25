@@ -50,6 +50,10 @@ export default function SettingsPanel() {
       if (data.hook_text && !ctx.hookText?.trim()) {
         ctx.setHookText(data.hook_text);
       }
+      // Tương tự với CTA: mode Script → Video giờ đọc được dòng "CTA:" trong kịch bản dán vào
+      if (data.cta_text && !ctx.ctaText?.trim()) {
+        ctx.setCtaText(data.cta_text);
+      }
       ctx.setStep('editor');
     } catch (err) {
       ctx.setErrorMsg(err.message);

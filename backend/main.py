@@ -177,6 +177,9 @@ class RenderVideoRequest(BaseModel):
     # Đọc liền mạch: gọi Edge-TTS 1 lần cho TOÀN kịch bản thay vì từng cảnh.
     # Đánh đổi: bỏ qua emotion + speech_rate_modifier riêng của từng cảnh.
     use_single_pass_narration: bool = False
+    # Dựng timeline bằng 1 lệnh FFmpeg (xfade + NVENC) thay vì MoviePy — nhanh ~50 lần.
+    # Tự rơi về MoviePy nếu có cảnh không đủ điều kiện. Tắt khi cần đối chiếu bản cũ.
+    use_fast_assembly: bool = True
 
 class PresetRequest(BaseModel):
     name: str
@@ -691,10 +694,17 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             hook_effect=req.hook_effect,   # để render_final_video dựng hook carousel_quote
             hook_quote=req.hook_quote,
             hook_reel_sfx=req.hook_reel_sfx,
+            use_fast_assembly=req.use_fast_assembly,
+            use_gpu_encode=req.use_gpu_encode,
             master_audio_path=master_audio_path,  # chế độ đọc liền mạch (None nếu tắt)
         )
+        # Tổng thời lượng cho thanh tiến trình FFmpeg vẽ ở bước master
+        video_total_duration = max(
+            (a["start_time"] + a["duration"]) for a in scene_assets
+        ) if scene_assets else 0.0
         master_kwargs = dict(
             bgm_path=bgm_path,
+            total_duration=video_total_duration,
             use_gpu=req.use_gpu_encode,
             bgm_volume=req.bgm_volume,
             watermark_text=req.watermark_text,
@@ -724,6 +734,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
                 hook_effect=req.hook_effect, hook_quote=req.hook_quote,
                 hook_reel_sfx=req.hook_reel_sfx,
+                use_fast_assembly=req.use_fast_assembly,
+                use_gpu_encode=req.use_gpu_encode,
                 master_audio_path=master_audio_path,
             )
             if mode != "photo_slideshow":
@@ -742,6 +754,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     ass_subtitle_path=output_srt_path if os.path.isfile(output_srt_path) else None,
                     use_gpu=req.use_gpu_encode, bgm_volume=req.bgm_volume,
                     watermark_text=req.watermark_text, color_grading=req.color_grading,
+                    total_duration=video_total_duration,
                 )
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)
@@ -860,6 +873,10 @@ async def generate_script(req: GenerateScriptRequest):
             scenes = await gemini_service.split_script_to_scenes(
                 script_text=req.script_text, num_scenes=req.num_scenes,
                 art_style=req.art_style, api_key=req.gemini_api_key,
+                # Lời thoại vẫn giữ nguyên văn 100%; tone/niche chỉ quyết định
+                # sfx/transition/emotion/nhịp đọc của từng cảnh.
+                narration_tone=req.narration_tone or "viral",
+                content_niche=req.content_niche,
             )
 
         elif req.mode == "photo_narration":
