@@ -5,8 +5,7 @@ from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
 
-PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "projects")
-os.makedirs(PROJECTS_DIR, exist_ok=True)
+from config import PROJECTS_DIR
 
 def get_project_file_path(job_id: str) -> str:
     return os.path.join(PROJECTS_DIR, f"{job_id}.json")

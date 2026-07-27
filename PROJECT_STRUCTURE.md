@@ -51,9 +51,14 @@ AI-VIDEO-MAKER/
 │   │   ├── preset_service.py     # Hệ thống quản lý và tự động merge Presets người dùng.
 │   │   ├── project_service.py    # Hệ thống Smart Resume Checkpoints (lưu trạng thái job).
 │   │   └── key_manager.py        # Quản lý xoay vòng API Keys.
+│   ├── config.py                 # Nguồn sự thật duy nhất cho đường dẫn file. Tách 2 gốc:
+│   │                             #   BUNDLED (bgm/sfx/fonts — ở lại cùng mã nguồn)
+│   │                             #   DATA    (ảnh/video/cache — đổi ổ được qua CUSTOM_ASSETS_DIR)
 │   ├── assets/                   # Kho lưu trữ tài nguyên tạm và thành phẩm.
-│   │   ├── audio/, images/, bgm/, voices_preview/, output/, cache/, presets.json
-│   └── .env                      # Lưu biến môi trường.
+│   │   ├── bgm/, sfx/, slot_covers/, fonts/            # tài nguyên gốc, chỉ đọc
+│   │   ├── audio/, images/, output/, cache/, projects/ # dữ liệu sinh ra, di dời được
+│   │   ├── uploads/, overrides/, voices_preview/, presets.json
+│   └── .env                      # Lưu biến môi trường (API keys, CUSTOM_ASSETS_DIR).
 ├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình.
 └── export_context.py             # Script tự động trích xuất mã nguồn ra file AI_CONTEXT.md.
 ```
@@ -72,6 +77,15 @@ Hệ thống hoạt động theo **Luồng xử lý Bất đồng bộ (Async Pi
 4. `POST /api/voice-clone`: Upload mẫu âm thanh 5-10s tạo giọng clone tự động bằng Whisper.
 5. `GET/POST/DELETE /api/presets`: Quản lý cấu hình lưu sẵn.
 6. `GET /api/quota`: Kiểm tra quota & giới hạn API.
+7. `GET/POST /api/storage-config`: Xem/đổi thư mục lưu dữ liệu sinh ra sang ổ đĩa khác. POST chỉ ghi `CUSTOM_ASSETS_DIR` vào `.env` — **phải khởi động lại backend** mới có hiệu lực (xem `backend/config.py`).
+
+### Nhóm API Hậu kỳ (Post-Render Fine-Tuning):
+
+1. `POST /api/cache-probe`: Trả về `{audio_cached, image_cached}` cho từng cảnh, để UI hiện đèn 🟢 *đã có sẵn* / 🔴 *sẽ tạo mới*. Khoá cache tính y hệt lúc render — sửa công thức ở `image_router` hoặc `tts_service` thì phải sửa cả đây, nếu không đèn báo sẽ nói dối.
+2. `POST /api/scene-asset`: Tải ảnh/video của user lên để **ghi đè** hình AI của một cảnh. Trả về `asset_id`, gắn vào `scene.override_asset` rồi render bình thường. Không gắn với `job_id` vì mỗi lần render lại là một job mới.
+3. `GET/DELETE /api/scene-asset/{asset_id}`: Xem lại / gỡ file ghi đè.
+4. `POST /api/preview-scene-voice`: Nghe thử giọng đọc của MỘT cảnh (kể cả nhịp nghỉ `<break>`). Đi qua đúng `synthesize_speech` với đúng bộ tham số của pipeline nên **nạp luôn vào TTS cache** — nghe thử xong, cảnh đó chuyển 🟢 và lúc render không phải sinh lại.
+5. `GET /api/cache-stats` + `DELETE /api/cache`: Xem/dọn bộ nhớ đệm. Mặc định chỉ xoá media; `?include_script_cache=true` mới xoá kịch bản Gemini (sinh lại tốn quota API). `quota.json` luôn được bảo vệ dù nằm chung thư mục.
 
 ### Nhóm API Core Pipeline:
 

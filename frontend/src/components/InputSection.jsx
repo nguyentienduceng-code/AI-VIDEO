@@ -1,10 +1,28 @@
 import React, { useRef } from 'react';
 import { Upload, X, Image } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore, needsUpload as needsUploadFor, needsScript as needsScriptFor, needsTopic as needsTopicFor } from '../store';
 import { API_BASE } from '../constants';
 
 export default function InputSection() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    activeMode: s.activeMode,
+    topic: s.topic, setTopic: s.setTopic,
+    scriptText: s.scriptText, setScriptText: s.setScriptText,
+    characterDescription: s.characterDescription, setCharacterDescription: s.setCharacterDescription,
+    uploadSessionId: s.uploadSessionId, setUploadSessionId: s.setUploadSessionId,
+    uploadedFiles: s.uploadedFiles, setUploadedFiles: s.setUploadedFiles,
+    uploadLoading: s.uploadLoading, setUploadLoading: s.setUploadLoading,
+    coverImageSessionId: s.coverImageSessionId, setCoverImageSessionId: s.setCoverImageSessionId,
+    coverImageName: s.coverImageName, setCoverImageName: s.setCoverImageName,
+    coverImageLoading: s.coverImageLoading, setCoverImageLoading: s.setCoverImageLoading,
+    coverImagePosition: s.coverImagePosition, setCoverImagePosition: s.setCoverImagePosition,
+    setNumScenes: s.setNumScenes,
+    setErrorMsg: s.setErrorMsg,
+  })));
+  const needsUpload = needsUploadFor(ctx.activeMode);
+  const needsScript = needsScriptFor(ctx.activeMode);
+  const needsTopic = needsTopicFor(ctx.activeMode);
   const fileInputRef = useRef(null);
   const coverInputRef = useRef(null);
 
@@ -58,13 +76,13 @@ export default function InputSection() {
   const showCoverUpload = ctx.activeMode === 'storyteller' || ctx.activeMode === 'quiz' || ctx.activeMode === 'script';
 
   return (
-    <div className="panel-box">
+    <div className="input-section-inner">
       <div className="step-header">
         <div className="step-badge step-2">2</div>
-        <span className="step-title">{ctx.needsUpload ? 'Upload Ảnh' : ctx.needsScript ? 'Nhập Kịch bản' : 'Ý Tưởng / Chủ Đề'}</span>
+        <span className="step-title">{needsUpload ? 'Upload Ảnh' : needsScript ? 'Nhập Kịch bản' : 'Ý Tưởng / Chủ Đề'}</span>
       </div>
-      
-      {ctx.needsTopic && (
+
+      {needsTopic && (
         <div className="input-group">
           <label className="field-label">
             {ctx.activeMode === 'manual' ? 'TÊN VIDEO / CHỦ ĐỀ' : 'CHỦ ĐỀ VIDEO'}
@@ -140,7 +158,7 @@ export default function InputSection() {
         </div>
       )}
       
-      {ctx.needsScript && (
+      {needsScript && (
         <div className="input-group">
           <label className="field-label">KỊCH BẢN CỦA BẠN</label>
           <textarea 
@@ -154,7 +172,7 @@ export default function InputSection() {
         </div>
       )}
       
-      {ctx.needsUpload && (
+      {needsUpload && (
         <div className="upload-zone">
           <input 
             ref={fileInputRef} 

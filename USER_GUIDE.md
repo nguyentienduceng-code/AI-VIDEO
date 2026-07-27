@@ -52,4 +52,37 @@ python .agents\skills\content-cinematic\scripts\to_payload.py kichban.json --sen
 4. Lệnh này sẽ tự động đóng gói Metadata và bắn thẳng tới API Render, server sẽ tự động chạy ngầm và trả ra video thành phẩm.
 
 ---
+
+## 4. Chuyển Kho Lưu Trữ Sang Ổ Đĩa Khác
+
+Mặc định mọi ảnh, video và bộ nhớ đệm đổ vào `backend/assets` trên ổ C — riêng phần này đã chiếm hơn 1GB và tăng liên tục.
+
+**Cách chuyển sang ổ D:**
+1. Vào **Bước 1 (Cấu hình)**, kéo xuống khối **🖴 Thư mục lưu trữ** ở cột trái.
+2. Nhập đường dẫn tuyệt đối, ví dụ `D:\AIVideoAssets`, rồi bấm **Lưu**.
+3. **TẮT và BẬT LẠI cửa sổ CMD Backend** — biến môi trường chỉ đọc lúc khởi động, không tắt đi bật lại thì mọi thứ vẫn đổ về ổ C.
+
+**Những điều cần biết:**
+- Nhạc nền và tiếng động **ở lại cùng mã nguồn**, không cần chép đi đâu. Preset và danh sách dự án tự chuyển sang trong lần khởi động kế tiếp.
+- Ảnh/video/cache **cũ không được chép sang** (hơn 1GB, và đều tự sinh lại được). Vài video đầu tiên sau khi chuyển sẽ render chậm hơn vì cache bắt đầu lại từ đầu. Muốn giữ, tự chép tay `backend/assets/cache` sang thư mục mới trước khi khởi động lại.
+- Tránh đường dẫn có dấu nháy đơn, dấu phẩy hoặc dấu chấm phẩy — chúng phá vỡ lệnh FFmpeg. Hệ thống sẽ chặn và báo lỗi ngay.
+- Nếu ổ D là ổ rời chưa cắm lúc khởi động, backend tự quay về thư mục mặc định và ghi rõ lý do trên giao diện.
+
+---
+
+## 5. Công Cụ Chỉnh Sửa Hậu Kỳ (Sửa Từng Cảnh)
+
+Sau khi render xong, bấm **[Chỉnh sửa & Render lại]** để quay về trình sửa kịch bản. Ở đó mỗi cảnh có:
+
+- **Đèn báo 🟢 / 🔴** cạnh số cảnh: 🟢 *Giọng*/*Hình* nghĩa là đã có sẵn trong bộ nhớ đệm, render lại dùng ngay không tốn giây nào. Vừa sửa lời thoại là đèn chuyển 🔴 — cảnh đó sẽ phải gọi AI tạo lại. Thanh công cụ trên cùng tổng kết *bao nhiêu cảnh tái dùng / bao nhiêu cảnh tạo mới* trước khi bấm Render.
+- **[⏸ Chèn nhịp nghỉ]**: chèn thẻ `<break time="1s"/>` tại vị trí con trỏ, ép giọng đọc dừng hẳn 1 giây để ngưng đọng cảm xúc. Sửa số giây trực tiếp trong thẻ (`time="2.5s"`), tối đa 5 giây. *Không dùng được khi bật "Đọc liền mạch cả bài"* — chế độ đó gọi TTS một lần cho toàn bài nên không có chỗ chèn khoảng lặng riêng.
+- **[⬆ Tải ảnh/video của tôi]**: khi AI vẽ hỏng ngón tay/khuôn mặt, tự tải ảnh chụp hoặc clip quay sẵn lên thay riêng cho cảnh đó. Chấp nhận PNG/JPG/WEBP/MP4/MOV, tối đa 200MB. Cảnh đã ghi đè sẽ bỏ qua hoàn toàn phần mô tả hình ảnh.
+- **[🎧 Nghe thử]**: đọc thử riêng cảnh đó, nghe được cả nhịp nghỉ vừa chèn, không phải render cả video 20 phút mới biết. **Mẹo quan trọng:** bản nghe thử được lưu lại luôn — nghe thử xong đèn chuyển 🟢 và lúc render cảnh đó không phải sinh lại. Nghe thử càng nhiều, render càng nhanh.
+- **Nhạc nền cảnh này**: tick vào để chỉnh riêng âm lượng nhạc nền cho một cảnh — ví dụ cảnh nói thầm hạ xuống 5%, cảnh kết đẩy lên 50%. Không tick thì theo mức chung của cả video.
+
+### Dọn bộ nhớ đệm
+
+Trong khối **🖴 Thư mục lưu trữ** có dòng *"Bộ nhớ đệm: X MB"* kèm nút **[Dọn]**. Chỉ bấm khi thật sự cần chỗ trống — đây chính là thứ khiến render lại gần như tức thì. Xoá xong không mất dữ liệu nào, chỉ là mọi cảnh chuyển 🔴 và phải gọi AI tạo lại (chậm hơn, tốn quota API). Kịch bản Gemini đã sinh được **giữ lại** vì sinh lại tốn quota mà chỉ chiếm vài trăm KB.
+
+---
 *Lưu ý: Nếu dùng ảnh Sản phẩm (Cover Image) hình vuông/ngang cho video khổ dọc, hệ thống đã được nâng cấp cơ chế **FIT (Letterbox)** để lót viền đen, tuyệt đối không bị cắt xén hình ảnh.*

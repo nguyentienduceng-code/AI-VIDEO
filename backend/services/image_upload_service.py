@@ -28,8 +28,7 @@ MAX_DIMENSION = 3840  # Resize nếu cạnh dài nhất vượt quá
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPLOADS_DIR = os.path.join(BASE_DIR, "assets", "uploads")
+from config import BASE_DIR, UPLOADS_DIR  # noqa: F401
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 

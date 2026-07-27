@@ -4,8 +4,7 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Any
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PRESETS_FILE = os.path.join(BASE_DIR, "assets", "presets.json")
+from config import BASE_DIR, PRESETS_FILE  # noqa: F401  (BASE_DIR giữ cho code cũ)
 
 # ─────────────────────────────────────────────────────────────────────
 # Preset MẪU CHUẨN — chỉnh theo 6 khung niche của skill content-cinematic

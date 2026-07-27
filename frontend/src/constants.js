@@ -128,6 +128,22 @@ export const HOOK_REEL_SOUNDS = [
   { value: 'arcade_8bit', label: '🕹️ Arcade 8-bit (bản cũ)' },
 ];
 
+export const HOOK_SFX_OPTIONS = {
+  carousel_quote: HOOK_REEL_SOUNDS,
+  blackout_question: [
+    { value: 'impact_boom', label: '💥 Nổ/Va đập (Impact Boom)' },
+  ],
+  typewriter_quote: [
+    { value: 'typewriter_fast', label: '⌨️ Lạch cạch (Fast Typewriter)' },
+  ],
+  breathing_vignette: [
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+  ],
+  none: [],
+};
+
+
 // Nguồn hình cho từng cảnh — đồng bộ với backend main.VALID_VISUAL_SOURCES
 export const VISUAL_SOURCES = [
   { value: 'auto', label: '⚙️ Tự động (theo Phong cách ảnh)' },

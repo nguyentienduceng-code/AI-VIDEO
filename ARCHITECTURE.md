@@ -59,9 +59,13 @@ AI-VIDEO-MAKER/
 │   │   ├── project_service.py    # Quản lý Checkpoint Smart Resume
 │   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
 │   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
+│   ├── config.py                 # NGUỒN SỰ THẬT DUY NHẤT cho mọi đường dẫn file
 │   ├── assets/                   # Nơi lưu trữ tài nguyên
-│   │   ├── audio/, images/, bgm/, output/, voices_preview/
-│   └── .env                      # Lưu API Keys
+│   │   ├── bgm/, sfx/, slot_covers/, fonts/   # ĐI KÈM MÃ NGUỒN — không di dời
+│   │   ├── audio/, images/, output/, cache/, projects/, uploads/, overrides/
+│   │   │                         # ↑ dữ liệu sinh ra — chuyển sang ổ khác được
+│   │   │                           qua CUSTOM_ASSETS_DIR trong .env
+│   └── .env                      # Lưu API Keys + CUSTOM_ASSETS_DIR
 ├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình
 └── export_context.py             # Script tự động trích xuất mã nguồn cho AI
 ```

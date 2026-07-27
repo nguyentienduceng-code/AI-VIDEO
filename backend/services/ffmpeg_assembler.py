@@ -18,12 +18,15 @@ Không đủ điều kiện → `can_assemble()` trả False và pipeline tự q
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
 from typing import List, Dict, Any, Optional, Tuple
 
 import imageio_ffmpeg
+
+logger = logging.getLogger(__name__)
 
 # transition nội bộ → tên bộ lọc xfade của FFmpeg.
 # Vài hiệu ứng không có bản tương đương chính xác thì lấy cái gần nhất về CẢM GIÁC
@@ -116,6 +119,25 @@ def _has_nvenc() -> bool:
         return "h264_nvenc" in r.stdout
     except Exception:
         return False
+
+
+# Dấu hiệu NVENC chết trong stderr. `-encoders` chỉ nói driver CÓ encoder, không nói
+# còn phiên trống — nên hết trần phiên chỉ lộ ra lúc chạy thật.
+_NVENC_FAILURE_MARKERS = (
+    "too many nvenc sessions",
+    "openencodesessionex failed",
+    "no capable devices found",
+    "cannot load nvcuda",
+    "driver does not support",
+    "incompatible client key",
+    "out of memory",
+)
+
+
+def _is_nvenc_failure(stderr: str) -> bool:
+    """Chỉ gọi khi lệnh NVENC đã lỗi: bắt rộng thì cùng lắm tốn một lần thử lại."""
+    s = (stderr or "").lower()
+    return "nvenc" in s or any(m in s for m in _NVENC_FAILURE_MARKERS)
 
 
 def assemble(
@@ -222,22 +244,41 @@ def assemble(
     if audio_idx is not None:
         cmd += ["-map", f"{audio_idx}:a"]
 
-    gpu = use_gpu and _has_nvenc()
-    if gpu:
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "10M", "-rc", "vbr"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-threads", str(os.cpu_count() or 4)]
-    cmd += ["-pix_fmt", "yuv420p"]
+    tail = ["-pix_fmt", "yuv420p"]
     if audio_idx is not None:
-        cmd += ["-c:a", "aac", "-b:a", "192k"]
-    cmd += [output_path]
+        tail += ["-c:a", "aac", "-b:a", "192k"]
+    tail += [output_path]
 
-    print(f"[FFmpegAssembler] {n} cảnh, lead-in {lead_in:.2f}s, "
+    def _build(use_nvenc: bool) -> List[str]:
+        """Dựng lại lệnh trọn vẹn cho từng encoder — xem ghi chú fallback bên dưới."""
+        if use_nvenc:
+            # File này là bản TRUNG GIAN — audio_mix_service sẽ encode lại lần nữa, nên
+            # ở đây ưu tiên GIỮ CHẤT LƯỢNG (chống mất mát qua hai đời nén), không phải
+            # ép dung lượng. Vì vậy cq 19 chứ không phải 23 như bước master.
+            # Đo trên video của dự án: cq 19 cho SSIM 0.99760, ngang với `-b:v 10M` cũ,
+            # nhưng file nhỏ hơn ~8% và tự co lại rất nhiều ở cảnh ảnh tĩnh — thứ mà
+            # bitrate cố định không làm được.
+            enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+                   "-cq", "19", "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M"]
+        else:
+            enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                   "-threads", str(os.cpu_count() or 4)]
+        return cmd + enc + tail
+
+    gpu = use_gpu and _has_nvenc()
+    logger.info(f"[FFmpegAssembler] {n} cảnh, lead-in {lead_in:.2f}s, "
           f"hook={'có' if hook_idx is not None else 'không'}, "
           f"encoder={'NVENC' if gpu else 'libx264'}")
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, errors="replace")
+        r = subprocess.run(_build(gpu), capture_output=True, text=True,
+                           timeout=timeout, errors="replace")
+        # GeForce tiêu dùng chỉ cho 3-5 phiên NVENC đồng thời; render song song vượt
+        # trần thì phiên mới chết ngay lúc khởi tạo. Thử lại bằng CPU trước khi bỏ
+        # cuộc — chậm hơn nhiều nhưng không có trần phiên.
+        if r.returncode != 0 and gpu and _is_nvenc_failure(r.stderr):
+            logger.warning("[FFmpegAssembler] NVENC không dùng được → thử lại bằng libx264")
+            r = subprocess.run(_build(False), capture_output=True, text=True,
+                               timeout=timeout, errors="replace")
         if r.returncode != 0:
             raise RuntimeError(f"FFmpeg lỗi (mã {r.returncode}): {r.stderr[-1500:]}")
     finally:

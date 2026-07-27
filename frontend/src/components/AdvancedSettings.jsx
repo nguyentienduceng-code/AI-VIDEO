@@ -1,9 +1,31 @@
 import React from 'react';
 import { Play } from 'lucide-react';
-import { useAppContext } from '../AppContext';
-import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_REEL_SOUNDS } from '../constants';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
+import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_REEL_SOUNDS, HOOK_SFX_OPTIONS } from '../constants';
 export default function AdvancedSettings() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    useVeo: s.useVeo, setUseVeo: s.setUseVeo,
+    useFrameChaining: s.useFrameChaining, setUseFrameChaining: s.setUseFrameChaining,
+    useBeatSync: s.useBeatSync, setUseBeatSync: s.setUseBeatSync,
+    useKenBurns: s.useKenBurns, setUseKenBurns: s.setUseKenBurns,
+    useSfx: s.useSfx, setUseSfx: s.setUseSfx,
+    useSinglePassNarration: s.useSinglePassNarration, setUseSinglePassNarration: s.setUseSinglePassNarration,
+    useBreathing: s.useBreathing, setUseBreathing: s.setUseBreathing,
+    hookZoomBoost: s.hookZoomBoost, setHookZoomBoost: s.setHookZoomBoost,
+    hookEffect: s.hookEffect, setHookEffect: s.setHookEffect,
+    hookReelSfx: s.hookReelSfx, setHookReelSfx: s.setHookReelSfx,
+    hookText: s.hookText, setHookText: s.setHookText,
+    hookQuote: s.hookQuote, setHookQuote: s.setHookQuote,
+    visualSource: s.visualSource, setVisualSource: s.setVisualSource,
+    colorGrading: s.colorGrading, setColorGrading: s.setColorGrading,
+    subtitleStyle: s.subtitleStyle, setSubtitleStyle: s.setSubtitleStyle,
+    speechRate: s.speechRate, setSpeechRate: s.setSpeechRate,
+    speechPitch: s.speechPitch, setSpeechPitch: s.setSpeechPitch,
+    sfxVolume: s.sfxVolume, setSfxVolume: s.setSfxVolume,
+    watermarkText: s.watermarkText, setWatermarkText: s.setWatermarkText,
+    playPreview: s.playPreview,
+  })));
 
   // Helper component for Toggle Switch
   const ToggleRow = ({ label, checked, onChange, tooltip }) => (
@@ -17,7 +39,7 @@ export default function AdvancedSettings() {
   );
 
   return (
-    <div className="advanced-box panel-box">
+    <div className="advanced-box">
       <div className="advanced-title">⚡ Tùy chọn nâng cao</div>
       
       <div className="toggles-grid">
@@ -72,27 +94,16 @@ export default function AdvancedSettings() {
       </div>
 
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
-        {ctx.hookEffect === 'carousel_quote' && (
-          <div className="input-group">
-            <label className="field-label">TIẾNG TRỤC QUAY (HOOK MÁY XÈNG)</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <select
-                className="form-select form-select-sm"
-                value={ctx.hookReelSfx}
-                onChange={e => ctx.setHookReelSfx(e.target.value)}
-                style={{ flex: 1 }}
-                title="Âm thanh phát trong 1 giây trục quay đầu video. Chỉ có tác dụng khi Hiệu ứng mở màn là 'Máy Xèng (carousel_quote)'. Dù chọn tiếng nào, hệ thống cũng tự cắt để nó tắt trước khi lời dẫn bắt đầu."
-              >
-                {HOOK_REEL_SOUNDS.map(s => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </select>
-              <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này">
-                <Play size={18} />
-              </button>
-            </div>
-          </div>
-        )}
+        <div className="input-group">
+          <label className="field-label">HIỆU ỨNG HOOK ĐẦU VIDEO</label>
+          <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
+            <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
+            <option value="blackout_question">⬛ Màn đen câu hỏi (A1 Blackout)</option>
+            <option value="typewriter_quote">⌨️ Gõ chữ (A2 Typewriter)</option>
+            <option value="breathing_vignette">🕯️ Thu phóng mờ (C3 Vignette)</option>
+            <option value="none">🚫 Không dùng Hook</option>
+          </select>
+        </div>
         <div className="input-group">
           <label className="field-label">NGUỒN HÌNH ẢNH</label>
           <select
@@ -122,22 +133,38 @@ export default function AdvancedSettings() {
             ))}
           </select>
         </div>
-        <div className="input-group">
-          <label className="field-label">HIỆU ỨNG HOOK ĐẦU VIDEO</label>
-          <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
-            <option value="word_by_word">Từng từ đập vào (Word-by-word)</option>
-            <option value="full_shake">Rung lắc cả câu (Full shake)</option>
-            <option value="carousel_quote">Slot Machine & Bìa sách (Carousel Quote)</option>
-          </select>
+        <div className="input-group" style={{ opacity: ctx.hookEffect !== 'none' ? 1 : 0.4, pointerEvents: ctx.hookEffect !== 'none' ? 'auto' : 'none' }}>
+          <label className="field-label">ÂM THANH HIỆU ỨNG (HOOK SFX)</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              className="form-select form-select-sm"
+              value={ctx.hookReelSfx}
+              onChange={e => ctx.setHookReelSfx(e.target.value)}
+              style={{ flex: 1 }}
+              disabled={ctx.hookEffect === 'none'}
+              title="Âm thanh phát cùng với hiệu ứng mở màn."
+            >
+              {(HOOK_SFX_OPTIONS[ctx.hookEffect] || []).map(s => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này" disabled={ctx.hookEffect === 'none'}>
+              <Play size={18} />
+            </button>
+          </div>
         </div>
-        <div className="input-group" style={{ gridColumn: '1 / -1' }}>
-          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (Áp dụng Từng từ/Rung lắc)</label>
-          <input 
-            type="text" 
-            className="form-input form-input-sm" 
-            value={ctx.hookText} 
-            onChange={e => ctx.setHookText(e.target.value)} 
-            placeholder="VD: BÍ MẬT ĐỘNG TRỜI VỀ ROCKEFELLER!..." 
+        <div className="input-group">
+          {/* LỖI CŨ: nhãn ghi "áp dụng cho Slot Machine" nhưng Slot Machine (carousel_quote)
+              không hề đọc field này — nó dùng riêng "TRÍCH DẪN HOOK BÌA SÁCH" bên dưới.
+              Backend cũng từng đọc nhầm field khác cho 2 hiệu ứng này (đã sửa), nên sửa
+              luôn nhãn ở đây cho khớp thực tế, tránh user điền đúng ô mà hook vẫn trống. */}
+          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (Áp dụng cho Màn Đen / Gõ Chữ)</label>
+          <input
+            type="text"
+            className="form-input form-input-sm"
+            value={ctx.hookText}
+            onChange={e => ctx.setHookText(e.target.value)}
+            placeholder="VD: BÍ MẬT ĐỘNG TRỜI VỀ ROCKEFELLER!..."
           />
         </div>
         <div className="input-group" style={{ gridColumn: '1 / -1' }}>
@@ -151,9 +178,11 @@ export default function AdvancedSettings() {
           />
         </div>
         <div className="input-group">
-          <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS)</label>
+          <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS / OMNIVOICE)</label>
           <select className="form-select form-select-sm" value={ctx.speechRate} onChange={e => ctx.setSpeechRate(e.target.value)}>
-            <option value="-10%">Chậm (-10%)</option>
+            <option value="-20%">Rất chậm (-20%)</option>
+            <option value="-15%">Chậm thong thả (-15%)</option>
+            <option value="-10%">Chậm vừa (-10%)</option>
             <option value="+0%">Bình thường (0%)</option>
             <option value="+10%">Nhanh (+10%)</option>
             <option value="+15%">Rất nhanh (+15%)</option>

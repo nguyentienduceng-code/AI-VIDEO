@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import logging
 import os
 import time
 import traceback
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cấu hình
@@ -31,9 +34,7 @@ from typing import Any, Dict, Optional
 MAX_CONCURRENT_RENDERS = 2  # Số lượng render đồng thời tối đa
 _active_processes: Dict[str, multiprocessing.Process] = {}
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATUS_DIR = os.path.join(BASE_DIR, "assets", "render_status")
-os.makedirs(STATUS_DIR, exist_ok=True)
+from config import BASE_DIR, RENDER_STATUS_DIR as STATUS_DIR  # noqa: F401
 
 
 def _status_path(job_id: str) -> str:
@@ -135,6 +136,12 @@ def _worker_main(
       2. FFmpeg Audio Mastering & Subtitle Burn
       3. Dọn file thô
     """
+    # Windows spawn process con MỚI TINH: stdout/stderr của nó không thừa hưởng cấu
+    # hình UTF-8 của tiến trình cha. Không gọi lại ở đây thì mọi dòng log tiếng Việt
+    # trong worker sẽ giết job khi output bị chuyển hướng. Xem services/log_setup.py.
+    from services.log_setup import setup_logging
+    setup_logging()
+
     try:
         write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")
 
@@ -156,12 +163,16 @@ def _worker_main(
         # ── Phase 1b: Tạo ASS subtitle ──
         mode = render_kwargs.get("mode", "storyteller")
         if mode != "photo_slideshow" and os.path.exists(raw_video_path):
-            from services.video_service import generate_ass_file
+            from services.video_service import generate_ass_file, ASPECT_RATIO_SIZES
+            # Phụ đề phải được căn theo ĐÚNG khung hình sẽ burn lên, nếu không libass
+            # co giãn lệch tỉ lệ và chữ méo (xem generate_ass_file).
+            _vw, _vh = ASPECT_RATIO_SIZES.get(render_kwargs.get("aspect_ratio"), (1080, 1920))
             generate_ass_file(
                 scene_assets, output_srt_path, mode,
                 subtitle_style=master_kwargs.get("subtitle_style", "karaoke_bold"),
                 hook_text=render_kwargs.get("hook_text"),
                 hook_effect=master_kwargs.get("hook_effect", "word_by_word"),
+                video_width=_vw, video_height=_vh,
             )
 
         # ── Phase 2: FFmpeg Audio Mastering & Burn Subtitle ──
@@ -181,6 +192,7 @@ def _worker_main(
             add_vignette=master_kwargs.get("add_vignette", True),
             progress_bar=master_kwargs.get("progress_bar", True),
             total_duration=master_kwargs.get("total_duration", 0.0),
+            bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
         )
 
         # Dọn file thô
@@ -196,12 +208,18 @@ def _worker_main(
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[RenderWorker] Error for job {job_id}: {e}\n{tb}")
+        logger.error(f"[RenderWorker] Error for job {job_id}: {e}\n{tb}")
         
         # Fallback: nếu FFmpeg lỗi nhưng RAW video tồn tại → dùng RAW
-        if os.path.isfile(raw_video_path) and not os.path.isfile(output_video_path):
+        if os.path.isfile(raw_video_path):
             try:
-                os.rename(raw_video_path, output_video_path)
+                import time
+                for _ in range(3):
+                    try:
+                        os.replace(raw_video_path, output_video_path)
+                        break
+                    except PermissionError:
+                        time.sleep(1)
             except OSError:
                 pass
 
@@ -266,3 +284,43 @@ def get_active_render_count() -> int:
         _active_processes[jid].join(timeout=1)
         del _active_processes[jid]
     return len(_active_processes)
+
+
+def cancel_render(job_id: str) -> bool:
+    """Hủy một render worker đang chạy."""
+    p = _active_processes.get(job_id)
+    if p is None or not p.is_alive():
+        return False
+        
+    try:
+        import psutil
+        parent = psutil.Process(p.pid)
+        children = parent.children(recursive=True)
+        # Kill child processes (ffmpeg, moviepy, etc)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+                
+        # Wait for children to terminate
+        psutil.wait_procs(children, timeout=3)
+        
+        # Kill the main worker process
+        parent.terminate()
+        parent.wait(timeout=3)
+    except ImportError:
+        logger.warning("psutil not installed, falling back to process.terminate()")
+        p.terminate()
+    except psutil.NoSuchProcess:
+        pass
+    except Exception as e:
+        logger.error(f"[Cancel] Error killing process tree for job {job_id}: {e}")
+        p.kill() # fallback
+        
+    p.join(timeout=2)
+    if job_id in _active_processes:
+        del _active_processes[job_id]
+        
+    write_status(job_id, status="error", progress=0, message="Đã huỷ theo yêu cầu của người dùng.", error="Cancelled by user")
+    return True

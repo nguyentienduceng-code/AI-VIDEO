@@ -1,9 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, RotateCcw, Check, Download, PenLine, Clock } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import { AlertTriangle, RotateCcw, Check, Download, PenLine, Clock, XCircle } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
 
 export default function RenderProgress() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    step: s.step,
+    errorMsg: s.errorMsg,
+    videoUrl: s.videoUrl,
+    srtUrl: s.srtUrl,
+    progress: s.progress,
+    jobMessage: s.jobMessage,
+    progressLog: s.progressLog,
+    handleReset: s.handleReset,
+    handleCancelRender: s.handleCancelRender,
+    setStep: s.setStep,
+    setErrorMsg: s.setErrorMsg,
+    setStatus: s.setStatus,
+  })));
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -62,12 +76,26 @@ export default function RenderProgress() {
         <div className="progress-bar-container">
           <div className="progress-bar-fill" style={{ width: `${ctx.progress}%` }} />
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+        <div style={{ width: '100%', maxWidth: 400, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
           <div className="progress-percent" style={{ marginTop: 0 }}>{ctx.progress}%</div>
-          <div style={{ fontSize: '1.1rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-            <Clock size={16} style={{verticalAlign: 'text-bottom', marginRight: 6}} />
+          <div style={{ fontSize: '1.05rem', color: 'var(--amber)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(245, 158, 11, 0.1)', padding: '2px 8px', borderRadius: 12 }}>
+            <Clock size={14} />
             {formatTime(elapsed)}
           </div>
+        </div>
+        
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+          <button 
+            className="btn-outline" 
+            style={{ color: 'var(--red)', borderColor: 'var(--red)' }}
+            onClick={() => {
+              if (window.confirm("Bạn có chắc chắn muốn hủy quá trình render này không?")) {
+                ctx.handleCancelRender();
+              }
+            }}
+          >
+            <XCircle size={14} style={{ marginRight: 6 }} /> Hủy Render
+          </button>
         </div>
 
         <div className="progress-log">

@@ -3,8 +3,7 @@ import json
 from datetime import datetime
 
 # Đường dẫn tuyệt đối theo vị trí file, không phụ thuộc thư mục làm việc (CWD) khi khởi động server.
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-QUOTA_FILE = os.path.join(_BASE_DIR, "assets", "cache", "quota.json")
+from config import QUOTA_FILE
 DAILY_LIMIT = 1500
 
 def _get_today_str() -> str:

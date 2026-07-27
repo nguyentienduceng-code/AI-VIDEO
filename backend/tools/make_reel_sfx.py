@@ -18,9 +18,11 @@ import soundfile as sf
 SR = 44100
 SFX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sfx")
 
-# Phải khớp hook_engine.build_carousel_hook
-SLOT_DUR = 1.0
-NUM_FAKES = 4
+# Phải khớp hook_engine.SLOT_DURATION / NUM_FAKES (nguồn chân lý).
+# Không import trực tiếp vì hook_engine kéo theo cả moviepy — quá nặng cho một công cụ
+# sinh âm thanh. Đổi bên kia thì nhớ đổi ở đây RỒI CHẠY LẠI file này.
+SLOT_DUR = 2.0
+NUM_FAKES = 8
 SUBDIVISIONS = 8   # gõ 1 tiếng mỗi nửa khoảng bìa → nhịp dày vừa phải
 
 

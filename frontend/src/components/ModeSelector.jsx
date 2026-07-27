@@ -1,9 +1,12 @@
 import React from 'react';
-import { useAppContext } from '../AppContext';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
 import { MODES } from '../constants';
 
 export default function ModeSelector() {
-  const { activeMode, setActiveMode, setErrorMsg } = useAppContext();
+  const { activeMode, setActiveMode, setErrorMsg } = useAppStore(
+    useShallow((s) => ({ activeMode: s.activeMode, setActiveMode: s.setActiveMode, setErrorMsg: s.setErrorMsg }))
+  );
 
   return (
     <div className="top-modes">

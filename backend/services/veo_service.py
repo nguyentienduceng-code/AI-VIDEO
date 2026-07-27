@@ -34,9 +34,7 @@ from .key_manager import gemini_keys  # giữ nguyên key rotation hiện có
 
 logger = logging.getLogger(__name__)
 
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-IMAGES_DIR = os.path.join(ASSETS_DIR, "images")
-VIDEO_TMP_DIR = os.path.join(ASSETS_DIR, "veo_tmp")
+from config import DATA_DIR as ASSETS_DIR, IMAGES_DIR, VEO_TMP_DIR as VIDEO_TMP_DIR  # noqa: F401
 os.makedirs(VIDEO_TMP_DIR, exist_ok=True)
 
 VEO_MODEL_QUALITY = "veo-3.1-generate-preview"   # dùng cho bản final render

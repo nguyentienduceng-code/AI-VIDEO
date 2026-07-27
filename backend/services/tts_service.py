@@ -29,9 +29,7 @@ VIETNAMESE_VOICES = [
 ]
 
 # ── Custom Voice Cloning Registry (Phase 3) ──────────────────────────
-_ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-VOICES_PREVIEW_DIR = os.path.join(_ASSETS_DIR, "voices_preview")
-CUSTOM_VOICES_FILE = os.path.join(_ASSETS_DIR, "voices_custom.json")
+from config import CUSTOM_VOICES_FILE, SFX_DIR, VOICES_PREVIEW_DIR  # noqa: F401
 
 
 def _load_custom_voices() -> list:
@@ -84,6 +82,9 @@ def remove_custom_voice(voice_id: str) -> bool:
 
 import random
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _minion_pro_transform(text: str) -> str:
@@ -328,7 +329,7 @@ def _concat_audio_files(files: list[str], output_path: str) -> bool:
         subprocess.run(cmd, check=True, capture_output=True, timeout=120)
         return True
     except Exception as e:
-        print(f"[Prosody] ffmpeg concat lỗi ({e}). Fallback nối byte thô.")
+        logger.warning(f"[Prosody] ffmpeg concat lỗi ({e}). Fallback nối byte thô.")
         try:
             with open(output_path, "wb") as out:
                 for f in files:
@@ -336,7 +337,7 @@ def _concat_audio_files(files: list[str], output_path: str) -> bool:
                         out.write(inp.read())
             return True
         except Exception as e2:
-            print(f"[Prosody] Nối byte cũng lỗi: {e2}")
+            logger.error(f"[Prosody] Nối byte cũng lỗi: {e2}")
             return False
     finally:
         if list_path and os.path.exists(list_path):
@@ -498,7 +499,7 @@ async def synthesize_script_single_pass(
     cache_params = dict(mode="single_pass", text=full_text, voice=voice, rate=rate, pitch=pitch)
     cached = _tts_cache.get("tts_meta", **cache_params)
     if cached and _tts_cache.get_media("tts", output_path, **cache_params):
-        print("[Narration] Cache HIT — tái dùng bản đọc liền mạch.")
+        logger.info("[Narration] Cache HIT — tái dùng bản đọc liền mạch.")
         return cached["duration"], cached["scene_wbs"], cached["duration"]
 
     if voice.startswith("omnivoice_") or voice.startswith("minion"):
@@ -506,7 +507,7 @@ async def synthesize_script_single_pass(
             f"Giọng '{voice}' không hỗ trợ đọc liền mạch (cần word boundaries của Edge-TTS)."
         )
 
-    print(f"[Narration] Đọc liền mạch {len(scene_texts)} cảnh trong 1 lần gọi ({len(full_text)} ký tự)...")
+    logger.info(f"[Narration] Đọc liền mạch {len(scene_texts)} cảnh trong 1 lần gọi ({len(full_text)} ký tự)...")
     duration, wbs = await _synthesize_plain(full_text, output_path, voice, rate, pitch)
 
     scene_wbs = split_word_boundaries_by_scene(wbs, full_text, ranges)
@@ -519,7 +520,7 @@ async def synthesize_script_single_pass(
         _tts_cache.set_media("tts", output_path, **cache_params)
         _tts_cache.set("tts_meta", {"duration": duration, "scene_wbs": scene_wbs}, **cache_params)
     except Exception as e:
-        print(f"[Narration] Lưu cache lỗi (không nghiêm trọng): {e}")
+        logger.warning(f"[Narration] Lưu cache lỗi (không nghiêm trọng): {e}")
 
     return duration, scene_wbs, duration
 
@@ -542,15 +543,15 @@ def _get_omnivoice_model():
             from omnivoice import OmniVoice
             import torch
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            print(f"[OmniVoice] Loading model on {device}... This may take a while.")
+            logger.info(f"[OmniVoice] Loading model on {device}... This may take a while.")
             _omnivoice_model = OmniVoice.from_pretrained(
                 "k2-fsa/OmniVoice",
                 device_map=device,
                 dtype=torch.float16 if torch.cuda.is_available() else torch.float32
             )
-            print("[OmniVoice] Model loaded successfully.")
+            logger.info("[OmniVoice] Model loaded successfully.")
         except Exception as e:
-            print(f"[OmniVoice] Failed to load model: {e}")
+            logger.error(f"[OmniVoice] Failed to load model: {e}")
             raise e
     return _omnivoice_model
 
@@ -569,7 +570,7 @@ async def _synthesize_gtts_fallback(text: str, output_path: str) -> tuple[float,
         wbs = _estimate_word_boundaries(text, duration)
         return max(1.0, duration), wbs
     except Exception as e:
-        print(f"[gTTS Fallback] Error: {e}. Using Offline Windows SAPI5 Fallback.")
+        logger.warning(f"[gTTS Fallback] Error: {e}. Using Offline Windows SAPI5 Fallback.")
         return await _synthesize_offline_fallback(text, output_path)
 
 def _generate_silence_audio(output_path: str, duration_sec: float = 3.0):
@@ -598,7 +599,7 @@ async def _synthesize_offline_fallback(text: str, output_path: str) -> tuple[flo
             wbs = _estimate_word_boundaries(text, dur)
             return max(1.0, dur), wbs
     except Exception as e:
-        print(f"[Offline TTS Fallback] Error: {e}")
+        logger.error(f"[Offline TTS Fallback] Error: {e}")
 
     # Fallback cuối cùng: Sinh tệp âm thanh im lặng (Silence) 3.0s để không bao giờ làm chết pipeline
     _generate_silence_audio(output_path, duration_sec=3.0)
@@ -607,6 +608,104 @@ async def _synthesize_offline_fallback(text: str, output_path: str) -> tuple[flo
 # ══════════════════════════════════════════════════════════════════════
 # OmniVoice Prosody Helpers (V3.3)
 # ══════════════════════════════════════════════════════════════════════
+
+OMNIVOICE_SR = 24000
+# Trần ký tự mỗi mẩu gửi cho OmniVoice. 200 chứ không phải 90: mô hình xử lý tốt câu
+# dài, cắt vụn chỉ làm mất ngữ điệu vắt qua ranh giới mẩu.
+_TTS_MAX_CHUNK_CHARS = 200
+# Ngưỡng coi là "im lặng" khi gọt hai đầu mỗi mẩu.
+_TTS_TRIM_TOP_DB = 40
+# Khoảng lặng TRẢ LẠI sau khi gọt, theo dấu câu đã cắt ra (giây). Gọt xong mà nối
+# thẳng thì các vế dính sát nhau, nghe hụt hơi và vội — còn khó chịu hơn cả tiếng
+# khựng ban đầu. Mục tiêu là thay khoảng lặng NGẪU NHIÊN của model bằng khoảng lặng
+# CÓ KIỂM SOÁT, chứ không phải xoá sạch mọi nhịp nghỉ.
+_TTS_PAUSE_AFTER = {",": 0.12, ";": 0.18, ":": 0.18}
+_TTS_SENTENCE_PAUSE = 0.25   # giữa hai câu
+_TTS_ELLIPSIS_PAUSE = 0.35   # mẩu kết thúc bằng "..." — nhịp lặng cố ý, xem prompt Gemini
+
+
+def _split_sentence_for_tts(sentence: str, max_chars: int = _TTS_MAX_CHUNK_CHARS):
+    """
+    Cắt câu dài thành các mẩu cho OmniVoice, ưu tiên RANH GIỚI NGỮ NGHĨA (dấu , ; :).
+    Trả về [(văn bản, dấu kết thúc)] — dấu kết thúc dùng để tính khoảng lặng chèn lại.
+
+    LỖI CŨ: cắt cứng theo 90 ký tự bất kể nội dung. Ranh giới rơi vào giữa vế câu
+    ("...tôi đã đi" | "tới đó và thấy...") nên ngữ điệu bị bẻ gãy đúng chỗ không có
+    dấu câu nào — tai nghe ra ngay là một cú vấp.
+
+    Câu KHÔNG có dấu ngắt nào mà vẫn quá dài thì mới cắt theo ranh giới từ (lưới an
+    toàn cũ, giữ nguyên: không bao giờ được đứt giữa một từ).
+    """
+    s = (sentence or "").strip()
+    if not s:
+        return []
+    if len(s) <= max_chars:
+        return [(s, "")]
+
+    # Tách theo dấu ngắt vế, GIỮ dấu lại để biết cần nghỉ bao lâu
+    clauses = []
+    for part in re.findall(r"[^,;:]+[,;:]?", s):
+        part = part.strip()
+        if not part:
+            continue
+        if part[-1] in ",;:":
+            clauses.append((part[:-1].strip(), part[-1]))
+        else:
+            clauses.append((part, ""))
+
+    # Gộp các vế ngắn cho tới sát trần ký tự (đừng cắt vụn hơn mức cần thiết)
+    merged, buf, buf_trail = [], "", ""
+    for text, trail in clauses:
+        cand = f"{buf}{buf_trail} {text}".strip() if buf else text
+        if buf and len(cand) > max_chars:
+            merged.append((buf, buf_trail))
+            buf, buf_trail = text, trail
+        else:
+            buf, buf_trail = cand, trail
+    if buf:
+        merged.append((buf, buf_trail))
+
+    # Vế đơn vẫn quá dài → lưới an toàn: cắt theo từ
+    out = []
+    for text, trail in merged:
+        if len(text) <= max_chars:
+            out.append((text, trail))
+            continue
+        cur = ""
+        for word in text.split():
+            if cur and len(cur) + 1 + len(word) > max_chars:
+                out.append((cur, ""))
+                cur = word
+            else:
+                cur = f"{cur} {word}".strip()
+        if cur:
+            out.append((cur, trail))
+    return out
+
+
+def _trim_tts_silence(seg):
+    """
+    Gọt khoảng lặng hai đầu một mẩu audio. Trả lại chính `seg` nếu không gọt được
+    (thiếu librosa, hoặc mẩu gần như im lặng hoàn toàn).
+
+    KHÔNG được ném exception: hàm này nằm trong đường sinh giọng clone, lỗi ở đây sẽ
+    đẩy cả job rơi về Edge-TTS và mất sạch giọng đã clone.
+    """
+    try:
+        import librosa
+    except Exception as e:      # librosa nặng (numba/llvmlite), có thể chưa cài
+        logger.warning(f"[OmniVoice] Không có librosa, bỏ qua bước gọt lặng: {e}")
+        return seg
+    try:
+        trimmed, _ = librosa.effects.trim(seg, top_db=_TTS_TRIM_TOP_DB)
+        # Mẩu im gần hết → giữ bản gốc, đừng trả về mảng rỗng làm mất chữ
+        if trimmed.size < int(0.02 * OMNIVOICE_SR):
+            return seg
+        return trimmed
+    except Exception as e:
+        logger.warning(f"[OmniVoice] Gọt lặng thất bại, dùng nguyên bản: {e}")
+        return seg
+
 
 def _get_omnivoice_sentence_instruct(sentence: str, index: int, total: int, base_instruct: str) -> str:
     """
@@ -645,7 +744,7 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         import stable_whisper
-        print("[ForcedAlign] Loading stable-whisper 'base' model (1 lần duy nhất)...")
+        logger.info("[ForcedAlign] Loading stable-whisper 'base' model (1 lần duy nhất)...")
         _whisper_model = stable_whisper.load_model("base")
     return _whisper_model
 
@@ -667,12 +766,12 @@ def _forced_align_word_boundaries(wav_path: str, text: str) -> list:
                     "text": word.word.strip()
                 })
         if wbs:
-            print(f"[OmniVoice] Forced Alignment thành công: {len(wbs)} words")
+            logger.info(f"[OmniVoice] Forced Alignment thành công: {len(wbs)} words")
             return wbs
     except ImportError:
-        print("[OmniVoice] stable-whisper chưa cài. Dùng nội suy word boundaries.")
+        logger.warning("[OmniVoice] stable-whisper chưa cài. Dùng nội suy word boundaries.")
     except Exception as e:
-        print(f"[OmniVoice] Forced Alignment lỗi ({e}). Dùng nội suy word boundaries.")
+        logger.warning(f"[OmniVoice] Forced Alignment lỗi ({e}). Dùng nội suy word boundaries.")
     
     # Fallback: nội suy
     import soundfile as sf
@@ -725,7 +824,6 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
     # Giọng clone cá nhân: lấy ref_text riêng từ registry
     custom_voice = get_custom_voice(instruct) if instruct.startswith("omnivoice_custom_") else None
 
-
     # Whitelist các từ khóa hợp lệ được chấp nhận bởi mô hình OmniVoice
     VALID_OMNIVOICE_TOKENS = {
         "american accent", "australian accent", "british accent", "canadian accent", "child", "chinese accent",
@@ -736,7 +834,14 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
     raw_tokens = [t.strip() for t in mapped_instruct.split(",")]
     clean_tokens = [t for t in raw_tokens if t.lower() in VALID_OMNIVOICE_TOKENS]
     if not clean_tokens:
-        clean_tokens = ["male", "young adult", "moderate pitch"]
+        if custom_voice:
+            cv_name = custom_voice.get("name", "").lower()
+            if "nữ" in cv_name or "female" in cv_name or "gái" in cv_name:
+                clean_tokens = ["female", "young adult", "moderate pitch"]
+            else:
+                clean_tokens = ["male", "young adult", "moderate pitch"]
+        else:
+            clean_tokens = ["male", "young adult", "moderate pitch"]
     mapped_instruct = ", ".join(clean_tokens)
 
     def _run_omnivoice_with_prosody():
@@ -767,46 +872,57 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
                 raise RuntimeError(f"Thiếu file mẫu giọng clone: {ref_wav_path}. Hãy upload lại mẫu giọng.")
         elif not os.path.exists(ref_wav_path) or os.path.getsize(ref_wav_path) < 1000:
             # Nếu chưa có giọng mẫu, tạo 1 bản zero-shot (identity thuần, KHÔNG kèm emotion) và lưu lại
-            print(f"[OmniVoice] Tạo giọng mẫu Zero-shot cho {instruct}...")
+            logger.info(f"[OmniVoice] Tạo giọng mẫu Zero-shot cho {instruct}...")
             ref_audio_arr = model.generate(text=ref_text, instruct=mapped_instruct)
             sf.write(ref_wav_path, ref_audio_arr[0], 24000)
             
         audio_chunks = []
+        last_sentence_idx = total_sentences - 1
         for idx, sentence in enumerate(sentences):
             # Prosody: điều chỉnh instruct theo ngữ cảnh câu
             sentence_instruct = _get_omnivoice_sentence_instruct(
                 sentence, idx, total_sentences, mapped_instruct
             )
-            
-            # Chunk nhỏ hơn cho câu dài (90 ký tự thay vì 180 nếu > 15 từ).
-            # Cắt theo RANH GIỚI TỪ — không đứt giữa từ (gây đọc sai/lắp bắp).
-            max_chunk = 90 if len(sentence.split()) > 15 else 180
-            if len(sentence) <= max_chunk:
-                sub_chunks = [sentence]
-            else:
-                sub_chunks = []
-                current = ""
-                for word in sentence.split():
-                    if current and len(current) + 1 + len(word) > max_chunk:
-                        sub_chunks.append(current)
-                        current = word
-                    else:
-                        current = f"{current} {word}".strip()
-                if current:
-                    sub_chunks.append(current)
-            
-            for sub in sub_chunks:
+
+            sub_chunks = _split_sentence_for_tts(sentence)
+            last_chunk_idx = len(sub_chunks) - 1
+
+            for j, (sub, trail) in enumerate(sub_chunks):
                 if not sub.strip():
                     continue
-                # Dùng Voice Cloning thay vì Zero-shot để đảm bảo 100% đồng nhất giọng
-                arr = model.generate(text=sub, ref_audio=ref_wav_path, ref_text=ref_text)
-                audio_chunks.append(arr[0])
-                
-        if len(audio_chunks) == 1:
+                # Dùng Voice Cloning thay vì Zero-shot để đảm bảo 100% đồng nhất giọng.
+                # `instruct` BẮT BUỘC phải truyền kèm dù đã có ref_audio: thiếu nó thì
+                # model mất mốc phong cách nền và trôi dần về giọng mặc định, giọng clone
+                # bị lai tạp. sentence_instruct trước đây được tính ra rồi BỎ KHÔNG DÙNG.
+                arr = model.generate(
+                    text=sub,
+                    instruct=sentence_instruct,
+                    ref_audio=ref_wav_path,
+                    ref_text=ref_text,
+                )
+                seg = np.asarray(arr[0], dtype=np.float32)
+                audio_chunks.append(_trim_tts_silence(seg))
+
+                # Chèn lại nhịp nghỉ có kiểm soát (xem _TTS_PAUSE_AFTER)
+                is_very_last = (idx == last_sentence_idx) and (j == last_chunk_idx)
+                if is_very_last:
+                    continue
+                gap = _TTS_PAUSE_AFTER.get(trail, 0.0)
+                if j == last_chunk_idx:                       # hết câu
+                    gap = max(gap, _TTS_SENTENCE_PAUSE)
+                if sub.rstrip().endswith(("...", "…")):       # nhịp lặng cố ý
+                    gap = max(gap, _TTS_ELLIPSIS_PAUSE)
+                if gap > 0:
+                    audio_chunks.append(np.zeros(int(gap * OMNIVOICE_SR), dtype=np.float32))
+
+        if not audio_chunks:
+            logger.warning(f"[OmniVoice] Không sinh được audio nào cho text: '{clean_text}'. Trả về im lặng 1s.")
+            final_audio = np.zeros(24000, dtype=np.float32)
+        elif len(audio_chunks) == 1:
             final_audio = audio_chunks[0]
         else:
             final_audio = np.concatenate(audio_chunks, axis=0)
-            
+
         return final_audio
 
     try:
@@ -829,7 +945,7 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
                     subprocess.run(cmd, check=True, capture_output=True, timeout=120)
                     os.replace(stretched_wav_path, wav_path)
                 except Exception as stretch_err:
-                    print(f"[OmniVoice] Time-stretching failed: {stretch_err}")
+                    logger.warning(f"[OmniVoice] Time-stretching failed: {stretch_err}")
 
         # Update duration after stretching
         info = sf.info(wav_path)
@@ -845,7 +961,7 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         return max(1.0, duration), wbs
     except Exception as e:
         fallback_msg = f"⚠️ OmniVoice không khả dụng ({type(e).__name__}). Tự động dùng giọng Edge-TTS thay thế."
-        print(f"[OmniVoice] {fallback_msg}")
+        logger.warning(f"[OmniVoice] {fallback_msg}")
         # Broadcast cảnh báo cho user qua WebSocket (nếu có callback)
         if warning_callback:
             try:
@@ -856,8 +972,169 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         try:
             return await _synthesize_plain(clean_text, output_path, fallback_voice, "+0%", "+0Hz")
         except Exception as fallback_e:
-            print(f"[OmniVoice Fallback] Edge-TTS failed: {fallback_e}. Chuyển sang gTTS.")
+            logger.warning(f"[OmniVoice Fallback] Edge-TTS failed: {fallback_e}. Chuyển sang gTTS.")
             return await _synthesize_gtts_fallback(clean_text, output_path)
+
+# ══════════════════════════════════════════════════════════════════════
+# Vi chỉnh nhịp đọc — thẻ <break time="1s"/>
+# ══════════════════════════════════════════════════════════════════════
+# Edge-TTS KHÔNG nhận SSML: thư viện tự bọc text vào khung SSML của nó và escape mọi
+# dấu '<'. Gửi thẻ break vào thẳng thì máy đọc nguyên văn "break time bằng một giây".
+# Vì thế trước đây pipeline chỉ thay thẻ bằng "..." — mà "..." chỉ tạo được khoảng
+# lặng vài chục ms, không đủ để "ngưng đọng cảm xúc".
+#
+# Cách làm ở đây: CẮT text tại thẻ, đọc từng đoạn rời, rồi khâu lại bằng FFmpeg với
+# đúng khoảng im lặng ở giữa. Nhờ vậy thẻ break hoạt động với MỌI giọng (Edge, Minion,
+# OmniVoice, gTTS) vì nó nằm ngoài tầng TTS.
+
+import re as _re
+
+BREAK_TAG_RE = _re.compile(
+    r"""<\s*break\s+time\s*=\s*["']?\s*(\d+(?:[.,]\d+)?)\s*(ms|s)\s*["']?\s*/?\s*>""",
+    _re.IGNORECASE,
+)
+
+# Trần 5s: dài hơn thì khán giả video ngắn tưởng file lỗi và vuốt qua.
+MAX_BREAK_SECONDS = 5.0
+_SILENCE_SAMPLE_RATE = 24000
+
+
+def has_break_tags(text: str) -> bool:
+    return bool(BREAK_TAG_RE.search(text or ""))
+
+
+def strip_break_tags(text: str) -> str:
+    """Bỏ thẻ break, dùng cho phụ đề/hiển thị (khán giả không được thấy thẻ)."""
+    cleaned = BREAK_TAG_RE.sub(" ", text or "")
+    return _re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def split_by_breaks(text: str) -> list[tuple[str, float]]:
+    """
+    Cắt text thành [(đoạn_chữ, số_giây_nghỉ_sau_đoạn), ...].
+
+    Hai thẻ dính nhau thì cộng dồn thời gian nghỉ; thẻ đứng ngay ĐẦU cảnh bị bỏ qua
+    (khoảng lặng mở màn đã thuộc về chuyển cảnh trước đó). Cả hai cách xử lý đều nhằm
+    tránh sinh ra đoạn chữ rỗng — Edge-TTS trả file 0 byte cho chuỗi rỗng.
+    """
+    parts: list[tuple[str, float]] = []
+    cursor = 0
+    for m in BREAK_TAG_RE.finditer(text or ""):
+        value = float(m.group(1).replace(",", "."))
+        seconds = value / 1000.0 if m.group(2).lower() == "ms" else value
+        seconds = max(0.0, min(MAX_BREAK_SECONDS, seconds))
+        chunk = (text[cursor:m.start()] or "").strip()
+        if chunk:
+            parts.append((chunk, seconds))
+        elif parts:
+            # Thẻ dính ngay sau thẻ trước → cộng dồn thời gian nghỉ.
+            prev_text, prev_pause = parts[-1]
+            parts[-1] = (prev_text, min(MAX_BREAK_SECONDS, prev_pause + seconds))
+        cursor = m.end()
+    tail = (text[cursor:] or "").strip()
+    if tail:
+        parts.append((tail, 0.0))
+    return parts
+
+
+def _resolve_written_path(requested: str) -> str | None:
+    """
+    Đường dẫn file THẬT SỰ được ghi ra.
+
+    Cần thiết vì OmniVoice/gTTS có thể ghi .wav trong khi caller xin .mp3 (hoặc ngược
+    lại) — đúng cái bẫy mà `wav_alt` trong main.py đang đỡ.
+    """
+    base, ext = os.path.splitext(requested)
+    for candidate in (requested, base + ".wav", base + ".mp3"):
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+            return candidate
+    return None
+
+
+def _concat_audio_with_pauses(
+    segments: list[tuple[str, float]], output_path: str
+) -> None:
+    """
+    Nối các file audio, chèn im lặng giữa chúng, ghi đè lên output_path.
+
+    Dùng FFmpeg chứ không phải MoviePy: các đoạn có thể khác định dạng (mp3 của
+    Edge-TTS, wav của OmniVoice) và khác số kênh; `aresample`+`aformat` ép tất cả về
+    cùng chuẩn trước khi concat, việc mà concatenate_audioclips không tự làm — lệch
+    số kênh là nó ném lỗi giữa chừng.
+    """
+    import subprocess
+
+    import imageio_ffmpeg
+
+    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-hide_banner", "-nostats"]
+    labels: list[str] = []
+    filters: list[str] = []
+    idx = 0
+    for seg_path, pause in segments:
+        cmd += ["-i", seg_path]
+        filters.append(
+            f"[{idx}:a]aresample={_SILENCE_SAMPLE_RATE},"
+            f"aformat=sample_fmts=s16:channel_layouts=mono[a{idx}]"
+        )
+        labels.append(f"[a{idx}]")
+        idx += 1
+        if pause > 0:
+            cmd += [
+                "-f", "lavfi", "-t", f"{pause:.3f}",
+                "-i", f"anullsrc=r={_SILENCE_SAMPLE_RATE}:cl=mono",
+            ]
+            filters.append(
+                f"[{idx}:a]aformat=sample_fmts=s16:channel_layouts=mono[a{idx}]"
+            )
+            labels.append(f"[a{idx}]")
+            idx += 1
+
+    filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[out]")
+    tmp_out = output_path + ".breaks.tmp" + (os.path.splitext(output_path)[1] or ".mp3")
+    cmd += ["-filter_complex", ";".join(filters), "-map", "[out]", tmp_out]
+
+    subprocess.run(cmd, check=True, capture_output=True, text=True, errors="replace", timeout=300)
+    os.replace(tmp_out, output_path)
+
+
+async def _synthesize_with_breaks(
+    text: str, output_path: str, warning_callback, **kwargs
+) -> tuple[float, list]:
+    """Đọc từng đoạn giữa các thẻ break rồi khâu lại kèm khoảng lặng."""
+    import shutil
+    import tempfile
+
+    segments = split_by_breaks(text)
+    if len(segments) <= 1:
+        return await _synthesize_speech_internal(
+            strip_break_tags(text), output_path, warning_callback=warning_callback, **kwargs
+        )
+
+    tmp_dir = tempfile.mkdtemp(prefix="tts_breaks_")
+    produced: list[tuple[str, float]] = []
+    total_dur = 0.0
+    merged_wbs: list = []
+    try:
+        for i, (chunk, pause) in enumerate(segments):
+            seg_target = os.path.join(tmp_dir, f"seg_{i}{os.path.splitext(output_path)[1] or '.mp3'}")
+            dur, wbs = await _synthesize_speech_internal(
+                chunk, seg_target, warning_callback=warning_callback, **kwargs
+            )
+            written = _resolve_written_path(seg_target)
+            if not written:
+                raise RuntimeError(f"Đoạn {i + 1} không sinh được audio.")
+            for wb in wbs or []:
+                shifted = dict(wb)
+                shifted["offset"] = shifted.get("offset", 0.0) + total_dur
+                merged_wbs.append(shifted)
+            produced.append((written, pause))
+            total_dur += dur + pause
+
+        _concat_audio_with_pauses(produced, output_path)
+        return total_dur, merged_wbs
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Main synthesize function
@@ -888,13 +1165,28 @@ async def synthesize_speech(
     )
     cached_meta = _tts_cache.get("tts_meta", **cache_params)
     if cached_meta and _tts_cache.get_media("tts", output_path, **cache_params):
-        print(f"[TTS Cache] HIT — tái dùng giọng đọc đã sinh ({voice}).")
+        logger.info(f"[TTS Cache] HIT — tái dùng giọng đọc đã sinh ({voice}).")
         return cached_meta.get("duration", 3.0), cached_meta.get("word_boundaries", [])
 
-    dur, wbs = await _synthesize_speech_internal(text, output_path, voice, rate, pitch, mode, emotion, warning_callback)
-    
+    if has_break_tags(text):
+        # Vi chỉnh nhịp đọc: cắt tại thẻ, đọc rời, khâu lại kèm khoảng lặng thật.
+        # Hỏng ở bất kỳ đoạn nào cũng KHÔNG được giết cảnh — quay về đọc liền một mạch
+        # với thẻ bị gỡ bỏ, mất nhịp nghỉ còn hơn mất tiếng.
+        try:
+            dur, wbs = await _synthesize_with_breaks(
+                text, output_path, warning_callback,
+                voice=voice, rate=rate, pitch=pitch, mode=mode, emotion=emotion,
+            )
+        except Exception as break_err:
+            logger.warning(f"[TTS Break] Ghép nhịp nghỉ thất bại ({break_err}). Đọc liền mạch.")
+            dur, wbs = await _synthesize_speech_internal(
+                strip_break_tags(text), output_path, voice, rate, pitch, mode, emotion, warning_callback
+            )
+    else:
+        dur, wbs = await _synthesize_speech_internal(text, output_path, voice, rate, pitch, mode, emotion, warning_callback)
+
     if use_breathing and os.path.exists(output_path):
-        breath_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sfx", "breath.wav")
+        breath_path = os.path.join(SFX_DIR, "breath.wav")
         if os.path.exists(breath_path):
             import tempfile
             from moviepy.audio.io.AudioFileClip import AudioFileClip
@@ -927,7 +1219,7 @@ async def synthesize_speech(
                     wb["offset"] += breath_dur
                     
             except Exception as e:
-                print(f"[Breathing] Error applying breathing effect: {e}")
+                logger.warning(f"[Breathing] Error applying breathing effect: {e}")
 
     # Lưu cache (file audio + metadata duration/word_boundaries) cho lần render sau
     try:
@@ -935,7 +1227,7 @@ async def synthesize_speech(
             _tts_cache.set_media("tts", output_path, **cache_params)
             _tts_cache.set("tts_meta", {"duration": dur, "word_boundaries": wbs}, **cache_params)
     except Exception as cache_err:
-        print(f"[TTS Cache] Save error (non-fatal): {cache_err}")
+        logger.warning(f"[TTS Cache] Save error (non-fatal): {cache_err}")
 
     return dur, wbs
 
@@ -958,7 +1250,7 @@ async def _synthesize_speech_internal(
         pitch = "-20Hz"
 
     if voice not in [v["id"] for v in VIETNAMESE_VOICES] and not voice.startswith("minion"):
-        print(f"Voice {voice} không tồn tại. Fallback về vi-VN-HoaiMyNeural.")
+        logger.warning(f"Voice {voice} không tồn tại. Fallback về vi-VN-HoaiMyNeural.")
         voice = "vi-VN-HoaiMyNeural"
 
     # Chuẩn hóa text
@@ -993,7 +1285,7 @@ async def _synthesize_speech_internal(
             return await _synthesize_plain(text, output_path, voice, rate, pitch)
         except Exception as e:
             last_error = e
-            print(f"Edge-TTS error (attempt {attempt+1}/3): {e}")
+            logger.warning(f"Edge-TTS error (attempt {attempt+1}/3): {e}")
             if os.path.exists(output_path):
                 os.remove(output_path)
             tmp = output_path + ".tmp"
@@ -1002,7 +1294,7 @@ async def _synthesize_speech_internal(
             await asyncio.sleep(2)
 
     # Fallback gTTS & Offline SAPI5
-    print(f"Edge-TTS failed completely: {last_error}. Chuyển sang gTTS Fallback.")
+    logger.warning(f"Edge-TTS failed completely: {last_error}. Chuyển sang gTTS Fallback.")
     return await _synthesize_gtts_fallback(text, output_path)
 
 
@@ -1052,11 +1344,11 @@ async def warmup_omnivoice():
     """
     try:
         await asyncio.to_thread(_get_omnivoice_model)
-        print("[Warmup] OmniVoice model sẵn sàng.")
+        logger.info("[Warmup] OmniVoice model sẵn sàng.")
     except Exception as e:
-        print(f"[Warmup] OmniVoice không khả dụng ({type(e).__name__}: {e}). Sẽ dùng Edge-TTS.")
+        logger.warning(f"[Warmup] OmniVoice không khả dụng ({type(e).__name__}: {e}). Sẽ dùng Edge-TTS.")
     try:
         await asyncio.to_thread(_get_whisper_model)
-        print("[Warmup] Whisper alignment model sẵn sàng.")
+        logger.info("[Warmup] Whisper alignment model sẵn sàng.")
     except Exception as e:
-        print(f"[Warmup] stable-whisper không khả dụng: {e}")
+        logger.warning(f"[Warmup] stable-whisper không khả dụng: {e}")

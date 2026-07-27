@@ -1,10 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { Bookmark, Save, Trash2, Mic, Music } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import { Bookmark, Save, Trash2 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
 import { API_BASE } from '../constants';
 
 export default function PresetManager() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    applyPreset: s.applyPreset,
+    ratio: s.ratio,
+    voice: s.voice,
+    style: s.style,
+    bgm: s.bgm,
+    targetDuration: s.targetDuration,
+    narrationTone: s.narrationTone,
+    speechRate: s.speechRate,
+    speechPitch: s.speechPitch,
+    bgmVolume: s.bgmVolume,
+    subtitleStyle: s.subtitleStyle,
+    colorGrading: s.colorGrading,
+    preferStockVideo: s.preferStockVideo,
+    visualSource: s.visualSource,
+    useSinglePassNarration: s.useSinglePassNarration,
+    hookReelSfx: s.hookReelSfx,
+    useSfx: s.useSfx,
+    useKenBurns: s.useKenBurns,
+    hookZoomBoost: s.hookZoomBoost,
+    useBreathing: s.useBreathing,
+    useFrameChaining: s.useFrameChaining,
+    useBeatSync: s.useBeatSync,
+    hookEffect: s.hookEffect,
+  })));
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [showSaveModal, setShowSaveModal] = useState(false);

@@ -41,18 +41,21 @@ def apply_ken_burns(
 
     pan_direction: "center" | "left_to_right" | "right_to_left" | "top_to_bottom"
     """
-    try:
-        from PIL import Image
-        with Image.open(image_path) as img:
-            w, h = img.size
-            # Đảm bảo chẵn để libx264 không lỗi
-            w = w - (w % 2)
-            h = h - (h % 2)
-    except Exception as e:
-        logger.warning(f"Không thể đọc kích thước {image_path}: {e}")
-        w, h = resolution
+    # Clip ra phải ĐÚNG khung hình đích, không phải khung của ảnh nguồn.
+    #
+    # LỖI CŨ (nút thắt cổ chai hiệu năng): `s={w}x{h}` lấy w,h từ kích thước ẢNH NGUỒN
+    # — tham số `resolution` chỉ được dùng khi PIL đọc lỗi. Ảnh Imagen sinh ra là
+    # 867x1300 / 861x1300 / 1040x1300..., nên clip ra cũng mang đúng cỡ lẻ đó. Mà
+    # `ffmpeg_assembler.can_assemble` đòi MỌI cảnh phải đúng bằng khung đích mới cho đi
+    # đường FastAssembly; lệch một pixel là rơi hết về MoviePy — đơn luồng, không GPU,
+    # chậm gấp hàng trăm lần. Nghĩa là FastAssembly chưa từng chạy với cảnh ảnh, kể cả
+    # khi Ken Burns đang BẬT.
+    w, h = resolution
+    w -= w % 2      # libx264 đòi cạnh chẵn
+    h -= h % 2
 
-    total_frames = int(duration * fps)
+    # max(1,...) chặn chia cho 0 trong zoom_expr khi cảnh quá ngắn (duration < 1/fps).
+    total_frames = max(1, int(duration * fps))
 
     # Công thức zoom tuyến tính từ zoom_start -> zoom_end trong suốt clip
     zoom_expr = f"'{zoom_start}+({zoom_end}-{zoom_start})*on/{total_frames}'"
@@ -65,8 +68,13 @@ def apply_ken_burns(
     }
     x_expr, y_expr = pan_map.get(pan_direction, pan_map["center"])
 
+    # Phủ kín khung TRƯỚC khi zoompan: ảnh nguồn thường là 2:3 còn khung đích là 9:16,
+    # đưa thẳng vào zoompan thì nó kéo giãn cho vừa `s=` → mặt người bị bóp méo.
+    # scale(increase)+crop = "cover", cắt bớt hai bên thay vì bóp, và không để viền đen.
+    fit = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+
     zoompan_filter = (
-        f"zoompan=z={zoom_expr}:x='{x_expr}':y='{y_expr}':"
+        f"{fit},zoompan=z={zoom_expr}:x='{x_expr}':y='{y_expr}':"
         f"d={total_frames}:s={w}x{h}:fps={fps}"
     )
 
@@ -268,7 +276,7 @@ def compute_scene_duration_from_audio(
     fallback_duration: float = 2.0,
     min_duration: float = 2.0,
     padding_start: float = 0.15,
-    padding_end: float = 0.65,
+    padding_end: float = 0.40,
 ) -> float:
     """
     Tính thời lượng thực tế của 1 cảnh dựa trên word_boundaries do Edge-TTS trả về

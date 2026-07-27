@@ -11,6 +11,7 @@ NÂNG CẤP V2:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import List, Optional, TypedDict
@@ -26,6 +27,8 @@ from moviepy import (
 )
 from moviepy.video.fx import CrossFadeIn, CrossFadeOut
 
+logger = logging.getLogger(__name__)
+
 # ── Kích thước khung hình theo aspect ratio ──────────────────────────
 ASPECT_RATIO_SIZES = {
     "9:16": (1080, 1920),   # TikTok/Reels (dọc)
@@ -36,17 +39,71 @@ ASPECT_RATIO_SIZES = {
 FPS = 30
 CROSSFADE_DURATION = 0.4       # giây — crossfade mượt giữa 2 cảnh (tăng từ 0.2 lên 0.4 cho tự nhiên hơn)
 SLIDESHOW_CROSSFADE = 0.8      # giây — crossfade dài hơn cho slideshow
-AUDIO_FADEOUT_DURATION = 0.12  # giây — fade-out cuối mỗi cảnh, chỉ đủ chống "pop".
-                               # Trước là 0.3s: dài hơn cả đuôi im lặng Edge-TTS sinh ra
-                               # (~0.1-0.2s) nên ăn vào âm cuối của TỪ CUỐI mỗi cảnh.
+AUDIO_FADEOUT_DURATION = 0.05  # giây để fade-out cuối mỗi cảnh, chống "pop".
+                               # Giảm từ 0.12 xuống 0.05 để không bị "cắn" vào chữ cuối gây "khựng".
 SLIDESHOW_SCENE_DURATION = 5.0 # giây — mỗi ảnh hiển thị bao lâu trong slideshow
-HOOK_CAROUSEL_DURATION = 3.5   # giây — độ dài clip hook carousel_quote chèn đầu video
-# Giọng đọc vào SAU khi trục quay chốt xong. Trục quay chạy 0→1.0s, tiếng "chốt" (ding)
-# nổ ở 1.0s; 1.35s là lúc phần đanh nhất của tiếng chốt đã tắt.
+# = hook_engine.SLOT_DURATION (2.0s quay) + 2.5s pha Quote. Kéo pha quay dài thêm 1.0s
+# thì hằng số này phải tăng đúng 1.0s, nếu không pha Quote bị cắt cụt mất 1 giây.
+HOOK_CAROUSEL_DURATION = 4.5   # giây — độ dài clip hook carousel_quote chèn đầu video
+# Giọng đọc vào SAU khi trục quay chốt xong. Trục quay chạy 0→2.0s, tiếng "chốt" (ding)
+# nổ ở 2.0s; 2.35s là lúc phần đanh nhất của tiếng chốt đã tắt.
 # LÝ DO: trước đây giọng đọc bắt đầu ngay 0.0s nên câu dẫn đầu video bị tiếng máy xèng
 # đè lên toàn bộ — nghe lùng bùng đúng đoạn quan trọng nhất để giữ chân người xem.
-# Phần hình KHÔNG bị đẩy lùi: hook vẫn là lớp phủ 3.5s, chỉ mốc vào tiếng dời đi.
-HOOK_NARRATION_LEAD = 1.35
+# Phần hình KHÔNG bị đẩy lùi: hook vẫn là lớp phủ 4.5s, chỉ mốc vào tiếng dời đi.
+HOOK_NARRATION_LEAD = 2.35
+
+# ── NGUỒN CHÂN LÝ DUY NHẤT cho thời lượng + độ dời narration của MỌI hook ──────
+# Trước đây mỗi hook mới thêm vào (blackout_question, typewriter_quote,
+# breathing_vignette) phải tự khai báo lại thời lượng ở main.py (điều kiện dời
+# start_time) VÀ ở video_service (dựng clip + FastAssembly) — 2 chỗ tách rời, không
+# gì ép chúng khớp nhau. Hệ quả thực tế: main.py chỉ dời start_time cho
+# "carousel_quote", 3 hook mới không hề dời giọng đọc; và FastAssembly hard-code
+# hook_duration=HOOK_CAROUSEL_DURATION cho MỌI loại hook bất kể loại nào đang chạy.
+# Từ giờ: thêm hook mới CHỈ cần thêm 1 dòng ở dict này — main.py và video_service
+# đều tra cứu từ đây, không thể "quên sửa 1 trong N chỗ" được nữa.
+HOOK_EFFECTS = {
+    "carousel_quote":    {"duration": HOOK_CAROUSEL_DURATION, "narration_lead": HOOK_NARRATION_LEAD},
+    "blackout_question": {"duration": 1.5, "narration_lead": 1.5},
+    "typewriter_quote":  {"duration": 2.5, "narration_lead": 2.5},
+    "breathing_vignette": {"duration": 3.0, "narration_lead": 3.0},
+}
+
+# ── Thời lượng ĐỘNG cho hook có chữ, theo độ dài hook_quote ──────────────────
+# Chỉ áp dụng cho blackout_question/typewriter_quote: đây là 2 loại hook mà TOÀN BỘ
+# nội dung hiển thị chỉ là dòng chữ đó — chữ dài mà giữ cứng 1.5-2.5s thì đọc không
+# kịp, chữ ngắn (hoặc rỗng — dù rỗng đã bị chặn ở main.py, vẫn giữ sàn ở đây cho an
+# toàn) thì ngâm video vô ích.
+# KHÔNG áp dụng carousel_quote: thời lượng của nó khoá chặt với nhịp trục quay Máy
+# Xèng + độ dài file SFX reel (xem hook_engine.SLOT_DURATION và bảng "4 chỗ phải
+# khớp" ở đầu hook_engine.py) — đổi động sẽ làm lệch hình/tiếng ngay.
+# KHÔNG áp dụng breathing_vignette: hiệu ứng này không có chữ, chỉ có ảnh bìa.
+DYNAMIC_DURATION_HOOKS = {"blackout_question", "typewriter_quote"}
+HOOK_MIN_DURATION = 1.2   # giây — sàn: chữ rất ngắn vẫn cần đủ thời gian để mắt kịp đọc
+HOOK_MAX_DURATION = 4.0   # giây — trần: chữ rất dài cũng không kéo hook dài vô hạn
+HOOK_SEC_PER_CHAR = 0.06  # giây/ký tự — xấp xỉ tốc độ đọc phụ đề thông thường
+
+
+def resolve_hook_timing(hook_type: str, hook_quote: str) -> dict | None:
+    """
+    Trả về {"duration", "narration_lead"} cho 1 hook_type — NGUỒN CHÂN LÝ DUY NHẤT,
+    dùng ở cả main.py (dời start_time) lẫn video_service (dựng clip + FastAssembly)
+    để 2 nơi không bao giờ lệch nhau (xem lịch sử bug ở comment HOOK_EFFECTS trên).
+
+    Trả None nếu hook_type không tồn tại (vd "none" hoặc giá trị rác) — caller tự
+    hiểu là "không có hook" và bỏ qua toàn bộ narration lead / clip overlay.
+    """
+    base = HOOK_EFFECTS.get(hook_type)
+    if base is None:
+        return None
+    if hook_type not in DYNAMIC_DURATION_HOOKS:
+        return dict(base)
+
+    text_len = len((hook_quote or "").strip())
+    duration = max(HOOK_MIN_DURATION, min(HOOK_MAX_DURATION, text_len * HOOK_SEC_PER_CHAR + 0.5))
+    # narration_lead == duration: 2 hook này chỉ có 1 pha duy nhất (hiện chữ rồi cắt
+    # thẳng sang Cảnh 1), không có pha "im lặng riêng" như carousel_quote (trục quay
+    # xong mới tới pha Quote) nên không cần tách 2 giá trị khác nhau.
+    return {"duration": duration, "narration_lead": duration}
 
 # ── Thư viện tiếng trục quay cho Hook Máy Xèng ──────────────────────
 # Thêm tiếng mới: chạy `python tools/fit_hook_sfx.py <file tải về> --name <id>`,
@@ -56,6 +113,10 @@ HOOK_REEL_SOUNDS = {
     "tick_wood":     "reel_spin.wav",             # mặc định — tiếng gõ khớp từng bìa lướt qua
     "arcade_8bit":   "reel_spin_v1_arcade.wav",   # bản 8-bit cũ
     "money_counter": "reel_money_counter.wav",    # tiếng máy đếm tiền (user tự nạp)
+    "impact_boom":   "impact_boom.mp3",
+    "typewriter_fast": "typewriter_fast.mp3",
+    "cinematic_swell": "cinematic_swell.mp3",
+    "ambient_mystic": "ambient_mystic.mp3",
 }
 DEFAULT_HOOK_REEL = "tick_wood"
 SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)
@@ -69,9 +130,10 @@ SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh
 SUBTITLE_FONT_NAME = "Segoe UI Black"
 SUBTITLE_FONT_PATH = "C:/Windows/Fonts/seguibl.ttf"
 
-# ── Thư mục BGM ─────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BGM_DIR = os.path.join(BASE_DIR, "assets", "bgm")
+# ── Thư mục BGM / SFX ───────────────────────────────────────────────
+# Cả hai là tài nguyên ĐI KÈM MÃ NGUỒN: chúng ở lại backend/assets kể cả khi user
+# chuyển kho dữ liệu sang ổ D (xem config.py).
+from config import BASE_DIR, BGM_DIR, SFX_DIR, TEMP_DIR  # noqa: F401
 
 
 class SceneAsset(TypedDict):
@@ -197,7 +259,7 @@ def _apply_transition(scene, transition, add_crossfade_in, crossfade_dur, video_
             mask = VideoClip(_mask_frame, is_mask=True).with_duration(scene.duration)
             return scene.with_mask(mask).with_effects([CrossFadeOut(cf)])
     except Exception as e:
-        print(f"[Transition] '{transition}' lỗi ({e}), fallback crossfade.")
+        logger.warning(f"[Transition] '{transition}' lỗi ({e}), fallback crossfade.")
 
     # Mặc định: crossfade
     return scene.with_effects([CrossFadeIn(cf), CrossFadeOut(cf)])
@@ -233,7 +295,7 @@ def _blurred_fill_bg_from_frame(frame, w: int, h: int, duration: float, darken: 
         arr = (np.array(img).astype(np.float32) * darken).astype(np.uint8)
         return ImageClip(arr).with_duration(duration)
     except Exception as e:
-        print(f"[BlurredFill] Lỗi tạo nền mờ ({e}). Dùng nền tối trơn.")
+        logger.warning(f"[BlurredFill] Lỗi tạo nền mờ ({e}). Dùng nền tối trơn.")
         from moviepy import ColorClip
         return ColorClip((w, h), color=(12, 12, 18)).with_duration(duration)
 
@@ -297,7 +359,7 @@ def _build_scene_clip(
         try:
             first_frame = media_clip.get_frame(0)
         except Exception as e:
-            print(f"[BlurredFill] Không đọc được frame đầu ({e}).")
+            logger.warning(f"[BlurredFill] Không đọc được frame đầu ({e}).")
             first_frame = None
 
         if first_frame is not None:
@@ -405,7 +467,7 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
                 if arr.ndim == 1:
                     arr = arr[:, None]
             except Exception as e2:
-                print(f"[AudioMix] Bỏ qua {os.path.basename(path)}: {e2}")
+                logger.warning(f"[AudioMix] Bỏ qua {os.path.basename(path)}: {e2}")
                 continue
 
         # Chuẩn hoá về stereo (n, 2)
@@ -513,37 +575,95 @@ def render_final_video(
     # ── Hook Engine (Overlay clip carousel_quote lên đầu video) ──
     hook_duration = 0.0
     hook_clip_overlay = None
-    if kwargs.get("hook_effect") == "carousel_quote":
+    hook_type = kwargs.get("hook_effect")
+    # Định nghĩa VÔ ĐIỀU KIỆN (không phụ thuộc hook_type): khối FastAssembly bên dưới
+    # cần đọc lại để tính hook_duration động qua resolve_hook_timing() dù hook_type là
+    # gì — để trong nhánh `if` bên dưới sẽ NameError khi hook_type="none".
+    #
+    # hook_quote  = quote CHỈ dành cho carousel_quote (hiện cạnh bìa sách ở pha Reveal).
+    # hook_text   = tiêu đề chữ cho blackout_question/typewriter_quote.
+    # LỖI CŨ: build_blackout_question_hook/build_typewriter_quote_hook trước đây nhận
+    # nhầm `hook_quote` — đúng ra phải là `hook_text`, khớp với field UI thật sự cho
+    # user nhập (AdvancedSettings.jsx: ô "TIÊU ĐỀ HOOK CHỮ" ghi rõ áp dụng cho 2 hiệu
+    # ứng này, ô "TRÍCH DẪN HOOK BÌA SÁCH" ghi rõ chỉ áp dụng Carousel). Hậu quả kép:
+    # (1) user điền đúng ô theo nhãn UI nhưng hook vẫn trống vì code đọc sai field;
+    # (2) hook_text đồng thời còn kích hoạt phụ đề ASS legacy (word_by_word/full_shake,
+    # xem generate_ass_file) vì điều kiện loại trừ ở đó chỉ chặn "carousel_quote", nên
+    # chọn blackout/typewriter mà có hook_text vẫn bị burn thêm 1 lớp phụ đề chồng lên
+    # cảnh 1 — sửa luôn điều kiện đó bên dưới để loại trừ MỌI hook do Hook Engine quản.
+    hook_quote = kwargs.get("hook_quote", "")
+    hook_text = kwargs.get("hook_text", "") or ""
+    if hook_type and hook_type != "none":
         try:
-            from services.hook_engine import build_carousel_hook
+            from services.hook_engine import (
+                build_carousel_hook, SLOT_DURATION,
+                build_blackout_question_hook,
+                build_typewriter_quote_hook,
+                build_breathing_vignette_hook
+            )
             cover_img = scene_assets[0]["image_path"]
-            hook_quote = kwargs.get("hook_quote", "")
-            hook_clip_overlay = build_carousel_hook(cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
-            hook_clip_overlay = hook_clip_overlay.with_start(0.0).with_position("center")
-            
-            # KHÔNG append vào clips vì clips sẽ vẽ theo thứ tự, có thể bị che. 
-            # Ta sẽ thêm vào overlays sau khi final được dựng.
-            # Audio cho hook: tiếng trục quay (reel_spin) 0-1s + tiếng "chốt" (ding) khi bìa dừng
-            sfx_dir = os.path.join(BASE_DIR, "assets", "sfx")
-            reel_key = kwargs.get("hook_reel_sfx") or DEFAULT_HOOK_REEL
-            reel_file = HOOK_REEL_SOUNDS.get(reel_key)
-            if not reel_file:
-                print(f"[Hook] Không biết tiếng trục quay '{reel_key}', dùng mặc định.")
-                reel_file = HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]
-            reel = os.path.join(sfx_dir, reel_file)
-            if not os.path.isfile(reel):
-                print(f"[Hook] Thiếu {reel_file}, quay về {HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]}.")
-                reel = os.path.join(sfx_dir, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
-            ding = os.path.join(sfx_dir, "ding.wav")
 
-            # max_dur = HOOK_NARRATION_LEAD: dù người dùng nạp file dài bao nhiêu, tiếng
-            # trục quay LUÔN tắt trước khi lời dẫn vào. Chốt chặn cứng ở tầng trộn.
-            if os.path.isfile(reel):
-                audio_placements.append((reel, 0.0, 0.6, 0.0, HOOK_NARRATION_LEAD))
-            if os.path.isfile(ding):
-                audio_placements.append((ding, 1.0, 0.45, 0.0))
+            if hook_type == "carousel_quote":
+                hook_clip_overlay = build_carousel_hook(cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
+                
+                # Audio cho carousel_quote
+                sfx_dir = SFX_DIR
+                reel_key = kwargs.get("hook_reel_sfx") or DEFAULT_HOOK_REEL
+                reel_file = HOOK_REEL_SOUNDS.get(reel_key, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
+                reel = os.path.join(sfx_dir, reel_file)
+                if not os.path.isfile(reel):
+                    reel = os.path.join(sfx_dir, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
+                ding = os.path.join(sfx_dir, "ding.wav")
+
+                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                if os.path.isfile(reel):
+                    audio_placements.append((reel, 0.0, min(1.0, effective_volume * 1.2), 0.0, HOOK_NARRATION_LEAD))
+                if os.path.isfile(ding):
+                    audio_placements.append((ding, SLOT_DURATION, min(1.0, effective_volume * 0.9), 0.0))
+            
+            elif hook_type == "blackout_question":
+                hook_clip_overlay = build_blackout_question_hook(
+                    hook_text, video_width, video_height, resolve_hook_timing(hook_type, hook_text)["duration"]
+                )
+                # LỖI CŨ: `options` không tồn tại ở đâu trong hàm này (biến đúng là
+                # `kwargs`, dùng ở nhánh carousel_quote phía trên) — NameError 100% mỗi
+                # khi chọn hiệu ứng này, bị try/except bên dưới nuốt lặng lẽ, hook mất
+                # trắng không báo lỗi. Verify bằng cách chạy lại đúng dòng này độc lập.
+                reel_key = kwargs.get("hook_reel_sfx", "impact_boom")
+                impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "impact_boom.mp3"))
+                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                if os.path.isfile(impact_sfx):
+                    audio_placements.append((impact_sfx, 0.0, min(1.0, effective_volume * 1.5), 0.0))
+
+            elif hook_type == "typewriter_quote":
+                hook_clip_overlay = build_typewriter_quote_hook(
+                    hook_text, video_width, video_height, resolve_hook_timing(hook_type, hook_text)["duration"]
+                )
+                reel_key = kwargs.get("hook_reel_sfx", "typewriter_fast")
+                typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "typewriter_fast.mp3"))
+                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                if os.path.isfile(typewriter_sfx):
+                    audio_placements.append((typewriter_sfx, 0.0, min(1.0, effective_volume), 0.0))
+
+            elif hook_type == "breathing_vignette":
+                hook_clip_overlay = build_breathing_vignette_hook(
+                    cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
+                )
+                reel_key = kwargs.get("hook_reel_sfx", "cinematic_swell")
+                swell_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "cinematic_swell.mp3"))
+                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                if os.path.isfile(swell_sfx):
+                    audio_placements.append((swell_sfx, 0.0, min(1.0, effective_volume * 0.8), 0.0))
+                
+            if hook_clip_overlay:
+                hook_clip_overlay = hook_clip_overlay.with_start(0.0).with_position("center")
+                
         except Exception as e:
-            print(f"Hook Engine Error: {e}")
+            # exc_info=True: trước đây chỉ log str(e), mất traceback — khi hook lỗi
+            # (vd sai API MoviePy), video vẫn render xong NHƯNG không có hiệu ứng mở đầu
+            # nào cả, và log cụt khiến không dò ra hàm/dòng nào gây lỗi.
+            logger.error(f"Hook Engine Error ({hook_type}): {e}", exc_info=True)
+            hook_clip_overlay = None
 
     for i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
@@ -566,11 +686,11 @@ def render_final_video(
         if has_audio and os.path.isfile(asset["audio_path"]):
             audio_placements.append((asset["audio_path"], start_time, 1.0, AUDIO_FADEOUT_DURATION))
 
-        # SFX chọn RIÊNG cho từng cảnh LUÔN phát (không bị toggle global chặn). Muốn tắt riêng
-        # 1 cảnh thì chọn "Không tiếng". Toggle use_sfx global chỉ điều khiển riser mở màn (main.py).
+        # SFX chọn riêng cho từng cảnh giờ ĐÃ BỊ CHẶN bởi toggle global use_sfx
+        # theo yêu cầu của user (không bật SFX thì tắt sạch tiếng xoẹt chuyển cảnh).
         sfx_name = asset.get("sfx", "")
-        if sfx_name:
-            sfx_path = os.path.join(BASE_DIR, "assets", "sfx", f"{sfx_name}.wav")
+        if sfx_name and use_sfx:
+            sfx_path = os.path.join(SFX_DIR, f"{sfx_name}.wav")
             if os.path.isfile(sfx_path):
                 # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc
                 audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN, 0.0))
@@ -588,7 +708,7 @@ def render_final_video(
             from services import ffmpeg_assembler as fa
             ok, why = fa.can_assemble(scene_assets, video_width, video_height)
             if not ok:
-                print(f"[FastAssembly] Bỏ qua, dùng MoviePy: {why}")
+                logger.info(f"[FastAssembly] Bỏ qua, dùng MoviePy: {why}")
             else:
                 mixed = _mix_audio_tracks(_all_placements(audio_placements, master_audio_path,
                                                           final_duration), final_duration)
@@ -604,13 +724,29 @@ def render_final_video(
                     hook_clip_overlay.write_videofile(
                         hook_mp4, fps=FPS, codec="libx264", preset="veryfast",
                         audio=False, logger=None,
+                        temp_audiofile_path=TEMP_DIR,
                     )
 
+                # LỖI CŨ #1: hardcode HOOK_CAROUSEL_DURATION (4.5s) ở đây bất kể hook_type
+                # nào đang chạy — chọn blackout_question (1.5s thật) vẫn khiến FFmpeg giữ
+                # khoảng trống 4.5s, thừa 3s đứng hình trước khi vào Cảnh 1.
+                # LỖI CŨ #2: sau khi thêm thời lượng ĐỘNG cho blackout/typewriter
+                # (resolve_hook_timing), tra thẳng HOOK_EFFECTS[...]["duration"] tĩnh ở đây
+                # sẽ ra một con số KHÁC với con số đã dùng để dựng hook_clip_overlay phía
+                # trên — hook thật dài X giây nhưng FFmpeg chỉ mở khung che hình đúng
+                # HOOK_EFFECTS-tĩnh giây, lệch hình/tiếng ngay tại điểm nối. Phải gọi lại
+                # ĐÚNG HÀM, ĐÚNG THAM SỐ như lúc dựng clip để 2 nơi luôn khớp nhau.
+                # Dùng hook_text (không phải hook_quote): đây là field thật sự quyết định
+                # thời lượng động của blackout_question/typewriter_quote (xem sửa ở trên).
+                # carousel_quote/breathing_vignette bỏ qua tham số text này (thời lượng
+                # tĩnh) nên truyền hook_text ở đây vô hại cho 2 loại đó.
+                _timing = resolve_hook_timing(hook_type, hook_text) or {}
                 fa.assemble(
                     scene_assets, output_path,
                     width=video_width, height=video_height, fps=FPS,
                     crossfade_dur=crossfade_dur, audio_path=audio_wav,
-                    hook_video=hook_mp4, hook_duration=HOOK_CAROUSEL_DURATION,
+                    hook_video=hook_mp4,
+                    hook_duration=_timing.get("duration", 0.0),
                     use_gpu=kwargs.get("use_gpu_encode", True),
                 )
                 for tmp_f in (audio_wav, hook_mp4):
@@ -623,7 +759,7 @@ def render_final_video(
                     hook_clip_overlay.close()
                 return output_path
         except Exception as fast_err:
-            print(f"[FastAssembly] Thất bại ({fast_err}). Quay về MoviePy.")
+            logger.warning(f"[FastAssembly] Thất bại ({fast_err}). Quay về MoviePy.")
 
     # ── Đường chậm (MoviePy) — giữ nguyên làm lưới an toàn ──
     for i, asset in enumerate(scene_assets):
@@ -686,12 +822,23 @@ def render_final_video(
         preset="veryfast",   # bản RAW trung gian — sẽ bị encode lại ở bước master,
                              # nên "medium" chỉ tốn CPU cho một file dùng một lần rồi bỏ
         logger=progress_logger,
+        # Không có dòng này, MoviePy đổ file tạm audio vào CWD (backend/) và để lại
+        # hàng chục MB rác mang tên "<job_id>.mp4.rawTEMP_MPY_wvf_snd.mp4".
+        temp_audiofile_path=TEMP_DIR,
     )
 
     # Giải phóng tài nguyên ngay sau khi render xong (giảm áp lực RAM)
+    def _close_clip_recursive(clip):
+        if not clip: return
+        if hasattr(clip, "clips"): # CompositeVideoClip/CompositeAudioClip
+            for subclip in clip.clips:
+                _close_clip_recursive(subclip)
+        try: clip.close()
+        except: pass
+
     for c in clips:
-        c.close()
-    final.close()
+        _close_clip_recursive(c)
+    _close_clip_recursive(final)
 
     return output_path
 
@@ -708,18 +855,41 @@ def _strip_emoji_for_subtitle(text: str) -> str:
     return text.strip()
 
 
-def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: str = "storyteller", subtitle_style: str = "karaoke_bold", hook_text: str = None, hook_effect: str = "word_by_word") -> str:
+def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: str = "storyteller", subtitle_style: str = "karaoke_bold", hook_text: str = None, hook_effect: str = "word_by_word", video_width: int = 1080, video_height: int = 1920) -> str:
     """
     Sinh file phụ đề .ass (Advanced SubStation Alpha).
     Hỗ trợ 2 phong cách:
     - karaoke_bold: Viền dày, hiệu ứng nảy (pop-in), màu vàng nổi bật, tự động in hoa.
     - cinematic_box: Chữ trắng trên nền hộp mờ (box/backdrop) kéo ngang, tĩnh, chữ thường.
+
+    video_width/height: khung hình THẬT của video sẽ bị burn phụ đề lên.
     """
+    # ── PlayRes PHẢI khớp khung hình thật ──
+    # LỖI CŨ: PlayRes ghi cứng 1080x1920 dù người dùng chọn 16:9 (1920x1080) hay 1:1.
+    # libass co giãn hệ toạ độ PlayRes sang khung thật, mà phép co giãn đó KHÔNG đồng
+    # đều khi tỉ lệ lệch nhau: với video 16:9 chữ bị kéo ngang 1.78x và nén dọc 0.56x
+    # → méo hẳn, sai cả vị trí lẫn cỡ. Đã bắt được trên sản phẩm thật trong assets/output.
+    REF_W, REF_H = 1080, 1920   # khung tham chiếu mà toàn bộ cỡ chữ/viền/lề dưới đây được căn theo
+    sw = video_width / REF_W    # lề trái/phải: theo chiều NGANG
+    sh = video_height / REF_H   # cỡ chữ, viền, bóng, lề dọc: theo chiều DỌC (chuẩn của phụ đề)
+
+    def _s(v, k=None):
+        """Quy đổi một giá trị thiết kế sang khung hiện tại. Giữ nguyên số 0 (Outline=0
+        của minimal_white là cố ý, không được làm tròn thành 1)."""
+        if not v:
+            return 0
+        return max(1, int(round(v * (sh if k is None else k))))
+
+    def _wrap_w(n: int) -> int:
+        """Số ký tự mỗi dòng: theo chiều NGANG. Khung rộng hơn thì xuống dòng thưa hơn,
+        nếu không video 16:9 sẽ hiện một cột chữ hẹp lọt thỏm giữa màn hình."""
+        return max(8, int(round(n * sw)))
+
     ass_content = [
         "[Script Info]",
         "ScriptType: v4.00+",
-        "PlayResX: 1080",
-        "PlayResY: 1920",
+        f"PlayResX: {video_width}",
+        f"PlayResY: {video_height}",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -728,38 +898,38 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
     # ── ĐỊNH NGHĨA STYLE DỰA TRÊN USER SETTING ──
     if subtitle_style == "cinematic_box":
         font_name = SUBTITLE_FONT_NAME  # Font dày, hiện đại, phủ đủ tiếng Việt
-        font_size = 55
+        font_size = _s(55)
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
         outline_color = "&H00000000"     # No outline needed
         back_color = "&H99000000"        # Semi-transparent black (99 is alpha)
         # BorderStyle=3 (Opaque box), Outline=8 (Box padding/margin)
-        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,3,8,0,2,60,60,250,1"
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,3,{_s(8)},0,2,{_s(60, sw)},{_s(60, sw)},{_s(250)},1"
     elif subtitle_style == "minimal_white":
         font_name = SUBTITLE_FONT_NAME
-        font_size = 50
+        font_size = _s(50)
         primary_color = "&H00FFFFFF"     # White
         secondary_color = "&H00FFFFFF"
         outline_color = "&H00000000"
         back_color = "&H66000000"        # Soft shadow (alpha 66)
         # BorderStyle=1 (Outline), Outline=0, Shadow=3
-        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},0,0,0,0,100,100,0,0,1,0,3,2,40,40,250,1"
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},0,0,0,0,100,100,0,0,1,0,{_s(3)},2,{_s(40, sw)},{_s(40, sw)},{_s(250)},1"
     else: # karaoke_bold & hormozi_bold (Default)
         # Font dày cho cảm giác Cinematic, phủ đủ tiếng Việt (xem SUBTITLE_FONT_NAME).
         font_name = SUBTITLE_FONT_NAME
-        font_size = 65 if mode == "quiz_listicle" else 75
+        font_size = _s(65 if mode == "quiz_listicle" else 75)
         primary_color = "&H0000FFFF"     # Yellow highlight
         secondary_color = "&H00FFFFFF"   # White base
         outline_color = "&H00000000"     # Black outline
         back_color = "&H00000000"        # Black shadow
         # BorderStyle=1 (Outline), Outline=6, Shadow=4
-        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,1,6,5,2,40,40,500,1"
-        
+        style_line = f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},{back_color},-1,0,0,0,100,100,0,0,1,{_s(6)},{_s(5)},2,{_s(40, sw)},{_s(40, sw)},{_s(500)},1"
+
     ass_content.append(style_line)
-    
+
     # ── HOOK STYLE (cho Tiêu đề 3s đầu) ──
     # Chữ to, vàng, nằm ở top (MarginV=150)
-    hook_style_line = f"Style: HookTitle,{SUBTITLE_FONT_NAME},75,&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,5,8,40,40,150,1"
+    hook_style_line = f"Style: HookTitle,{SUBTITLE_FONT_NAME},{_s(75)},&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,{_s(8)},{_s(5)},8,{_s(40, sw)},{_s(40, sw)},{_s(150)},1"
     ass_content.append(hook_style_line)
     
     ass_content.append("")
@@ -775,9 +945,17 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         return f"{hours:01d}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
     # Add hook_text (duration 3 seconds max)
-    if hook_text and hook_text.strip() and hook_effect != "carousel_quote":
+    # LỖI CŨ: chỉ loại trừ "carousel_quote" — khi Hook Engine có thêm 3 loại mới
+    # (blackout_question/typewriter_quote/breathing_vignette), cả 3 đều != "carousel_quote"
+    # nên vẫn lọt qua đây và bị burn THÊM 1 lớp phụ đề word_by_word (nhánh else mặc định
+    # bên dưới) chồng lên Cảnh 1 — ngay cả khi hook_text đã được dùng đúng chỗ của nó
+    # (blackout/typewriter tự vẽ chữ trong chính clip overlay của chúng rồi). Loại trừ
+    # TOÀN BỘ hook_effect do HOOK_EFFECTS quản lý; chỉ còn lọt qua các giá trị legacy
+    # thật sự (word_by_word/full_shake — không còn hiện trong dropdown UI nhưng vẫn có
+    # thể tồn tại trong preset/project cũ) hoặc giá trị lạ/không xác định.
+    if hook_text and hook_text.strip() and hook_effect not in HOOK_EFFECTS:
         import textwrap
-        wrapped_hook = "\\N".join(textwrap.wrap(hook_text.strip().upper(), width=16))
+        wrapped_hook = "\\N".join(textwrap.wrap(hook_text.strip().upper(), width=_wrap_w(16)))
         
         if hook_effect == "full_shake":
             # Effect: fade in 200ms, fade out 500ms, start large and scale down (bounce)
@@ -852,7 +1030,8 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
             if next_start is not None:
                 scene_end = min(scene_end, next_start + hook_offset)
 
-        if asset.get("text") and asset["text"].strip():
+        display_text = asset.get("subtitle_text") or asset.get("source_quote") or asset.get("text")
+        if display_text and display_text.strip():
             start_td = dt.timedelta(seconds=scene_start)
             end_td = dt.timedelta(seconds=scene_end)
 
@@ -866,14 +1045,14 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
             if subtitle_style == "cinematic_box":
                 # Tĩnh, không pop-in, không highlight từng từ
                 import textwrap
-                raw_text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ')
-                wrapped = "\\N".join(textwrap.wrap(raw_text, width=32))
+                raw_text = _strip_emoji_for_subtitle(display_text).replace('\n', ' ')
+                wrapped = "\\N".join(textwrap.wrap(raw_text, width=_wrap_w(32)))
                 ass_text = wrapped
             elif subtitle_style == "minimal_white":
                 # Tĩnh chữ trắng nhỏ, có hiệu ứng fade nhẹ 200ms
                 import textwrap
-                raw_text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ')
-                wrapped = "\\N".join(textwrap.wrap(raw_text, width=35))
+                raw_text = _strip_emoji_for_subtitle(display_text).replace('\n', ' ')
+                wrapped = "\\N".join(textwrap.wrap(raw_text, width=_wrap_w(35)))
                 ass_text = f"{{\\fad(200,200)}}{wrapped}"
             else:
                 # Karaoke & Hormozi Style (có highlight, pop-in)
@@ -943,8 +1122,8 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
                         ass_content.append(event_line)
                 else:
                     import textwrap
-                    text = _strip_emoji_for_subtitle(asset["text"]).replace('\n', ' ').upper()
-                    wrapped = "\\N".join(textwrap.wrap(text, width=28))
+                    text_val = _strip_emoji_for_subtitle(display_text).replace('\n', ' ').upper()
+                    wrapped = "\\N".join(textwrap.wrap(text_val, width=_wrap_w(28)))
                     ass_text = f"{pop_effect}{wrapped}"
                     event_line = f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}"
                     ass_content.append(event_line)
@@ -977,6 +1156,8 @@ def get_available_bgm() -> List[dict]:
         "upbeat_pop": "Upbeat Pop",
         "soft_piano": "Soft Piano",
         "corporate_minimal": "Corporate Minimal",
+        "livin_easy_oliver_massa_main": "Livin Easy (Oliver Massa)",
+        "Back_When": "Back When",
     }
 
     for fname in sorted(os.listdir(BGM_DIR)):

@@ -25,7 +25,8 @@ import numpy as np
 import soundfile as sf
 
 SR = 44100
-TARGET_DUR = 1.18          # khớp reel_spin.wav mặc định (pha quay 1.0s + đuôi 0.18s)
+TARGET_DUR = 2.18          # khớp reel_spin.wav mặc định (pha quay 2.0s + đuôi 0.18s)
+                           # = hook_engine.SLOT_DURATION + 0.18
 TARGET_PEAK = 0.5
 SFX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sfx")
 

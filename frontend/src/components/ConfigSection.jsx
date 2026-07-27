@@ -1,11 +1,26 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Smartphone, Monitor, Square, Play, Mic, Music, Loader } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore, needsUpload as needsUploadFor } from '../store';
 import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, NICHE_OPTIONS, API_BASE } from '../constants';
 import PresetManager from './PresetManager';
 
 export default function ConfigSection() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    activeMode: s.activeMode,
+    ratio: s.ratio, setRatio: s.setRatio,
+    numScenes: s.numScenes, setNumScenes: s.setNumScenes,
+    targetDuration: s.targetDuration, setTargetDuration: s.setTargetDuration,
+    narrationTone: s.narrationTone, setNarrationTone: s.setNarrationTone,
+    contentNiche: s.contentNiche, setContentNiche: s.setContentNiche,
+    voice: s.voice, setVoice: s.setVoice,
+    style: s.style, setStyle: s.setStyle,
+    bgm: s.bgm, setBgm: s.setBgm,
+    bgmVolume: s.bgmVolume, setBgmVolume: s.setBgmVolume,
+    playPreview: s.playPreview,
+    playMixPreview: s.playMixPreview,
+  })));
+  const needsUpload = needsUploadFor(ctx.activeMode);
   // Trần 30 (khớp MAX_SCENES của backend): trần 20 cũ khiến video từ 3 phút trở lên
   // buộc mỗi cảnh phải gánh 25-40 từ, tức 8-13 giây/cảnh.
   const minScenes = 4, maxScenes = 30;
@@ -27,12 +42,18 @@ export default function ConfigSection() {
 
   const handleCloneUpload = async (e) => {
     const f = e.target.files?.[0];
-    if (!f) return;
+    const defaultName = f.name.replace(/\.[^.]+$/, '');
+    const cloneName = window.prompt("Nhập tên cho giọng Clone (Khuyên dùng tiền tố 'Nam - ' hoặc 'Nữ - ' để dễ phân loại):", defaultName);
+    if (!cloneName) {
+      if (cloneInputRef.current) cloneInputRef.current.value = '';
+      return;
+    }
+    
     setCloneBusy(true);
     try {
       const fd = new FormData();
       fd.append('file', f);
-      fd.append('name', f.name.replace(/\.[^.]+$/, ''));
+      fd.append('name', cloneName.trim());
       const res = await fetch(`${API_BASE}/api/voice-clone`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Upload thất bại');
@@ -47,8 +68,16 @@ export default function ConfigSection() {
     }
   };
 
+  const builtInMale = VOICES.filter(v => v.label.includes('Nam -') || v.label.includes('Nam ('));
+  const builtInFemale = VOICES.filter(v => v.label.includes('Nữ -') || v.label.includes('Nữ ('));
+  const builtInOther = VOICES.filter(v => !builtInMale.includes(v) && !builtInFemale.includes(v));
+
+  const customMale = customVoices.filter(v => v.name.toLowerCase().includes('nam'));
+  const customFemale = customVoices.filter(v => v.name.toLowerCase().includes('nữ') || v.name.toLowerCase().includes('nu'));
+  const customOther = customVoices.filter(v => !customMale.includes(v) && !customFemale.includes(v));
+
   return (
-    <div className="panel-box">
+    <div className="config-section-inner">
       <PresetManager />
 
       <div className="step-header">
@@ -71,7 +100,7 @@ export default function ConfigSection() {
         </div>
       </div>
       
-      {!ctx.needsUpload && (
+      {!needsUpload && (
         <>
           <div className="input-group">
             <div className="slider-header">
@@ -146,12 +175,30 @@ export default function ConfigSection() {
           <label className="field-label">GIỌNG ĐỌC</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <select className="form-select" value={ctx.voice} onChange={e => ctx.setVoice(e.target.value)} style={{ flex: 1 }}>
-              <optgroup label="Giọng có sẵn">
-                {VOICES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              <optgroup label="👨 Giọng Nam (Có sẵn)">
+                {builtInMale.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
               </optgroup>
-              {customVoices.length > 0 && (
-                <optgroup label="🎤 Giọng Clone của bạn">
-                  {customVoices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              <optgroup label="👩 Giọng Nữ (Có sẵn)">
+                {builtInFemale.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              </optgroup>
+              {builtInOther.length > 0 && (
+                <optgroup label="👽 Giọng Đặc biệt">
+                  {builtInOther.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                </optgroup>
+              )}
+              {customMale.length > 0 && (
+                <optgroup label="🎤 Clone Nam (Cá nhân)">
+                  {customMale.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </optgroup>
+              )}
+              {customFemale.length > 0 && (
+                <optgroup label="🎤 Clone Nữ (Cá nhân)">
+                  {customFemale.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </optgroup>
+              )}
+              {customOther.length > 0 && (
+                <optgroup label="🎤 Clone Khác (Cá nhân)">
+                  {customOther.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </optgroup>
               )}
             </select>
@@ -203,6 +250,8 @@ export default function ConfigSection() {
             <optgroup label="☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)">
               <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
               <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
+              <option value="livin_easy_oliver_massa_main">Livin Easy (Oliver Massa)</option>
+              <option value="Back_When">Back When</option>
             </optgroup>
 
             <optgroup label="🎉 Năng động & Tích cực (Upbeat)">

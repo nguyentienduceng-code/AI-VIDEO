@@ -1,10 +1,72 @@
-import React from 'react';
-import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2, Code } from 'lucide-react';
-import { useAppContext } from '../AppContext';
-import { API_BASE, MODE_MAP, TRANSITIONS, SFX_OPTIONS } from '../constants';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2, Code, Upload, X, Pause, Music, Headphones, Square, Settings } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
+import { API_BASE, MODE_MAP, TRANSITIONS, SFX_OPTIONS, DURATION_OPTIONS } from '../constants';
+
+// Chờ user ngừng gõ rồi mới hỏi backend. Gõ một câu dài mà không có độ trễ này thì
+// mỗi phím là một request quét cả thư mục cache.
+const CACHE_PROBE_DELAY_MS = 600;
+
+const BREAK_SNIPPET = '<break time="1s"/>';
+
+// Đếm từ để cảnh báo kịch bản lố — khớp với ngân sách backend đang nhắm (xem comment
+// DURATION_OPTIONS trong constants.js: "~12 từ/cảnh ≈ 4 giây/cảnh"). Không có
+// DURATION_CONFIG dạng dict trong constants.js như tưởng — DURATION_OPTIONS là mảng
+// {value, label, scenes}, dùng đúng field `scenes` có sẵn để suy ra ngân sách từ.
+const WORDS_PER_SCENE_TARGET = 12;
+const BREAK_TAG_RE = /<break[^>]*>/gi;
+
+// Bỏ thẻ <break time="..."/> trước khi đếm — đây là điều khiển nhịp đọc, không phải
+// lời thoại thật, đếm cả vào sẽ làm số từ ảo tăng so với những gì người xem thực nghe.
+const countWords = (text) => {
+  const cleaned = (text || '').replace(BREAK_TAG_RE, ' ').trim();
+  return cleaned ? cleaned.split(/\s+/).length : 0;
+};
 
 export default function ScriptEditor() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    scenes: s.scenes, setScenes: s.setScenes,
+    errorMsg: s.errorMsg, setErrorMsg: s.setErrorMsg,
+    setStep: s.setStep, setStatus: s.setStatus, setProgress: s.setProgress,
+    setJobMessage: s.setJobMessage, setProgressLog: s.setProgressLog,
+    setVideoUrl: s.setVideoUrl, setSrtUrl: s.setSrtUrl,
+    activeMode: s.activeMode, ratio: s.ratio, voice: s.voice, style: s.style, bgm: s.bgm, setBgm: s.setBgm,
+    targetDuration: s.targetDuration,
+    uploadSessionId: s.uploadSessionId,
+    speechRate: s.speechRate, speechPitch: s.speechPitch, bgmVolume: s.bgmVolume,
+    negativePrompt: s.negativePrompt, apiKey: s.apiKey, useVeo: s.useVeo, ctaText: s.ctaText, setCtaText: s.setCtaText,
+    useAnimatedCaptions: s.useAnimatedCaptions, characterDescription: s.characterDescription,
+    useFrameChaining: s.useFrameChaining, useKenBurns: s.useKenBurns, useBeatSync: s.useBeatSync,
+    useVeoAmbientAudio: s.useVeoAmbientAudio, useGpuEncode: s.useGpuEncode, hookZoomBoost: s.hookZoomBoost,
+    useSfx: s.useSfx, sfxVolume: s.sfxVolume, subtitleStyle: s.subtitleStyle, colorGrading: s.colorGrading,
+    watermarkText: s.watermarkText, coverImageSessionId: s.coverImageSessionId, coverImagePosition: s.coverImagePosition,
+    useBreathing: s.useBreathing, hookEffect: s.hookEffect, hookQuote: s.hookQuote, setHookQuote: s.setHookQuote,
+    hookText: s.hookText, setHookText: s.setHookText,
+    preferStockVideo: s.preferStockVideo, visualSource: s.visualSource,
+    useSinglePassNarration: s.useSinglePassNarration, hookReelSfx: s.hookReelSfx,
+    subscribeToJob: s.subscribeToJob, stopAllAudio: s.stopAllAudio,
+    estimatedDurationS: s.estimatedDurationS, setEstimatedDurationS: s.setEstimatedDurationS,
+  })));
+
+  // Trạng thái bộ nhớ đệm từng cảnh: null = chưa biết, [] = mảng theo chỉ số cảnh.
+  const [cacheStatus, setCacheStatus] = useState(null);
+  const [probing, setProbing] = useState(false);
+  const [expandedAdvanced, setExpandedAdvanced] = useState(new Set());
+  
+  const toggleAdvanced = (idx) => {
+    setExpandedAdvanced(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+  const [uploadingIdx, setUploadingIdx] = useState(null);
+  const [previewIdx, setPreviewIdx] = useState(null);   // cảnh đang sinh/đang phát
+  const textareaRefs = useRef([]);
+  const previewAudioRef = useRef(null);
+  const previewUrlRef = useRef(null);
 
   const handleRenderVideo = async () => {
     if (!ctx.scenes.length) return ctx.setErrorMsg('Chưa có cảnh nào để render!');
@@ -50,44 +112,86 @@ export default function ScriptEditor() {
       }
 
       const data = await res.json();
-      const jobId = data.job_id;
 
-      const ws = new WebSocket(`ws://localhost:8000/api/ws/job-status/${jobId}`);
-
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.progress !== undefined) ctx.setProgress(msg.progress);
-        if (msg.message) {
-          ctx.setJobMessage(msg.message);
-          ctx.setProgressLog(prev => {
-            const last = prev[prev.length - 1];
-            if (last === msg.message) return prev;
-            return [...prev, msg.message];
-          });
-        }
-        if (msg.status === 'done') {
-          ws.close();
-          ctx.setStatus('done');
-          ctx.setStep('done');
-          if (msg.video_url) ctx.setVideoUrl(`${API_BASE}${msg.video_url}`);
-          if (msg.srt_url) ctx.setSrtUrl(`${API_BASE}${msg.srt_url}`);
-        } else if (msg.status === 'error') {
-          ws.close();
-          ctx.setStatus('error');
-          ctx.setStep('rendering');
-          ctx.setErrorMsg(msg.error || msg.message || 'Có lỗi xảy ra');
-        }
-      };
-
-      ws.onerror = () => {
-        ctx.setStatus('error');
-        ctx.setErrorMsg('Mất kết nối WebSocket với máy chủ!');
-      };
+      // Vòng đời socket thuộc về AppProvider: component này đã unmount từ lúc
+      // setStep('rendering') ở đầu hàm, nên không thể tự dọn dẹp kết nối.
+      ctx.subscribeToJob(data.job_id);
     } catch (err) {
       ctx.setStatus('error');
       ctx.setErrorMsg(err.message);
     }
   };
+
+  // ── Đèn báo bộ nhớ đệm ────────────────────────────────────────────────────
+  // Hỏi backend xem cảnh nào đã có sẵn giọng/hình trong cache. Chạy lại mỗi khi user
+  // sửa bất cứ thứ gì ảnh hưởng tới khoá cache (lời thoại, mô tả ảnh, giọng, tốc độ...).
+  // useMemo tránh JSON.stringify lại toàn bộ scenes trên những re-render không đổi gì
+  // liên quan tới cache (vd: mở/đóng accordion, đổi previewIdx).
+  const probeSignature = useMemo(() => JSON.stringify([
+    ctx.scenes.map(s => [s.text, s.image_prompt, s.emotion, s.speech_rate_modifier, s.override_asset]),
+    ctx.voice, ctx.speechRate, ctx.speechPitch, ctx.useBreathing,
+    ctx.ratio, ctx.style, ctx.negativePrompt, MODE_MAP[ctx.activeMode],
+    ctx.visualSource, ctx.preferStockVideo, ctx.useVeo,
+  ]), [ctx.scenes, ctx.voice, ctx.speechRate, ctx.speechPitch, ctx.useBreathing,
+      ctx.ratio, ctx.style, ctx.negativePrompt, ctx.activeMode, ctx.visualSource,
+      ctx.preferStockVideo, ctx.useVeo]);
+
+  // ── Cảnh báo kịch bản lố từ ──────────────────────────────────────────────
+  // Prompt Gemini có giới hạn số từ/cảnh nhưng LLM thỉnh thoảng vẫn phá lệ — kịch bản
+  // dài hơn ngân sách khiến TTS phải đọc nhanh hơn tốc độ tự nhiên hoặc video kéo dài
+  // quá thời lượng mục tiêu user đã chọn. Không chặn render (LLM đôi khi cố ý viết dài
+  // hơn ở cảnh cao trào), chỉ cảnh báo để user tự cân nhắc rút gọn.
+  const wordBudget = useMemo(() => {
+    const totalWords = ctx.scenes.reduce((sum, s) => sum + countWords(s.text), 0);
+    const opt = DURATION_OPTIONS.find((o) => o.value === ctx.targetDuration);
+    const maxWords = opt ? opt.scenes * WORDS_PER_SCENE_TARGET : null;
+    return {
+      totalWords,
+      maxWords,
+      isOver: maxWords != null && totalWords > maxWords,
+      durationLabel: opt ? opt.label : ctx.targetDuration,
+    };
+  }, [ctx.scenes, ctx.targetDuration]);
+
+  useEffect(() => {
+    if (!ctx.scenes.length) { setCacheStatus(null); return; }
+    const controller = new AbortController();
+    setProbing(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/cache-probe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scenes: ctx.scenes,
+            voice: ctx.voice,
+            speech_rate: ctx.speechRate,
+            speech_pitch: ctx.speechPitch,
+            use_breathing: ctx.useBreathing,
+            aspect_ratio: ctx.ratio,
+            art_style: ctx.style,
+            negative_prompt: ctx.negativePrompt || '',
+            mode: MODE_MAP[ctx.activeMode],
+            visual_source: ctx.visualSource,
+            prefer_stock_video: ctx.preferStockVideo,
+            use_veo: ctx.useVeo,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error('probe failed');
+        const data = await res.json();
+        setCacheStatus(data.scenes || []);
+      } catch (err) {
+        // Backend tắt hoặc probe lỗi: giấu đèn báo đi thay vì hiện thông tin sai.
+        if (err.name !== 'AbortError') setCacheStatus(null);
+      } finally {
+        setProbing(false);
+      }
+    }, CACHE_PROBE_DELAY_MS);
+
+    return () => { controller.abort(); clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeSignature]);
 
   const updateScene = (index, field, value) => {
     ctx.setScenes(prev => prev.map((s, i) => i === index ? { ...s, [field]: value } : s));
@@ -108,13 +212,128 @@ export default function ScriptEditor() {
     });
   };
 
+  // ── Vi chỉnh: chèn thẻ ngắt nghỉ tại đúng vị trí con trỏ ───────────────────
+  const insertBreak = (idx) => {
+    const el = textareaRefs.current[idx];
+    const current = ctx.scenes[idx]?.text || '';
+    const at = el ? el.selectionStart : current.length;
+    const next = current.slice(0, at) + BREAK_SNIPPET + current.slice(at);
+    updateScene(idx, 'text', next);
+    // Trả con trỏ về sau thẻ vừa chèn, nếu không user gõ tiếp sẽ nhảy về đầu ô.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(at + BREAK_SNIPPET.length, at + BREAK_SNIPPET.length);
+    });
+  };
+
+  // ── Nghe thử giọng đọc của riêng 1 cảnh ───────────────────────────────────
+  // Bản nghe thử đi qua ĐÚNG bộ tham số mà lúc render sẽ dùng, nên nó nạp luôn vào
+  // TTS cache: nghe thử xong, đèn cảnh đó chuyển 🟢 và render không phải sinh lại nữa.
+  const stopPreview = useCallback(() => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);   // không thu hồi thì blob rò rỉ trong tab
+      previewUrlRef.current = null;
+    }
+    setPreviewIdx(null);
+  }, []);
+
+  // Rời trang / bấm Render giữa chừng: đừng để tiếng đọc thử vang tiếp trên nền.
+  useEffect(() => stopPreview, [stopPreview]);
+
+  const previewScene = async (idx) => {
+    if (previewIdx === idx) { stopPreview(); return; }
+    stopPreview();
+    ctx.stopAllAudio();
+    setPreviewIdx(idx);
+    const scene = ctx.scenes[idx];
+    try {
+      const res = await fetch(`${API_BASE}/api/preview-scene-voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: scene.text || '',
+          voice: ctx.voice,
+          speech_rate: ctx.speechRate,
+          speech_pitch: ctx.speechPitch,
+          speech_rate_modifier: scene.speech_rate_modifier || '0%',
+          emotion: scene.emotion || '',
+          use_breathing: ctx.useBreathing,
+          mode: MODE_MAP[ctx.activeMode],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Không nghe thử được.');
+      }
+      const url = URL.createObjectURL(await res.blob());
+      previewUrlRef.current = url;
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.addEventListener('ended', stopPreview);
+      await audio.play();
+      // Nghe thử vừa sinh giọng đúng khoá cache → cập nhật lại đèn cho cảnh này.
+      setCacheStatus(prev => prev
+        ? prev.map((s, i) => i === idx ? { ...s, audio_cached: true } : s)
+        : prev);
+    } catch (err) {
+      ctx.setErrorMsg(err.message);
+      stopPreview();
+    }
+  };
+
+  // ── Ghi đè thủ công: tải ảnh/video của mình lên cho riêng 1 cảnh ───────────
+  const uploadOverride = async (idx, file) => {
+    if (!file) return;
+    setUploadingIdx(idx);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_BASE}/api/scene-asset`, { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Tải lên thất bại.');
+      ctx.setScenes(prev => prev.map((s, i) => i === idx
+        ? { ...s, override_asset: data.asset_id, override_kind: data.kind }
+        : s));
+    } catch (err) {
+      ctx.setErrorMsg(err.message);
+    } finally {
+      setUploadingIdx(null);
+    }
+  };
+
+  const clearOverride = useCallback(async (idx) => {
+    const assetId = ctx.scenes[idx]?.override_asset;
+    ctx.setScenes(prev => prev.map((s, i) => {
+      if (i !== idx) return s;
+      const { override_asset: _a, override_kind: _k, ...rest } = s;
+      return rest;
+    }));
+    if (assetId) {
+      try {
+        await fetch(`${API_BASE}/api/scene-asset/${assetId}`, { method: 'DELETE' });
+      } catch {
+        // File mồ côi trong overrides/ không gây hại — đừng chặn thao tác của user vì nó.
+      }
+    }
+  }, [ctx]);
+
   const handleImportJson = () => {
-    const jsonStr = prompt('Dán mã JSON kịch bản (từ AI) vào đây:');
+    let jsonStr = prompt('Dán mã JSON kịch bản (từ AI) vào đây:');
     if (!jsonStr) return;
     try {
+      // Auto-repair JSON từ LLM
+      jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/i, '').trim();
+      jsonStr = jsonStr.replace(/,\s*([\]}])/g, '$1'); // Fix trailing commas
+      
       const data = JSON.parse(jsonStr);
       if (data.scenes && Array.isArray(data.scenes)) {
         ctx.setScenes(data.scenes);
+        if (data.estimated_duration_s !== undefined) ctx.setEstimatedDurationS(data.estimated_duration_s);
         if (data.hook_text !== undefined) ctx.setHookText(data.hook_text);
         if (data.hook_quote !== undefined) ctx.setHookQuote(data.hook_quote);
         if (data.cta_text !== undefined) ctx.setCtaText(data.cta_text);
@@ -131,11 +350,46 @@ export default function ScriptEditor() {
     }
   };
 
+  // Nguồn hình quyết định cảnh sẽ tốn gì khi tạo mới — hiện trong tooltip để user hiểu
+  // vì sao đèn đỏ, thay vì chỉ biết là đỏ.
+  const SOURCE_LABEL = {
+    ai_image: 'ảnh AI',
+    stock_video: 'video thật Pexels',
+    veo: 'video AI Veo',
+    override: 'hình bạn tự tải lên',
+  };
+
+  const CacheDot = ({ state, kindLabel, source }) => {
+    if (probing || state === undefined) {
+      return <span style={{ opacity: 0.4 }} title="Đang kiểm tra bộ nhớ đệm...">⚪ {kindLabel}</span>;
+    }
+    const via = source ? ` (${SOURCE_LABEL[source] || source})` : '';
+    return state
+      ? <span style={{ color: 'var(--green)' }} title={`${kindLabel}${via}: đã có sẵn trong bộ nhớ đệm, render lại sẽ dùng ngay.`}>🟢 {kindLabel}</span>
+      : <span style={{ color: 'var(--red)' }} title={`${kindLabel}${via}: chưa có — cảnh này sẽ phải tạo mới, tốn thời gian và quota.`}>🔴 {kindLabel}</span>;
+  };
+
+  const reusedCount = cacheStatus
+    ? cacheStatus.filter(s => s.audio_cached && s.image_cached).length
+    : null;
+
   return (
     <div className="editor-layout">
       <div className="editor-toolbar">
         <button className="btn-outline" onClick={() => ctx.setStep('config')}><RotateCcw size={14} /> Quay lại cài đặt</button>
-        <div className="editor-toolbar-info"><PenLine size={14} /> {ctx.scenes.length} cảnh — Chỉnh sửa lời thoại & mô tả ảnh bên dưới</div>
+        <div className="editor-toolbar-info">
+          <PenLine size={14} /> {ctx.scenes.length} cảnh
+          {reusedCount !== null && (
+            <span style={{ marginLeft: 10 }} title="Cảnh đã có đủ giọng đọc + hình trong bộ nhớ đệm sẽ được tái dùng, render gần như tức thì.">
+              — 🟢 <strong>{reusedCount}</strong> cảnh tái dùng, 🔴 <strong>{ctx.scenes.length - reusedCount}</strong> cảnh tạo mới
+            </span>
+          )}
+          {ctx.estimatedDurationS > 0 && (
+            <span style={{ marginLeft: 16, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}>
+              ⏳ Ước lượng: <strong>~{ctx.estimatedDurationS}s</strong>
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button className="btn-outline" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', padding: '10px 16px' }} onClick={handleImportJson}>
             <Code size={16} /> Import JSON
@@ -148,59 +402,261 @@ export default function ScriptEditor() {
 
       {ctx.errorMsg && <div className="error-box" style={{ marginBottom: 16 }}><AlertTriangle size={16} /> {ctx.errorMsg}</div>}
 
+      {wordBudget.isOver && (
+        <div className="warning-box" style={{ marginBottom: 16 }}>
+          <AlertTriangle size={16} />
+          Cảnh báo: Kịch bản hiện đang có {wordBudget.totalWords} từ, vượt quá mức tối ưu cho video {wordBudget.durationLabel}
+          {' '}(~{wordBudget.maxWords} từ). Lời thoại có thể bị đọc quá nhanh hoặc làm video bị kéo dài, hãy cân nhắc rút gọn.
+        </div>
+      )}
+
       <div className="scene-list">
-        {ctx.scenes.map((scene, idx) => (
-          <div key={idx} className="scene-card">
-            <div className="scene-header">
-              <div className="scene-number">Cảnh {idx + 1}</div>
-              <div className="scene-actions">
-                <button className="btn-icon" onClick={() => moveScene(idx, idx - 1)} disabled={idx === 0} title="Di chuyển lên"><ChevronUp size={14} /></button>
-                <button className="btn-icon" onClick={() => moveScene(idx, idx + 1)} disabled={idx === ctx.scenes.length - 1} title="Di chuyển xuống"><ChevronDown size={14} /></button>
-                <button className="btn-icon btn-danger" onClick={() => removeScene(idx)} title="Xóa cảnh" disabled={ctx.scenes.length <= 1}><Trash2 size={14} /></button>
-              </div>
-            </div>
-            <div className="scene-fields">
-              <div className="scene-field">
-                <label className="field-label">LỜI THOẠI (TIẾNG VIỆT) {scene.text?.includes('<break') && <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 400, marginLeft: 8 }}>⏸ Có ngắt nghỉ cảm xúc</span>}</label>
-                <textarea className="form-textarea scene-textarea" value={scene.text} onChange={e => updateScene(idx, 'text', e.target.value)} placeholder="Lời thoại sẽ được đọc bằng TTS..." rows={3} />
-              </div>
-              <div className="scene-field">
-                <label className="field-label">MÔ TẢ HÌNH ẢNH (TIẾNG ANH)</label>
-                <textarea className="form-textarea scene-textarea" value={scene.image_prompt} onChange={e => updateScene(idx, 'image_prompt', e.target.value)} placeholder="Image prompt for AI image generation..." rows={2} />
-              </div>
-              <div className="scene-field" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <label className="field-label"><Film size={12} style={{ verticalAlign: 'middle' }} /> CHUYỂN CẢNH (sang cảnh sau)</label>
-                  <select
-                    className="form-select form-select-sm"
-                    value={scene.transition || 'crossfade'}
-                    onChange={e => updateScene(idx, 'transition', e.target.value)}
-                  >
-                    {TRANSITIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
+        {ctx.scenes.map((scene, idx) => {
+          const status = cacheStatus?.[idx];
+          const hasOverride = Boolean(scene.override_asset);
+          const bgmOverridden = scene.bgm_volume !== undefined && scene.bgm_volume !== null;
+
+          return (
+            <div key={idx} className="scene-card">
+              <div className="scene-header">
+                <div className="scene-number">Cảnh {idx + 1}</div>
+                <div style={{ display: 'flex', gap: 12, fontSize: 11, alignItems: 'center', marginLeft: 12 }}>
+                  <CacheDot state={status?.audio_cached} kindLabel="Giọng" />
+                  <CacheDot state={status?.image_cached} kindLabel="Hình" source={status?.image_source} />
                 </div>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <label className="field-label"><Volume2 size={12} style={{ verticalAlign: 'middle' }} /> TIẾNG ĐỘNG (SFX) CẢNH NÀY</label>
-                  <select
-                    className="form-select form-select-sm"
-                    value={scene.sfx || ''}
-                    onChange={e => {
-                      const val = e.target.value;
-                      updateScene(idx, 'sfx', val);
-                      if (val) {
-                        const audio = new Audio(`${API_BASE}/api/preview/sfx/${val}`);
-                        audio.volume = ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5;
-                        audio.play().catch(err => console.error("SFX preview error:", err));
-                      }
-                    }}
-                  >
-                    {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                  </select>
+                <div className="scene-actions">
+                  <button className="btn-icon" onClick={() => moveScene(idx, idx - 1)} disabled={idx === 0} title="Di chuyển lên"><ChevronUp size={14} /></button>
+                  <button className="btn-icon" onClick={() => moveScene(idx, idx + 1)} disabled={idx === ctx.scenes.length - 1} title="Di chuyển xuống"><ChevronDown size={14} /></button>
+                  <button className="btn-icon btn-danger" onClick={() => removeScene(idx)} title="Xóa cảnh" disabled={ctx.scenes.length <= 1}><Trash2 size={14} /></button>
                 </div>
               </div>
+              <div className="scene-fields">
+                <div className="scene-field">
+                  <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span>LỜI THOẠI (TIẾNG VIỆT)</span>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => previewScene(idx)}
+                      disabled={!scene.text?.trim()}
+                      title="Nghe thử giọng đọc của riêng cảnh này (có cả nhịp nghỉ). Bản nghe thử được lưu lại luôn — cảnh sẽ chuyển 🟢 và lúc render không phải sinh lại."
+                      style={{ padding: '2px 8px', fontSize: 11, fontWeight: 600, color: previewIdx === idx ? 'var(--amber)' : undefined }}
+                    >
+                      {previewIdx === idx
+                        ? <><Square size={11} style={{ verticalAlign: 'text-bottom' }} /> Dừng</>
+                        : <><Headphones size={11} style={{ verticalAlign: 'text-bottom' }} /> Nghe thử</>}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => insertBreak(idx)}
+                      title={`Chèn ${BREAK_SNIPPET} tại vị trí con trỏ — ép giọng đọc dừng hẳn 1 giây để ngưng đọng cảm xúc. Sửa số giây trực tiếp trong thẻ (vd time="2.5s"), tối đa 5s.`}
+                      style={{ padding: '2px 8px', fontSize: 11, fontWeight: 600 }}
+                    >
+                      <Pause size={11} style={{ verticalAlign: 'text-bottom' }} /> Chèn nhịp nghỉ
+                    </button>
+                    {scene.text?.includes('<break') && (
+                      <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 400 }}>
+                        ⏸ Có ngắt nghỉ cảm xúc
+                        {ctx.useSinglePassNarration && ' — bị bỏ qua khi bật "Đọc liền mạch cả bài"'}
+                      </span>
+                    )}
+                  </label>
+                  <textarea
+                    ref={el => { textareaRefs.current[idx] = el; }}
+                    className="form-textarea scene-textarea"
+                    value={scene.text}
+                    onChange={e => updateScene(idx, 'text', e.target.value)}
+                    placeholder="Lời thoại sẽ được đọc bằng TTS..."
+                    rows={3}
+                  />
+                </div>
+
+                <div className="scene-field">
+                  <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span>MÔ TẢ HÌNH ẢNH (TIẾNG ANH)</span>
+                    <label
+                      className="btn-icon"
+                      style={{ padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                      title="Dùng ảnh/video của bạn thay cho hình AI sinh cho riêng cảnh này (khi AI vẽ hỏng ngón tay, khuôn mặt...). Chấp nhận PNG, JPG, WEBP, MP4, MOV — tối đa 200MB."
+                    >
+                      <Upload size={11} style={{ verticalAlign: 'text-bottom' }} />
+                      {uploadingIdx === idx ? ' Đang tải...' : ' Tải ảnh/video của tôi'}
+                      <input
+                        type="file"
+                        accept=".png,.jpg,.jpeg,.webp,.bmp,.mp4,.mov,.webm"
+                        style={{ display: 'none' }}
+                        disabled={uploadingIdx === idx}
+                        onChange={e => { uploadOverride(idx, e.target.files?.[0]); e.target.value = ''; }}
+                      />
+                    </label>
+                  </label>
+
+                  {hasOverride ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid var(--green)', borderRadius: 8, marginBottom: 8 }}>
+                      {scene.override_kind === 'video' ? (
+                        <video src={`${API_BASE}/api/scene-asset/${scene.override_asset}`} style={{ width: 54, height: 54, objectFit: 'cover', borderRadius: 6 }} muted />
+                      ) : (
+                        <img src={`${API_BASE}/api/scene-asset/${scene.override_asset}`} alt="" style={{ width: 54, height: 54, objectFit: 'cover', borderRadius: 6 }} />
+                      )}
+                      <span style={{ flex: 1, fontSize: 12, color: 'var(--green)' }}>
+                        Đang dùng {scene.override_kind === 'video' ? 'video' : 'ảnh'} của bạn — mô tả bên dưới sẽ bị bỏ qua ở cảnh này.
+                      </span>
+                      <button className="btn-icon btn-danger" onClick={() => clearOverride(idx)} title="Gỡ, trả cảnh về cho AI sinh hình"><X size={14} /></button>
+                    </div>
+                  ) : null}
+
+                  <textarea
+                    className="form-textarea scene-textarea"
+                    value={scene.image_prompt}
+                    onChange={e => updateScene(idx, 'image_prompt', e.target.value)}
+                    placeholder="Image prompt for AI image generation..."
+                    rows={2}
+                    disabled={hasOverride}
+                    style={hasOverride ? { opacity: 0.5 } : undefined}
+                  />
+                </div>
+
+                {hasOverride ? null : (() => {
+                  const hasClaim = /\d{2,}|\b[A-ZĐ][a-zà-ỹ]+\s[A-ZĐ]/.test(scene.text || "");
+                  const warning = (hasClaim && !scene.source_quote) 
+                    ? "Cảnh có chứa số liệu hoặc tên riêng nhưng chưa có nguồn gốc (source_quote). Vui lòng kiểm tra lại để tránh AI bịa thông tin." 
+                    : null;
+                  
+                  return warning ? (
+                    <div style={{ background: 'var(--surface-hover)', borderLeft: '3px solid var(--amber)', padding: '8px 12px', fontSize: 12, color: 'var(--amber)', marginTop: 8, borderRadius: '0 4px 4px 0' }}>
+                      <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                      {warning}
+                    </div>
+                  ) : null;
+                })()}
+
+                <div style={{ marginTop: 12 }}>
+                  <button 
+                    className="btn-outline" 
+                    style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6, fontSize: 12, padding: '8px 0', background: 'rgba(255,255,255,0.02)', border: '1px dashed rgba(255,255,255,0.1)' }}
+                    onClick={() => toggleAdvanced(idx)}
+                  >
+                    <Settings size={14} /> {expandedAdvanced.has(idx) ? 'Ẩn Cài đặt nâng cao' : 'Cài đặt Nâng cao (Nguồn hình, Chuyển cảnh, SFX...)'}
+                  </button>
+                </div>
+
+                {expandedAdvanced.has(idx) && (
+                  <div className="advanced-scene-settings" style={{ animation: 'fadeIn 0.2s', marginTop: 12 }}>
+                    <div className="scene-field" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <label className="field-label"><Film size={12} style={{ verticalAlign: 'middle' }} /> NGUỒN HÌNH (RIÊNG CẢNH NÀY)</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={scene.visual_source || 'auto'}
+                          onChange={e => updateScene(idx, 'visual_source', e.target.value)}
+                          disabled={hasOverride}
+                        >
+                          <option value="auto">Auto (Theo cài đặt chung)</option>
+                          <option value="ai_image">Ảnh AI (AI Image)</option>
+                          <option value="stock_video">Video thật (Pexels)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="scene-field" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12, padding: '10px 12px', background: 'var(--surface)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                      <div style={{ flex: 1, minWidth: 140 }}>
+                        <label className="field-label">LOẠI CẢNH (TYPE)</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={scene.scene_type || 'narration'}
+                          onChange={e => updateScene(idx, 'scene_type', e.target.value)}
+                        >
+                          <option value="narration">Kể chuyện (Voice)</option>
+                          <option value="quote_card">Quote Card (Không Voice)</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 120 }}>
+                        <label className="field-label">NHỊP NGHỈ (ms)</label>
+                        <input
+                          type="number"
+                          className="form-input form-input-sm"
+                          value={scene.pause_after_ms || 0}
+                          onChange={e => updateScene(idx, 'pause_after_ms', parseInt(e.target.value) || 0)}
+                          min={0} max={3000} step={100}
+                        />
+                      </div>
+                      <div style={{ flex: 2, minWidth: 200 }}>
+                        <label className="field-label">NGUỒN TRÍCH DẪN (Chống bịa)</label>
+                        <input
+                          type="text"
+                          className="form-input form-input-sm"
+                          value={scene.source_quote || ''}
+                          onChange={e => updateScene(idx, 'source_quote', e.target.value)}
+                          placeholder="Nguyên văn tài liệu gốc..."
+                        />
+                      </div>
+                    </div>
+
+                    <div className="scene-field" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <label className="field-label"><Film size={12} style={{ verticalAlign: 'middle' }} /> CHUYỂN CẢNH (sang cảnh sau)</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={scene.transition || 'crossfade'}
+                          onChange={e => updateScene(idx, 'transition', e.target.value)}
+                        >
+                          {TRANSITIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </select>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <label className="field-label"><Volume2 size={12} style={{ verticalAlign: 'middle' }} /> TIẾNG ĐỘNG (SFX) CẢNH NÀY</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={scene.sfx || ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            updateScene(idx, 'sfx', val);
+                            if (val) {
+                              const audio = new Audio(`${API_BASE}/api/preview/sfx/${val}`);
+                              audio.volume = ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5;
+                              audio.play().catch(err => console.error("SFX preview error:", err));
+                            }
+                          }}
+                        >
+                          {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                        </select>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Music size={12} style={{ verticalAlign: 'middle' }} />
+                          <span>NHẠC NỀN CẢNH NÀY</span>
+                          <input
+                            type="checkbox"
+                            checked={bgmOverridden}
+                            title="Chỉnh riêng âm lượng nhạc nền cho cảnh này (vd: cảnh nói thầm giảm còn 5%, cảnh kết đẩy lên 50%). Bỏ chọn = theo mức chung của cả video."
+                            onChange={e => updateScene(idx, 'bgm_volume', e.target.checked ? ctx.bgmVolume / 100 : undefined)}
+                          />
+                        </label>
+                        {bgmOverridden ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <input
+                              type="range" min="0" max="100" step="5"
+                              className="form-range"
+                              style={{ flex: 1 }}
+                              value={Math.round(scene.bgm_volume * 100)}
+                              onChange={e => updateScene(idx, 'bgm_volume', Number(e.target.value) / 100)}
+                            />
+                            <span style={{ fontSize: 12, minWidth: 34, textAlign: 'right' }}>{Math.round(scene.bgm_volume * 100)}%</span>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', paddingTop: 6 }}>
+                            Theo mức chung ({ctx.bgmVolume}%)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <button className="btn-add-scene" onClick={addScene}><Plus size={16} /> Thêm cảnh mới</button>
     </div>

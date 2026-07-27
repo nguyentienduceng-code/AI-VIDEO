@@ -97,61 +97,36 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
 # 1. Định nghĩa Schema bằng Pydantic — đây chính là "Structured Output".
 #    Gemini sẽ bị BẮT phải trả JSON khớp 100% với schema này.
 # ---------------------------------------------------------------------------
-class Scene(BaseModel):
-    scene: int = Field(description="Số thứ tự phân cảnh, bắt đầu từ 1")
-    text: str = Field(description="Lời thoại tiếng Việt (CÓ DẤU ĐẦY ĐỦ) sẽ được đọc bằng TTS. TUYỆT ĐỐI KHÔNG chèn emoji, icon. Chỉ dùng chữ cái tiếng Việt, số, và dấu câu tiêu chuẩn.")
-    image_prompt: str = Field(
-        description="Mô tả hình ảnh bằng tiếng Anh, dùng để sinh ảnh AI (Imagen)"
-    )
-    sfx: str = Field(
-        default="",
-        description="Hiệu ứng âm thanh tại cảnh này. CHỈ ĐƯỢC DÙNG 1 trong các giá trị: whoosh, swoosh_soft, pop, tick, ding, bell, shimmer, riser, bass_drop, impact, suspense, heartbeat, laugh. Bỏ trống nếu không cần."
-    )
-    visual_effect: str = Field(
-        default="zoom_in",
-        description="Hiệu ứng chuyển động Camera (zoom_in, zoom_out, pan_left, pan_right, none)"
-    )
-    emotion: str = Field(
-        default="calm",
-        description="Cảm xúc giọng đọc tại cảnh này: hook, calm, dramatic, excited, suspense, closing"
-    )
-    speech_rate_modifier: str = Field(
-        default="0%",
-        description="Thay đổi nhịp độ giọng đọc (Dynamic Pacing) cho cảnh này. Giá trị là chuỗi % (ví dụ: '+20%' cho đọc nhanh dồn dập, '-10%' cho đọc chậm điềm tĩnh, '0%' là bình thường). Dùng tốc độ nhanh ở Hook, chậm lại ở giải thích, và bình thường ở Climax."
-    )
-    highlight_text: str = Field(
-        default="",
-        description="B-Roll Text: Trích xuất 1-3 từ khoá ĐẮT GIÁ nhất mang tính 'Giật tít' (Clickbait) từ 'text'. Ví dụ: 'SỐC!', 'SỰ THẬT', 'ĐỪNG XEM', '99% SAI LẦM'. Các từ này sẽ đập thẳng vào mắt người xem. Bỏ trống nếu không có từ nào giật gân."
-    )
-    transition: str = Field(
-        default="crossfade",
-        description=(
-            "Kiểu chuyển cảnh SAU cảnh này sang cảnh tiếp theo. CHỈ ĐƯỢC DÙNG 1 trong: "
-            "crossfade (hoà tan, kể tiếp), fade_black (chuyển chủ đề/lắng), fade_white (chớp sáng bất ngờ), "
-            "zoom_through (lao xuyên), zoom_punch (giật zoom cao trào), slide_left, slide_right, slide_up, slide_down, "
-            "wipe_right, wipe_down (gạt màn), whip_pan (quét nhanh dồn dập), page_flip (lật trang — hợp kể chuyện sách), "
-            "droplet (giọt nước lan — hợp cảm xúc/kết). Cảnh cuối dùng fade_black hoặc droplet."
-        )
-    )
+class LLMScene(BaseModel):
+    scene: int
+    text: str = Field(description="Lời thoại đọc voice-over. Không chứa ngoặc đơn hoặc ký hiệu. Nếu scene_type là quote_card, trường này PHẢI rỗng.")
+    image_prompt: str = Field(description="Prompt bằng tiếng Anh chi tiết để AI sinh ảnh (dùng các từ khóa điện ảnh như 8k, photorealistic). Bắt buộc phải có.")
+    highlight_text: str = Field(description="Từ khóa quan trọng nhất trong cảnh (tối đa 1-3 từ).")
+    scene_type: str = Field(default="narration", description="Loại cảnh: 'narration' (kể chuyện có giọng đọc) hoặc 'quote_card' (hiển thị trích dẫn chữ to trên nền tối, không giọng đọc).")
+    source_quote: Optional[str] = Field(default=None, description="Nguyên văn trích dẫn từ tài liệu gốc, dùng để đối chiếu chống bịa nội dung.")
+    source_ref: Optional[str] = Field(default=None, description="Vị trí chứa đoạn trích trong tài liệu (VD: Chương 1, trang 27).")
+    subtitle_text: Optional[str] = Field(default=None, description="Chữ hiển thị trên màn hình nếu khác với text đọc voice (đặc biệt hữu ích cho quote_card).")
 
+class Scene(LLMScene):
+    sfx: str = ""
+    visual_effect: str = "none"
+    emotion: str = "calm"
+    speech_rate_modifier: str = "0%"
+    transition: str = "crossfade"
+    visual_source: str = "auto"
+    pause_after_ms: int = 0
 
-class ScriptResponse(BaseModel):
-    sentiment: str = Field(
-        default="happy",
-        description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic)."
-    )
-    recommended_bgm: str = Field(
-        default="moment_of_peace",
-        description="Mã bài nhạc nền phù hợp nhất với cảm xúc kịch bản. CHỈ CHỌN 1 trong các mã sau: afro_pop, black_light_all_good_folks_main, comedy_cartoon, deep_abstract_ambient, fluffy_clouds_fugu_vibes_main_version, hype_drill, lofi_jazzy_love, moment_of_peace, music_promotion, new_age_nature, no_sleep_hiphop, rap_beat, running_night, type_beat"
-    )
-    hook_text: str = Field(
-        default="",
-        description="Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video để thu hút người xem (Ví dụ: 'Sự thật rùng mình...', 'Đừng xem nếu bạn...')."
-    )
-    cta_text: str = Field(
-        default="",
-        description="Câu Call To Action (Kêu gọi hành động) ở cuối video (Ví dụ: 'Comment để nhận link', 'Theo dõi ngay!')."
-    )
+class LLMScriptResponse(BaseModel):
+    sentiment: str = Field(default="happy", description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic).")
+    recommended_bgm: str = Field(default="moment_of_peace", description="Mã bài nhạc nền phù hợp nhất với cảm xúc kịch bản.")
+    hook_text: str = Field(default="", description="Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video.")
+    hook_variants: List[str] = Field(default_factory=list, description="3 biến thể hook_text khác nhau để người dùng lựa chọn (A/B testing).")
+    cta_text: str = Field(default="", description="Câu Call To Action (Kêu gọi hành động) ở cuối video.")
+    scenes: List[LLMScene]
+
+class ScriptResponse(LLMScriptResponse):
+    estimated_duration_s: float = Field(default=0.0, description="Thời lượng ước tính của toàn bộ video (giây)")
+    source_coverage: float = Field(default=0.0, description="Tỷ lệ cảnh có chứa nguồn gốc (để chống bịa)")
     scenes: List[Scene]
 
 
@@ -229,13 +204,18 @@ def get_enhanced_art_style(style: str) -> str:
 # ---------------------------------------------------------------------------
 # ── Bảng cấu hình thời lượng → số từ ────────────────────────────────
 # Đổi chuỗi này mỗi khi luật prompt thay đổi → cache kịch bản cũ tự hết hiệu lực.
-PROMPT_REVISION = "2026-07-25-word-budget"
+PROMPT_REVISION = "2026-07-26-sprint1"
 
 # Cùng vai trò cho split_script_to_scenes. Tách riêng để sửa prompt chia cảnh không xoá
 # oan cache của generate_script (và ngược lại). LỖI CŨ: cache key của "split_script" hoàn
 # toàn không có trường revision, nên mọi lần sửa prompt đều bị cache cũ đè — sửa xong
 # không thấy gì thay đổi.
 SPLIT_PROMPT_REVISION = "2026-07-26-niche-effects"
+
+# Cùng vai trò cho generate_script_from_images. Trước đây cache key của nó KHÔNG có
+# trường revision — sửa prompt xong vẫn nhận lại kịch bản cũ từ cache, y hệt lỗi của
+# split_script mô tả ở trên.
+IMAGE_PROMPT_REVISION = "2026-07-26-scene-word-budget"
 
 # Tốc độ đọc thực đo trên chính pipeline này (Edge-TTS giọng Việt, rate 0%): ~3.0 từ/giây.
 # Luật cũ ghi "15-20 từ ≈ 3-5 giây" là BẤT KHẢ THI về số học — 18 từ cần ~6 giây, không
@@ -424,8 +404,223 @@ BASE_STORYTELLING = (
     "QUY TẮC CẢM XÚC: 'emotion' phần lớn là 'calm' hoặc 'dramatic'/'suspense' ở cao trào; 'closing' ở cảnh cuối.\n"
 )
 
+
+# ── BẢN VẼ % CHO NICHE VÀ TONE (Sprint 1) ──
+# Tuple: (start_pct, end_pct, emotion, sfx, transition, speech_rate, visual_effect)
+NICHE_PERCENT_BLUEPRINTS = {
+    "book": [
+        (0.00, 0.06, "hook",     "",         "fade_black", "+5%", "zoom_in"),
+        (0.06, 0.20, "calm",     "",         "crossfade",  "0%", "none"),
+        (0.20, 0.42, "calm",     "",         "page_flip",  "0%", "none"),
+        (0.42, 0.50, "suspense", "suspense", "fade_black", "-3%", "zoom_in"),   # mini-twist
+        (0.50, 0.75, "dramatic", "",         "crossfade",  "0%", "none"),
+        (0.75, 0.83, "dramatic", "riser",    "zoom_punch", "-3%", "zoom_in"),   # cao trào
+        (0.83, 0.92, "calm",     "shimmer",  "droplet",    "-5%", "none"),   # dư âm
+        (0.92, 1.01, "closing",  "ding",     "fade_black", "-5%", "none"),
+    ],
+    "finance": [
+        (0.00, 0.15, "hook",     "riser",    "whip_pan",   "+15%", "zoom_in"),
+        (0.15, 0.30, "dramatic", "",         "slide_left", "+5%", "none"),
+        (0.30, 0.50, "calm",     "tick",     "slide_right","0%", "none"),
+        (0.50, 0.70, "excited",  "bass_drop","zoom_punch", "-3%", "zoom_in"),
+        (0.70, 0.90, "dramatic", "impact",   "fade_white", "0%", "none"),
+        (0.90, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
+    ],
+    "history": [
+        (0.00, 0.10, "hook",     "suspense", "fade_black", "+5%", "zoom_in"),
+        (0.10, 0.25, "calm",     "",         "crossfade",  "0%", "none"),
+        (0.25, 0.65, "suspense", "heartbeat","crossfade",  "-3%", "none"),
+        (0.65, 0.75, "dramatic", "suspense", "wipe_down",  "-3%", "none"),
+        (0.75, 0.85, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
+        (0.85, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
+    ],
+    "psychology": [
+        (0.00, 0.15, "hook",     "",         "crossfade",  "0%", "zoom_in"),
+        (0.15, 0.30, "calm",     "",         "crossfade",  "-5%", "none"),
+        (0.30, 0.70, "calm",     "",         "crossfade",  "-5%", "none"),
+        (0.70, 0.85, "dramatic", "shimmer",  "droplet",    "-8%", "zoom_in"),
+        (0.85, 1.01, "closing",  "",         "fade_black", "-8%", "none"),
+    ],
+    "truecrime": [
+        (0.00, 0.15, "hook",     "heartbeat","fade_black", "+5%", "zoom_in"),
+        (0.15, 0.35, "suspense", "",         "crossfade",  "0%", "none"),
+        (0.35, 0.65, "suspense", "suspense", "fade_black", "0%", "none"),
+        (0.65, 0.80, "dramatic", "bass_drop","whip_pan",   "+5%", "zoom_in"),
+        (0.80, 0.90, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
+        (0.90, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
+    ],
+    "travel": [
+        (0.00, 0.20, "hook",     "swoosh_soft","slide_up", "+10%", "zoom_in"),
+        (0.20, 0.40, "excited",  "",         "wipe_right", "0%", "none"),
+        (0.40, 0.60, "excited",  "pop",      "zoom_through","0%", "zoom_in"),
+        (0.60, 0.80, "calm",     "shimmer",  "crossfade",  "-3%", "none"),
+        (0.80, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
+    ]
+}
+
+TONE_PERCENT_PALETTES = {
+    "viral": [
+        (0.0, 0.2, "hook", "riser", "whip_pan", "+15%", "zoom_in"),
+        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
+        (0.7, 0.9, "excited", "bass_drop", "zoom_punch", "+10%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ],
+    "storytelling": [
+        (0.0, 0.2, "hook", "", "fade_black", "+5%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
+        (0.8, 0.9, "dramatic", "suspense", "droplet", "-3%", "zoom_in"),
+        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
+    ],
+    "educational": [
+        (0.0, 0.2, "hook", "tick", "slide_left", "+10%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
+        (0.8, 0.9, "dramatic", "bass_drop", "zoom_punch", "-3%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ],
+    "emotional": [
+        (0.0, 0.2, "hook", "", "crossfade", "-5%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "-5%", "none"),
+        (0.8, 0.9, "dramatic", "shimmer", "droplet", "-8%", "zoom_in"),
+        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
+    ],
+    "humorous": [
+        (0.0, 0.2, "hook", "pop", "slide_up", "0%", "zoom_in"),
+        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
+        (0.7, 0.9, "excited", "laugh", "whip_pan", "+10%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ]
+}
+
+def resolve_blueprint(niche: str, tone: str, total_scenes: int) -> list[dict]:
+    bp = NICHE_PERCENT_BLUEPRINTS.get(niche) or TONE_PERCENT_PALETTES.get(tone) or TONE_PERCENT_PALETTES["viral"]
+    out = []
+    for i in range(total_scenes):
+        p = i / max(total_scenes - 1, 1)
+        # fallback band
+        band = bp[-1]
+        for b in bp:
+            if b[0] <= p < b[1]:
+                band = b
+                break
+        out.append({
+            "emotion": band[2],
+            "sfx": band[3],
+            "transition": band[4],
+            "speech_rate_modifier": band[5],
+            "visual_effect": band[6],
+        })
+    return out
+
+
+# ── BẢN VẼ % CHO NICHE VÀ TONE (Sprint 1) ──
+# Tuple: (start_pct, end_pct, emotion, sfx, transition, speech_rate, visual_effect)
+NICHE_PERCENT_BLUEPRINTS = {
+    "book": [
+        (0.00, 0.06, "hook",     "",         "fade_black", "+5%", "zoom_in"),
+        (0.06, 0.20, "calm",     "",         "crossfade",  "0%", "none"),
+        (0.20, 0.42, "calm",     "",         "page_flip",  "0%", "none"),
+        (0.42, 0.50, "suspense", "suspense", "fade_black", "-3%", "zoom_in"),   # mini-twist
+        (0.50, 0.75, "dramatic", "",         "crossfade",  "0%", "none"),
+        (0.75, 0.83, "dramatic", "riser",    "zoom_punch", "-3%", "zoom_in"),   # cao trào
+        (0.83, 0.92, "calm",     "shimmer",  "droplet",    "-5%", "none"),   # dư âm
+        (0.92, 1.01, "closing",  "ding",     "fade_black", "-5%", "none"),
+    ],
+    "finance": [
+        (0.00, 0.15, "hook",     "riser",    "whip_pan",   "+15%", "zoom_in"),
+        (0.15, 0.30, "dramatic", "",         "slide_left", "+5%", "none"),
+        (0.30, 0.50, "calm",     "tick",     "slide_right","0%", "none"),
+        (0.50, 0.70, "excited",  "bass_drop","zoom_punch", "-3%", "zoom_in"),
+        (0.70, 0.90, "dramatic", "impact",   "fade_white", "0%", "none"),
+        (0.90, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
+    ],
+    "history": [
+        (0.00, 0.10, "hook",     "suspense", "fade_black", "+5%", "zoom_in"),
+        (0.10, 0.25, "calm",     "",         "crossfade",  "0%", "none"),
+        (0.25, 0.65, "suspense", "heartbeat","crossfade",  "-3%", "none"),
+        (0.65, 0.75, "dramatic", "suspense", "wipe_down",  "-3%", "none"),
+        (0.75, 0.85, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
+        (0.85, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
+    ],
+    "psychology": [
+        (0.00, 0.15, "hook",     "",         "crossfade",  "0%", "zoom_in"),
+        (0.15, 0.30, "calm",     "",         "crossfade",  "-5%", "none"),
+        (0.30, 0.70, "calm",     "",         "crossfade",  "-5%", "none"),
+        (0.70, 0.85, "dramatic", "shimmer",  "droplet",    "-8%", "zoom_in"),
+        (0.85, 1.01, "closing",  "",         "fade_black", "-8%", "none"),
+    ],
+    "truecrime": [
+        (0.00, 0.15, "hook",     "heartbeat","fade_black", "+5%", "zoom_in"),
+        (0.15, 0.35, "suspense", "",         "crossfade",  "0%", "none"),
+        (0.35, 0.65, "suspense", "suspense", "fade_black", "0%", "none"),
+        (0.65, 0.80, "dramatic", "bass_drop","whip_pan",   "+5%", "zoom_in"),
+        (0.80, 0.90, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
+        (0.90, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
+    ],
+    "travel": [
+        (0.00, 0.20, "hook",     "swoosh_soft","slide_up", "+10%", "zoom_in"),
+        (0.20, 0.40, "excited",  "",         "wipe_right", "0%", "none"),
+        (0.40, 0.60, "excited",  "pop",      "zoom_through","0%", "zoom_in"),
+        (0.60, 0.80, "calm",     "shimmer",  "crossfade",  "-3%", "none"),
+        (0.80, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
+    ]
+}
+
+TONE_PERCENT_PALETTES = {
+    "viral": [
+        (0.0, 0.2, "hook", "riser", "whip_pan", "+15%", "zoom_in"),
+        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
+        (0.7, 0.9, "excited", "bass_drop", "zoom_punch", "+10%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ],
+    "storytelling": [
+        (0.0, 0.2, "hook", "", "fade_black", "+5%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
+        (0.8, 0.9, "dramatic", "suspense", "droplet", "-3%", "zoom_in"),
+        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
+    ],
+    "educational": [
+        (0.0, 0.2, "hook", "tick", "slide_left", "+10%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
+        (0.8, 0.9, "dramatic", "bass_drop", "zoom_punch", "-3%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ],
+    "emotional": [
+        (0.0, 0.2, "hook", "", "crossfade", "-5%", "zoom_in"),
+        (0.2, 0.8, "calm", "", "crossfade", "-5%", "none"),
+        (0.8, 0.9, "dramatic", "shimmer", "droplet", "-8%", "zoom_in"),
+        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
+    ],
+    "humorous": [
+        (0.0, 0.2, "hook", "pop", "slide_up", "0%", "zoom_in"),
+        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
+        (0.7, 0.9, "excited", "laugh", "whip_pan", "+10%", "zoom_in"),
+        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
+    ]
+}
+
+def resolve_blueprint(niche: str, tone: str, total_scenes: int) -> list[dict]:
+    bp = NICHE_PERCENT_BLUEPRINTS.get(niche) or TONE_PERCENT_PALETTES.get(tone) or TONE_PERCENT_PALETTES["viral"]
+    out = []
+    for i in range(total_scenes):
+        p = i / max(total_scenes - 1, 1)
+        # fallback band
+        band = bp[-1]
+        for b in bp:
+            if b[0] <= p < b[1]:
+                band = b
+                break
+        out.append({
+            "emotion": band[2],
+            "sfx": band[3],
+            "transition": band[4],
+            "speech_rate_modifier": band[5],
+            "visual_effect": band[6],
+        })
+    return out
+
 async def generate_script(
     topic: str,
+    variation_seed: int = 0,
     num_scenes: int = 4,
     mode: str = "storyteller",
     art_style: str = "Cinematic",
@@ -516,10 +711,10 @@ async def generate_script(
     # ── Inject palette hiệu ứng: ưu tiên NICHE BLUEPRINT (chính xác vị trí cảnh),
     # fallback palette theo tone nếu FE không truyền niche ──
     if content_niche and content_niche in NICHE_BLUEPRINTS:
-        system_prompt += f"\n\n{NICHE_BLUEPRINTS[content_niche]}"
+        pass # Managed by python now
     else:
         effect_palette = TONE_EFFECT_PALETTES.get(narration_tone, TONE_EFFECT_PALETTES["viral"])
-        system_prompt += f"\n\n{effect_palette}"
+        pass # Managed by python now
 
     # ── Thêm hướng dẫn về số lượng từ dựa trên thời lượng mục tiêu ──
     dur_cfg = DURATION_CONFIG.get(target_duration)
@@ -544,30 +739,105 @@ async def generate_script(
     system_prompt = system_prompt.replace("{SCENE_WORD_RULE}", scene_word_rule)
 
     def _call():
-        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", prompt_rev=PROMPT_REVISION)
+        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, prompt_rev=PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for generate_script")
             return cached_result
         client = _get_client(api_key)
         try:
-            response = client.models.generate_content(
-                model="gemini-flash-latest",
-                contents=f"Chủ đề video: {topic}",
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    response_mime_type="application/json",
-                    response_schema=ScriptResponse,
-                    temperature=0.9,
-                ),
+            BATCH_SIZE = 12
+            all_scenes = []
+            global_fields = {}
+            
+            for batch_idx in range(0, num_scenes, BATCH_SIZE):
+                current_batch_size = min(BATCH_SIZE, num_scenes - batch_idx)
+                
+                # Cập nhật số cảnh cho lô hiện tại
+                batch_prompt = system_prompt.replace(f"CHÍNH XÁC {num_scenes} phân cảnh", f"CHÍNH XÁC {current_batch_size} phân cảnh")
+                batch_prompt = batch_prompt.replace(f"Mỗi phân cảnh tuyệt đối", f"Bạn đang tạo Lô {batch_idx//BATCH_SIZE + 1} (Cảnh {batch_idx+1} đến {batch_idx+current_batch_size}). Mỗi phân cảnh tuyệt đối")
+                
+                batch_content = f"Chủ đề video: {topic}\n"
+                if batch_idx > 0:
+                    prev_context = "\n".join([f"Cảnh {s.scene}: {s.text}" for s in all_scenes[-2:]])
+                    batch_content += f"\nNgữ cảnh 2 cảnh trước đó (chỉ để nối tiếp mạch truyện, KHÔNG sinh lại nội dung này):\n{prev_context}"
+                    batch_content += f"\nTiếp tục viết từ cảnh {batch_idx+1} đến {batch_idx+current_batch_size}."
+                else:
+                    batch_content += "\nHãy tạo phần đầu của kịch bản."
+                
+                response = client.models.generate_content(
+                    model="gemini-flash-latest",
+                    contents=batch_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=batch_prompt,
+                        response_mime_type="application/json",
+                        response_schema=LLMScriptResponse,
+                        temperature=0.9,
+                    ),
+                )
+                try:
+                    from services import quota_service
+                    quota_service.increment_quota(1)
+                except Exception:
+                    pass
+                parsed: LLMScriptResponse = response.parsed
+                
+                if batch_idx == 0:
+                    global_fields = {
+                        "sentiment": parsed.sentiment,
+                        "recommended_bgm": parsed.recommended_bgm,
+                        "hook_text": parsed.hook_text,
+                        "hook_variants": parsed.hook_variants,
+                        "cta_text": parsed.cta_text,
+                    }
+                
+                # Fix scene index just in case the LLM resets to 1
+                for i, s in enumerate(parsed.scenes):
+                    s.scene = batch_idx + i + 1
+                    
+                all_scenes.extend(parsed.scenes)
+                
+            # Đã sinh đủ tất cả các cảnh, giờ resolve blueprint
+            resolved = resolve_blueprint(content_niche, narration_tone, len(all_scenes))
+            final_scenes = []
+            for i, scene_data in enumerate(all_scenes):
+                mech = resolved[i]
+                final_scenes.append(Scene(
+                    scene=scene_data.scene,
+                    text=scene_data.text,
+                    image_prompt=scene_data.image_prompt,
+                    highlight_text=scene_data.highlight_text,
+                    scene_type=scene_data.scene_type,
+                    source_quote=scene_data.source_quote,
+                    source_ref=scene_data.source_ref,
+                    subtitle_text=scene_data.subtitle_text,
+                    emotion=mech['emotion'],
+                    sfx=mech['sfx'],
+                    transition=mech['transition'],
+                    speech_rate_modifier=mech['speech_rate_modifier'],
+                    visual_effect=mech['visual_effect'],
+                    visual_source="auto",
+                    pause_after_ms=0
+                ))
+            
+            # Calculate source_coverage (Anti-hallucination metric)
+            scenes_with_quotes = sum(1 for s in final_scenes if s.source_quote and s.source_quote.strip())
+            source_coverage = scenes_with_quotes / max(1, len(final_scenes))
+
+            total_words = sum(len(s.text.split()) for s in final_scenes if s.text)
+            est_duration = total_words / 3.0 + len(final_scenes) * 0.5 # 3.0 WPS + 0.5s per transition
+            
+            final_result = ScriptResponse(
+                estimated_duration_s=round(est_duration, 1),
+                source_coverage=round(source_coverage, 2),
+                sentiment=global_fields.get("sentiment", "happy"),
+                recommended_bgm=global_fields.get("recommended_bgm", ""),
+                hook_text=global_fields.get("hook_text", ""),
+                hook_variants=global_fields.get("hook_variants", []),
+                cta_text=global_fields.get("cta_text", ""),
+                scenes=final_scenes
             )
-            try:
-                from services import quota_service
-                quota_service.increment_quota(1)
-            except Exception:
-                pass
-            parsed: ScriptResponse = response.parsed
-            result = parsed.model_dump()
-            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", prompt_rev=PROMPT_REVISION)
+            result = final_result.model_dump()
+            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, prompt_rev=PROMPT_REVISION)
             return result
         except Exception as e:
             # KHÔNG trả kịch bản mock (trước đây trả video "Python" bất kể chủ đề, âm thầm
@@ -596,6 +866,13 @@ async def generate_script_from_images(
 
     topic_hint = f" Chủ đề gợi ý: '{topic}'." if topic else ""
 
+    # Ngân sách từ mỗi cảnh, suy ra từ CÙNG hằng số với generate_script để hai đường
+    # sinh kịch bản không lệch nhịp đọc. Cố ý KHÔNG đặt cứng "15-20 từ": xem ghi chú
+    # ở scene_word_budget() — luật cứng đó từng đá nhau với luật tổng số từ, và Gemini
+    # chọn phá luật số từ, làm cảnh dài 8+ giây.
+    _w_hi = WORDS_PER_SCENE_TARGET + 3
+    _sec_hi = _w_hi / VIETNAMESE_WORDS_PER_SECOND
+
     system_prompt = (
         "Bạn là biên kịch video chuyên nghiệp. "
         f"Người dùng cung cấp {num_images} bức ảnh.{topic_hint} "
@@ -604,13 +881,23 @@ async def generate_script_from_images(
         "Sử dụng câu ngắn, ngắt nghỉ bằng dấu phẩy hợp lý, KHÔNG dùng các ký tự Markdown (như *, **, #). "
         "Kịch bản phải tuân theo cấu trúc: [Hook (3s đầu)] -> [Thân bài] -> [Bài học] -> [Call-to-Action kết thúc bằng câu hỏi mở]. "
         "HÃY chủ động dùng dấu chấm lửng `...` vào phần lời thoại (text) tại những vị trí cần ngắt nghỉ, tạm dừng để tạo cảm xúc sâu lắng. "
-        "image_prompt: viết mô tả tiếng Anh ngắn gọn về nội dung ảnh (dùng cho metadata)."
+        "image_prompt: viết mô tả tiếng Anh ngắn gọn về nội dung ảnh (dùng cho metadata). "
+        f"\n\nĐỘ DÀI LỜI THOẠI (BẮT BUỘC): đây là video DỌC 9:16, phụ đề chạy đè lên "
+        f"khung hình nên câu dài sẽ tràn ra ngoài màn hình. Mỗi phân cảnh tuyệt đối "
+        f"KHÔNG ĐƯỢC VƯỢT QUÁ {_w_hi} từ (~{_sec_hi:.1f} giây đọc). "
+        "Câu dài phải CẮT thành nhiều phân cảnh ngắn. TUYỆT ĐỐI không viết đoạn văn dài."
     )
 
     def _call():
-        # image_paths should be relative or basename to ensure deterministic cache key 
-        # But for simplicity, we'll cache based on topic and num_images
-        cached_result = cache.get("gen_script_imgs", topic=topic, num_images=num_images, paths=",".join(os.path.basename(p) for p in image_paths))
+        # Use content hashing for deterministic cache key instead of basename
+        import hashlib
+        hasher = hashlib.md5()
+        for p in image_paths:
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    hasher.update(f.read())
+        paths_hash = hasher.hexdigest()
+        cached_result = cache.get("gen_script_imgs", topic=topic, num_images=num_images, paths=paths_hash, prompt_rev=IMAGE_PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for generate_script_from_images")
             return cached_result
@@ -637,7 +924,7 @@ async def generate_script_from_images(
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
-                response_schema=ScriptResponse,
+                response_schema=LLMScriptResponse,
                 temperature=0.8,
             ),
         )
@@ -646,9 +933,24 @@ async def generate_script_from_images(
             quota_service.increment_quota(1)
         except Exception:
             pass
-        parsed: ScriptResponse = response.parsed
-        result = [scene.model_dump() for scene in parsed.scenes]
-        cache.set("gen_script_imgs", result, topic=topic, num_images=num_images, paths=",".join(os.path.basename(p) for p in image_paths))
+        parsed: LLMScriptResponse = response.parsed
+        resolved = resolve_blueprint("", "", len(parsed.scenes))
+        final_scenes = []
+        for i, scene_data in enumerate(parsed.scenes):
+            mech = resolved[i]
+            final_scenes.append(Scene(
+                scene=scene_data.scene,
+                text=scene_data.text,
+                image_prompt=scene_data.image_prompt,
+                highlight_text=scene_data.highlight_text,
+                emotion=mech['emotion'],
+                sfx=mech['sfx'],
+                transition=mech['transition'],
+                speech_rate_modifier=mech['speech_rate_modifier'],
+                visual_effect=mech['visual_effect']
+            ))
+        result = [scene.model_dump() for scene in final_scenes]
+        cache.set("gen_script_imgs", result, topic=topic, num_images=num_images, paths=paths_hash, prompt_rev=IMAGE_PROMPT_REVISION)
         return result
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
@@ -700,29 +1002,7 @@ async def split_script_to_scenes(
         f"image_prompt: luôn mô tả bằng tiếng Anh theo phong cách '{art_style}' nhưng phải trung thành tuyệt đối với mô tả của người dùng."
     )
 
-    # ── Bản vẽ hiệu ứng theo niche/tone ─────────────────────────────
-    # CHỈ dùng để chọn sfx/transition/emotion/speech_rate_modifier. Phải bọc trong guard vì
-    # NICHE_BLUEPRINTS còn chứa cả chỉ dẫn NỘI DUNG ("Cảnh 1 = nghịch lý tiền + con số sốc",
-    # "BẮT BUỘC mỗi cảnh có CON SỐ"). Không có guard, Gemini sẽ viết lại lời thoại của user
-    # cho khớp bản vẽ — phá đúng cái đảm bảo duy nhất của mode Script → Video.
-    blueprint = None
-    if content_niche and content_niche in NICHE_BLUEPRINTS:
-        blueprint = NICHE_BLUEPRINTS[content_niche]
-    elif narration_tone in TONE_EFFECT_PALETTES:
-        blueprint = TONE_EFFECT_PALETTES[narration_tone]
-
-    if blueprint:
-        system_prompt += (
-            "\n\n── BẢN VẼ HIỆU ỨNG (chỉ áp cho hiệu ứng, KHÔNG áp cho lời thoại) ──\n"
-            "Dùng bản vẽ dưới đây để chọn `sfx`, `transition`, `emotion` và `speech_rate_modifier` "
-            "cho từng cảnh, bằng cách chiếu vị trí tương đối của cảnh trong tổng số cảnh.\n"
-            "GIỚI HẠN TUYỆT ĐỐI: bản vẽ KHÔNG cho bạn quyền sửa, thêm, bớt, đảo thứ tự hay viết lại "
-            "một chữ nào trong lời thoại của người dùng. Nếu bản vẽ đòi một loại nội dung mà kịch bản "
-            "gốc không có (con số, plot twist, câu hỏi mở...), BỎ QUA đòi hỏi đó và chỉ giữ phần "
-            "hướng dẫn hiệu ứng. Lời thoại gốc luôn thắng.\n\n"
-            f"{blueprint}"
-        )
-
+    # Bản vẽ cơ học được xử lý phía Python, không tiêm vào Prompt nữa
     def _call():
         # Trim script_text for hashing to avoid too long string issue, or hash it inside _get_key
         cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
@@ -737,7 +1017,7 @@ async def split_script_to_scenes(
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
-                response_schema=ScriptResponse,
+                response_schema=LLMScriptResponse,
                 temperature=0.1,  # Cực kỳ thấp để AI bám sát 100% text gốc, không phóng tác
             ),
         )
@@ -746,11 +1026,36 @@ async def split_script_to_scenes(
             quota_service.increment_quota(1)
         except Exception:
             pass
-        parsed: ScriptResponse = response.parsed
-        # Trả về TOÀN BỘ response (dict) chứ không chỉ list scenes: main.py có nhánh
-        # `isinstance(scenes, dict)` để chuyển thẳng lên FE, nhờ đó `recommended_bgm`,
-        # `hook_text` và `cta_text` mà kịch bản dán vào có sẵn không còn bị vứt bỏ.
-        result = parsed.model_dump()
+        
+        parsed: LLMScriptResponse = response.parsed
+        resolved = resolve_blueprint(content_niche, narration_tone, len(parsed.scenes))
+        final_scenes = []
+        for i, scene_data in enumerate(parsed.scenes):
+            mech = resolved[i]
+            final_scenes.append(Scene(
+                scene=scene_data.scene,
+                text=scene_data.text,
+                image_prompt=scene_data.image_prompt,
+                highlight_text=scene_data.highlight_text,
+                emotion=mech['emotion'],
+                sfx=mech['sfx'],
+                transition=mech['transition'],
+                speech_rate_modifier=mech['speech_rate_modifier'],
+                visual_effect=mech['visual_effect']
+            ))
+            
+        total_words = sum(len(s.text.split()) for s in final_scenes if s.text)
+        est_duration = total_words / 3.0 + len(final_scenes) * 0.5 # 3.0 WPS + 0.5s per transition
+        final_result = ScriptResponse(
+            estimated_duration_s=round(est_duration, 1),
+            sentiment=parsed.sentiment,
+            recommended_bgm=parsed.recommended_bgm,
+            hook_text=parsed.hook_text,
+            cta_text=parsed.cta_text,
+            scenes=final_scenes
+        )
+        
+        result = final_result.model_dump()
         cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
         return result
 

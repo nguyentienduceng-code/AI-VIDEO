@@ -225,6 +225,7 @@ async def fetch_pexels_video(
     api_key: str,
     needed_duration: float = 0.0,
     used_ids: Optional[set] = None,
+    out_meta: Optional[dict] = None,
 ) -> str:
     """
     Tìm và tải video từ Pexels API. Trả về đường dẫn file .mp4.
@@ -235,6 +236,10 @@ async def fetch_pexels_video(
 
     `used_ids`: tập id video đã dùng trong CÙNG một job — để 2 cảnh có từ khoá gần
     giống nhau không nhận về đúng một đoạn phim (lỗi lộ liễu nhất của video stock).
+
+    `out_meta`: dict để hàm ghi lại id clip đã chọn. Caller lưu id này vào cache, và ở
+    lần render sau — khi clip lấy thẳng từ cache, không gọi Pexels nữa — vẫn nạp lại
+    được id vào `used_ids` để cơ chế chống trùng clip tiếp tục hoạt động.
     """
     import requests
 
@@ -274,6 +279,8 @@ async def fetch_pexels_video(
 
         if used_ids is not None and video.get("id") is not None:
             used_ids.add(video["id"])
+        if out_meta is not None:
+            out_meta["id"] = video.get("id")
 
         # Ưu tiên file ĐỦ độ phân giải rồi mới tới gần target nhất (tránh tải 4K vô ích)
         def _file_score(vf):

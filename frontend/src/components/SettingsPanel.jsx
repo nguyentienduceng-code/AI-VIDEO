@@ -1,13 +1,44 @@
-import React from 'react';
-import { AlertTriangle, Sparkles } from 'lucide-react';
+import React, { useState } from 'react';
+import { AlertTriangle, Sparkles, Settings2, Zap, HardDrive } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { API_BASE, MODE_MAP } from '../constants';
-import { useAppContext } from '../AppContext';
+import { useAppStore, needsUpload as needsUploadFor, needsScript as needsScriptFor, needsTopic as needsTopicFor } from '../store';
 import InputSection from './InputSection';
 import ConfigSection from './ConfigSection';
 import AdvancedSettings from './AdvancedSettings';
+import StorageSettings from './StorageSettings';
 
 export default function SettingsPanel() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    activeMode: s.activeMode,
+    numScenes: s.numScenes,
+    setScenes: s.setScenes,
+    setStep: s.setStep,
+    topic: s.topic,
+    scriptText: s.scriptText,
+    uploadSessionId: s.uploadSessionId,
+    setErrorMsg: s.setErrorMsg,
+    errorMsg: s.errorMsg,
+    scriptLoading: s.scriptLoading,
+    setScriptLoading: s.setScriptLoading,
+    style: s.style,
+    targetDuration: s.targetDuration,
+    narrationTone: s.narrationTone,
+    contentNiche: s.contentNiche,
+    apiKey: s.apiKey,
+    characterDescription: s.characterDescription,
+    setEstimatedDurationS: s.setEstimatedDurationS,
+    bgm: s.bgm,
+    setBgm: s.setBgm,
+    hookText: s.hookText,
+    setHookText: s.setHookText,
+    ctaText: s.ctaText,
+    setCtaText: s.setCtaText,
+  })));
+  const needsUpload = needsUploadFor(ctx.activeMode);
+  const needsScript = needsScriptFor(ctx.activeMode);
+  const needsTopic = needsTopicFor(ctx.activeMode);
+  const [activeTab, setActiveTab] = useState('basic');
 
   const handleGenerateScript = async () => {
     if (ctx.activeMode === 'manual') {
@@ -21,9 +52,9 @@ export default function SettingsPanel() {
       return;
     }
 
-    if (ctx.needsTopic && !ctx.topic.trim()) return ctx.setErrorMsg('Vui lòng nhập chủ đề video!');
-    if (ctx.needsScript && !ctx.scriptText.trim()) return ctx.setErrorMsg('Vui lòng nhập nội dung kịch bản!');
-    if (ctx.needsUpload && !ctx.uploadSessionId) return ctx.setErrorMsg('Vui lòng upload ảnh trước!');
+    if (needsTopic && !ctx.topic.trim()) return ctx.setErrorMsg('Vui lòng nhập chủ đề video!');
+    if (needsScript && !ctx.scriptText.trim()) return ctx.setErrorMsg('Vui lòng nhập nội dung kịch bản!');
+    if (needsUpload && !ctx.uploadSessionId) return ctx.setErrorMsg('Vui lòng upload ảnh trước!');
     ctx.setErrorMsg('');
     ctx.setScriptLoading(true);
     try {
@@ -43,6 +74,9 @@ export default function SettingsPanel() {
       }
       const data = await res.json();
       ctx.setScenes(data.scenes || []);
+      if (data.estimated_duration_s !== undefined) {
+        ctx.setEstimatedDurationS(data.estimated_duration_s);
+      }
       if (data.recommended_bgm && ctx.bgm === 'auto') {
         ctx.setBgm(data.recommended_bgm);
       }
@@ -74,17 +108,32 @@ export default function SettingsPanel() {
 
   return (
     <div className="settings-two-column">
-      {/* Cột trái: Cấu hình */}
-      <div className="settings-col">
-        <ConfigSection />
-        <AdvancedSettings />
+      {/* Cột trái: Cấu hình (Dạng Tab) */}
+      <div className="settings-col settings-left-col panel-box" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div className="settings-tabs">
+          <button className={`tab-btn ${activeTab === 'basic' ? 'active' : ''}`} onClick={() => setActiveTab('basic')}>
+            <Settings2 size={16} /> Cơ bản
+          </button>
+          <button className={`tab-btn ${activeTab === 'advanced' ? 'active' : ''}`} onClick={() => setActiveTab('advanced')}>
+            <Zap size={16} /> Nâng cao
+          </button>
+          <button className={`tab-btn ${activeTab === 'system' ? 'active' : ''}`} onClick={() => setActiveTab('system')}>
+            <HardDrive size={16} /> Hệ thống
+          </button>
+        </div>
+        
+        <div className="tab-content" style={{ flex: 1 }}>
+          {activeTab === 'basic' && <ConfigSection />}
+          {activeTab === 'advanced' && <AdvancedSettings />}
+          {activeTab === 'system' && <StorageSettings />}
+        </div>
       </div>
 
       {/* Cột phải: Input và nút Generate */}
-      <div className="settings-col">
+      <div className="settings-col panel-box" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         <InputSection />
         
-        <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ marginTop: 'auto', paddingTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <button className="btn-generate" onClick={handleGenerateScript} disabled={ctx.scriptLoading}>
             {ctx.scriptLoading ? <span className="btn-loading"><div className="spinner" /> Đang xử lý...</span> : <><Sparkles size={18} /> Sinh Kịch Bản Bằng AI (Bước 2)</>}
           </button>
