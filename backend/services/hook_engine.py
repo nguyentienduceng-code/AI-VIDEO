@@ -171,7 +171,7 @@ def build_blackout_question_hook(
 ) -> CompositeVideoClip:
     '''Nền mờ siêu tối (cinematic blackout) từ bìa sách, một dòng chữ sáng bật ra.'''
     if cover_image_path:
-        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.15)
+        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.4)
     else:
         bg = ColorClip(size=(video_width, video_height), color=(12, 12, 15)).with_duration(duration)
 
@@ -213,7 +213,7 @@ def build_typewriter_quote_hook(
 ) -> CompositeVideoClip:
     '''Nền tối, câu trích dẫn hiện dần theo TỪ (typewriter thật, không phải crossfade nguyên khối).'''
     if cover_image_path:
-        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.25)
+        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.6)
     else:
         bg = ColorClip(size=(video_width, video_height), color=(15, 15, 20)).with_duration(duration)
 

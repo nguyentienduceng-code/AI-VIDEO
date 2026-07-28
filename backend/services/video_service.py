@@ -639,8 +639,8 @@ def render_final_video(
                 effective_volume = hook_sfx_volume
                 
                 if os.path.isfile(typewriter_sfx):
-                    # Nâng nhẹ âm nền gõ lách cách
-                    audio_placements.append((typewriter_sfx, 0.0, min(1.2, effective_volume * 1.0), 0.0))
+                    # Cắt độ dài vừa khít với thời gian chữ chạy xong (85% của hook_dur)
+                    audio_placements.append((typewriter_sfx, 0.0, min(1.2, effective_volume * 0.6), 0.0, hook_dur * 0.85))
                 
                 # Thêm âm thanh gõ từng chữ (tick.wav) khớp với nhịp xuất hiện TextClip
                 tick_sfx = os.path.join(SFX_DIR, "tick.wav")
@@ -651,8 +651,8 @@ def render_final_video(
                     step_dur = (hook_dur * 0.85) / steps
                     
                     for i in range(steps):
-                        # Tăng âm gõ tick.wav lên tối đa để dội nhịp gõ phím
-                        audio_placements.append((tick_sfx, i * step_dur, min(2.5, effective_volume * 4.0), 0.0))
+                        # Giảm hệ số khuếch đại xuống 1.5 để volume UI tuyến tính hơn
+                        audio_placements.append((tick_sfx, i * step_dur, min(2.5, effective_volume * 1.5), 0.0))
 
             elif hook_type == "breathing_vignette":
                 hook_clip_overlay = build_breathing_vignette_hook(
