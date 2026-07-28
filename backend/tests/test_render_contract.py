@@ -123,7 +123,67 @@ def test_bien_gia_tri_hop_le_duoc_chan_o_tang_api():
             pass
 
 
+# Trường NỘI DUNG — chữ nghĩa/tài nguyên riêng của TỪNG video. Preset lưu KIỂU DÁNG nên
+# tuyệt đối không được chứa chúng: nạp preset cũ mà chữ của video cũ hiện ra là sai hẳn
+# kỳ vọng người dùng. Thêm field chữ mới thì thêm tên vào đây.
+_TRUONG_NOI_DUNG = {
+    "scenes", "mode", "topic", "hook_text", "hook_quote", "outro_text",
+    "watermark_text", "cta_text", "negative_prompt", "character_description",
+    "gemini_api_key", "upload_session_id", "cover_image_session_id",
+}
+
+# Trường chỉ có ý nghĩa lúc render, không phải lựa chọn thẩm mỹ để lưu lại.
+_TRUONG_CHI_RENDER = {
+    "aspect_ratio", "cover_image_position", "use_veo", "use_veo_ambient_audio",
+    "use_fixed_seed", "use_gpu_encode", "use_fast_assembly", "use_animated_captions",
+}
+
+# Preset có quyền đặt tên riêng cho những thứ KHÔNG phải ánh xạ 1-1 sang render.
+_PRESET_RIENG = {"name", "art_style", "voice", "target_duration", "narration_tone"}
+
 _REQ_ATTR_RE = re.compile(r"\breq\.([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def test_preset_khong_chua_truong_noi_dung():
+    """Preset lưu KIỂU DÁNG, không lưu NỘI DUNG.
+
+    outro_text từng lọt vào PresetRequest một mình — thành ngoại lệ duy nhất phá quy tắc
+    mà hook_text/hook_quote/topic/watermark_text/cta_text đều tuân theo, và cũng chưa bao
+    giờ được frontend gửi hay khôi phục nên chỉ là một field chết.
+    """
+    from main import PresetRequest
+
+    lot = sorted(set(PresetRequest.model_fields) & _TRUONG_NOI_DUNG)
+    assert not lot, (
+        f"PresetRequest chứa trường nội dung: {lot}. Preset chỉ lưu kiểu dáng — "
+        "nạp lại preset mà chữ của video cũ hiện ra là sai kỳ vọng người dùng."
+    )
+
+
+def test_preset_va_render_goi_cung_mot_ten_cho_cung_mot_thu():
+    """Mọi tuỳ chọn kiểu dáng phải mang ĐÚNG MỘT tên ở cả hai model.
+
+    LỖI CŨ: nhạc nền chính là `bgm_track` ở cả hai, nhưng nhạc mở màn là
+    `intro_bgm_track` bên render và `intro_bgm` bên preset. Lệch tên kiểu này không gây
+    lỗi ngay — nó chỉ chờ tới lúc ai đó gán thẳng preset sang payload render và giá trị
+    im lặng rơi về mặc định.
+    """
+    from main import PresetRequest
+
+    pf = set(PresetRequest.model_fields)
+    rf = set(RenderVideoRequest.model_fields)
+
+    la_mat = sorted(pf - rf - _PRESET_RIENG)
+    assert not la_mat, (
+        f"PresetRequest có {la_mat} nhưng RenderVideoRequest không có tên tương ứng — "
+        "hoặc gõ sai tên, hoặc hai bên đang gọi cùng một thứ bằng hai tên khác nhau."
+    )
+
+    thieu = sorted(rf - pf - _TRUONG_NOI_DUNG - _TRUONG_CHI_RENDER)
+    assert not thieu, (
+        f"RenderVideoRequest có tuỳ chọn kiểu dáng {thieu} mà preset không lưu được — "
+        "người dùng chỉnh xong lưu preset, nạp lại thì mất."
+    )
 
 
 def _pipeline_source(main_py_source: str) -> str:

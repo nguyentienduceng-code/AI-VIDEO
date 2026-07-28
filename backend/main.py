@@ -304,10 +304,18 @@ class PresetRequest(BaseModel):
     use_sfx: bool = True
     sfx_volume: float = 8
     use_audio_ducking: bool = True
-    intro_bgm: Optional[str] = None
+    # Tên PHẢI trùng RenderVideoRequest.intro_bgm_track. Nhạc chính đã dùng `bgm_track` ở
+    # cả hai model; để riêng chỗ này là `intro_bgm` thì mỗi lần đọc code lại phải nhớ
+    # "preset gọi tên khác" — đúng loại lệch âm thầm sinh ra bug gán nhầm field.
+    intro_bgm_track: Optional[str] = None
     intro_bgm_duration: float = Field(0, ge=0, le=120)
     outro_effect: str = "none"
-    outro_text: Optional[str] = None
+    # KHÔNG có outro_text ở đây, có chủ ý. Preset lưu KIỂU DÁNG, không lưu NỘI DUNG:
+    # hook_text, hook_quote, topic, watermark_text, cta_text, negative_prompt,
+    # character_description đều vắng mặt vì cùng lý do — đó là chữ nghĩa riêng của từng
+    # video, nạp preset cũ mà chữ cũ hiện ra là sai kỳ vọng người dùng.
+    # outro_text từng lọt vào đây một mình, thành ngoại lệ duy nhất phá quy tắc, và cũng
+    # chưa bao giờ được frontend gửi hay khôi phục — một field chết.
     outro_reel_sfx: str = "none"
     # ĐƠN VỊ: PHẦN TRĂM (100 = 100%) — giống hook_sfx_volume ngay trên, KHÁC với
     # RenderVideoRequest.outro_sfx_volume (hệ số). ScriptEditor.jsx chia 100 ở ranh giới

@@ -85,36 +85,42 @@ def build_carousel_hook(
     duration: float = 4.5,
 ) -> CompositeVideoClip:
     """
-    Clip mở màn với hiệu ứng Cinematic Float-In (Thay thế Slot Machine cũ).
-    Bìa sách từ từ nổi lên và mờ dần rõ nét (Fade-in + Float up), tĩnh lặng và sang trọng.
+    Clip mở màn với hiệu ứng Slot Machine (trục quay) + Quote Reveal.
+    0.0s - 2.0s: Chuỗi bìa giả cuộn dọc tốc độ cao, dừng chốt ở bìa thật.
+    2.0s - End : Bìa thật nảy nhẹ, hiện Quote.
     """
     w, h = video_width, video_height
-
-    from PIL import Image, ImageOps
+    slot_dur = SLOT_DURATION
+    
+    import os
+    import glob
+    import random
+    from PIL import Image, ImageOps, ImageFilter
+    import numpy as np
 
     # ── Bìa thật (fit vào tỷ lệ an toàn tùy theo màn dọc hay ngang) ──
     try:
         if cover_image_path.endswith(".mp4"):
             from moviepy.video.io.VideoFileClip import VideoFileClip
             with VideoFileClip(cover_image_path) as v:
-                cover = ImageClip(v.get_frame(0))
+                cover_img = Image.fromarray(v.get_frame(0))
         else:
-            cover_img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
-            cover = ImageClip(np.array(cover_img))
-
+            cover_img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGBA")
+            
         is_landscape = w > h
         if is_landscape:
-            fit = min(w * 0.4 / cover.w, h * 0.7 / cover.h)
+            fit = min(w * 0.4 / cover_img.width, h * 0.7 / cover_img.height)
         else:
-            fit = min(w * 0.72 / cover.w, h * 0.46 / cover.h)
+            fit = min(w * 0.72 / cover_img.width, h * 0.46 / cover_img.height)
     except Exception as e:
         logger.warning(f"Hook cover error: {e}")
-        cover = ColorClip((int(w * 0.6), int(h * 0.4)), color=(230, 230, 230))
+        cover_img = Image.new("RGBA", (int(w * 0.6), int(h * 0.4)), (230, 230, 230, 255))
         fit = 1.0
         is_landscape = w > h
-        
-    cover_fit = cover.resized(fit)
-    cw, ch = cover_fit.w, cover_fit.h
+
+    cw, ch = int(cover_img.width * fit), int(cover_img.height * fit)
+    real_img = cover_img.resize((cw, ch), Image.Resampling.LANCZOS)
+    
     cy = int(h / 2 - ch / 2)
     if is_landscape:
         cy = int(h * 0.1)
@@ -122,21 +128,73 @@ def build_carousel_hook(
     # ── Nền mờ ──
     bg = _blurred_fill_bg(cover_image_path, w, h, duration, darken=0.4)
 
-    # ── Hiệu ứng Cinematic Float-In cho bìa sách ──
-    # Bìa sách mờ dần hiện ra và nổi nhẹ lên trên trong 1.5s đầu
-    def _float_y(t):
-        p = min(t / 1.5, 1.0)
-        ease = 1 - (1 - p) ** 3 # Ease-out cubic
-        return int(cy + 80 * (1 - ease))
+    # ── Phase 1: Slot Machine (Strip cuộn dọc) ──
+    # Tìm các bìa giả
+    slot_covers_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "slot_covers")
+    fake_paths = []
+    if os.path.isdir(slot_covers_dir):
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"):
+            fake_paths.extend(glob.glob(os.path.join(slot_covers_dir, ext)))
+            
+    if fake_paths:
+        selected_fakes = [random.choice(fake_paths) for _ in range(NUM_FAKES)]
+    else:
+        selected_fakes = [cover_image_path] * NUM_FAKES
 
-    cover_clip = (
-        cover_fit
-        .with_position(lambda t: ("center", _float_y(t)))
-        .with_duration(duration)
-        .with_effects([CrossFadeIn(1.2)])
+    gap = int(ch + h * 0.04) # Khoảng cách giữa các bìa
+    strip_h = gap * NUM_FAKES + ch
+    strip_img = Image.new('RGBA', (cw, strip_h), (0,0,0,0))
+    
+    # Bìa thật ở cuối (nằm ở toạ độ 0 theo trục Y của strip để nó dừng ở cuối chu trình)
+    strip_img.paste(real_img, (0, 0))
+    
+    # Gắn bìa giả vào phần trên của strip
+    for i, fake_path in enumerate(selected_fakes):
+        try:
+            fake_img = ImageOps.exif_transpose(Image.open(fake_path)).convert("RGBA")
+            aspect_ratio = cw / ch
+            f_ar = fake_img.width / fake_img.height
+            if f_ar > aspect_ratio:
+                new_w = int(fake_img.height * aspect_ratio)
+                left = (fake_img.width - new_w) // 2
+                fake_img = fake_img.crop((left, 0, left + new_w, fake_img.height))
+            elif f_ar < aspect_ratio:
+                new_h = int(fake_img.width / aspect_ratio)
+                top = (fake_img.height - new_h) // 2
+                fake_img = fake_img.crop((0, top, fake_img.width, top + new_h))
+                
+            f_img = fake_img.resize((cw, ch), Image.Resampling.LANCZOS)
+        except Exception:
+            f_img = Image.new("RGBA", (cw, ch), (150, 150, 150, 255))
+        
+        strip_img.paste(f_img, (0, (i + 1) * gap))
+
+    strip_clip = ImageClip(np.array(strip_img)).with_duration(slot_dur)
+
+    # Hiệu ứng cuộn: ease out cubic
+    def slot_y(t):
+        p = t / slot_dur
+        ease = 1 - (1 - p) ** 3
+        start_y = cy - NUM_FAKES * gap
+        end_y = cy
+        return int(start_y + (end_y - start_y) * ease)
+
+    strip_clip = strip_clip.with_position(lambda t: ("center", slot_y(t)))
+
+    # ── Phase 2: Bìa thật dừng và Quotes ──
+    def bounce_y(t):
+        t_bounce = min(t, 0.4)
+        bounce = np.sin(t_bounce * np.pi / 0.4) * 15 * (1 - t_bounce/0.4)
+        return int(cy + bounce)
+        
+    real_clip = (
+        ImageClip(np.array(real_img))
+        .with_position(lambda t: ("center", bounce_y(t)))
+        .with_start(slot_dur)
+        .with_duration(duration - slot_dur)
     )
 
-    layers = [bg, cover_clip]
+    layers = [bg, strip_clip, real_clip]
 
     # ── Trích dẫn (nếu có) ──
     if quote_text and quote_text.strip():
@@ -151,9 +209,9 @@ def build_carousel_hook(
                 stroke_width=4,
             )
             .with_position(("center", text_y))
-            .with_start(0.8)
-            .with_duration(duration - 0.8)
-            .with_effects([CrossFadeIn(0.8)])
+            .with_start(slot_dur + 0.1)
+            .with_duration(duration - slot_dur - 0.1)
+            .with_effects([CrossFadeIn(0.5)])
         )
         layers.append(txt_clip)
 

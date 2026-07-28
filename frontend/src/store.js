@@ -336,7 +336,7 @@ export const useAppStore = create((set, get) => {
     if (preset.voice) patch.voice = preset.voice;
     if (preset.art_style) patch.style = preset.art_style;
     if (preset.bgm_track !== undefined) patch.bgm = preset.bgm_track === null ? 'none' : preset.bgm_track;
-    if (preset.intro_bgm !== undefined) patch.introBgm = preset.intro_bgm;
+    if (preset.intro_bgm_track !== undefined) patch.introBgm = preset.intro_bgm_track;
     if (preset.intro_bgm_duration !== undefined) patch.introBgmDuration = preset.intro_bgm_duration;
     if (preset.target_duration) patch.targetDuration = preset.target_duration;
     if (preset.narration_tone) patch.narrationTone = preset.narration_tone;

@@ -64,10 +64,14 @@ AI-VIDEO-MAKER/
 │   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
 │   ├── scripts/check_imports.py  # Cổng chất lượng chống UnboundLocalError (mục 6)
 │   ├── logs/                     # backend.log, render_worker.log (xoay vòng 10MB×5)
+│   ├── tests/                    # lớp 4 của cổng chất lượng (mục 6.3) — chạy ~2 giây
+│   │                               Phần lớn là test HỢP ĐỒNG, xem mục 6.3.
 │   ├── config.py                 # NGUỒN SỰ THẬT DUY NHẤT cho mọi đường dẫn file
 │   ├── assets/                   # Nơi lưu trữ tài nguyên
 │   │   ├── bgm/, sfx/, slot_covers/, fonts/   # ĐI KÈM MÃ NGUỒN — không di dời
-│   │   ├── audio/, images/, output/, cache/, projects/, uploads/, overrides/
+│   │   ├── audio/, images/, output/, cache/, projects/, uploads/, overrides/,
+│   │   │   custom_sfx/           # ↑ tiếng động NGƯỜI DÙNG tự nạp — tách khỏi
+│   │   │                           assets/sfx/ (đi kèm mã nguồn, được git track)
 │   │   │                         # ↑ dữ liệu sinh ra — chuyển sang ổ khác được
 │   │   │                           qua CUSTOM_ASSETS_DIR trong .env
 │   └── .env                      # Lưu API Keys + CUSTOM_ASSETS_DIR
@@ -90,6 +94,19 @@ Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiê
 5. **Stock Video Router & Prefer Stock Mode:** Xử lý luồng tải video stock thông minh, tự động lọc từ khóa, kèm toggle ép dùng footage thực tế tạo sự chân thực.
 6. **Smart Resume Checkpoints:** Khôi phục render dang dở không cần tốn API chạy lại các bước TTS/Hình ảnh đã xong.
 7. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
+8. **Hook & Outro Engine:** 7 hiệu ứng mở màn (Máy Xèng, Màn đen, Đánh máy, Vignette thở, Chụp ảnh, Nhiễu số, Cháy phim) và phần đuôi video dùng chung bộ dựng đó. Thời lượng lấy từ `resolve_hook_timing()` / `resolve_outro_timing()` — **nguồn chân lý duy nhất**, để `main.py` (dời timeline, tính tổng thời lượng) và `video_service` (dựng clip) không bao giờ tính ra hai con số khác nhau.
+9. **Dynamic BGM:** Nhạc mở màn riêng cho N giây đầu rồi chuyển êm sang nhạc chính bằng `acrossfade` (không phải `afade`+`amix` — xem mục 4.1).
+10. **Sidechain Ducking:** Nhạc nền tự chìm khi có giọng đọc, dùng track **chỉ-giọng** làm tín hiệu điều khiển (xem mục 4.1).
+
+### 4.1. Vì sao filtergraph âm thanh trông như vậy
+
+Ba quyết định dễ bị "sửa cho gọn" thành sai, nên ghi lại lý do:
+
+- **`acrossfade`, không phải `afade` + `amix`.** `amix` mặc định `normalize=1` → chia biên độ cho số input, nên bật nhạc mở màn làm nhạc nền cả video tụt 6dB so với khi tắt. `loudnorm` phía sau chuẩn hoá tổng nên không lộ ở âm lượng chung, chỉ **tỉ lệ nhạc/giọng** đổi — nghe ra nhưng gần như không lần ra nguyên nhân. Ngoài ra hai `afade` độc lập tạo một chỗ trũng ngay giữa điểm chuyển, và `afade=t=in` chỉ *bịt tiếng* nhạc chính chứ không giữ nó lại nên bài hát trôi mất T giây đầu. `atrim` + `acrossfade` giải quyết cả ba.
+- **Mọi `amix` đều phải có `normalize=0`.** Cùng lý do trên.
+- **Sidechain lấy track chỉ-giọng, không lấy `[0:a]`.** `[0:a]` là audio của video thô, đã trộn sẵn giọng + **toàn bộ SFX**. Dùng nó làm tín hiệu điều khiển thì mỗi tiếng whoosh/impact/máy xèng đều dìm nhạc nền y như giọng nói — SFX là *nội dung*, không phải *tín hiệu điều khiển*. `video_service.write_voice_sidechain()` ghi riêng track đó (ở cả đường nhanh lẫn đường chậm).
+
+Bộ `tests/test_audio_filtergraph.py` canh cả ba: nó chặn `subprocess.run` và khẳng định trên chuỗi `-filter_complex` thật, thay vì phải render vài phút rồi ngồi nghe.
 
 ---
 
@@ -107,6 +124,15 @@ Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đ
 1. **~~Mất dấu vết khi crash~~:** Log ghi ra file, có traceback đầy đủ và nhãn `[job_id]`. Xem mục 6.
 2. **~~Lỗi lọt mọi lớp kiểm tra~~:** `scripts/check_imports.py` bắt `UnboundLocalError` do import cục bộ.
 3. **~~Không có autorestart~~:** Chạy qua PM2 bằng `start-pm2.bat`.
+
+### ✅ Đã xử lý (2026-07-29 — Độ tin cậy & hợp đồng giữa các tầng):
+1. **~~Job treo vĩnh viễn~~:** Vòng poll worker giờ thoát được khi worker chết đột ngột (`is_render_active`) hoặc treo quá lâu (mốc `updated_at`).
+2. **~~Render lỗi xoá sạch asset~~:** Ảnh/giọng đọc được giữ lại khi render hỏng, để lần chạy lại không tốn quota API.
+3. **~~Ngưỡng cache 5GB không có tác dụng~~:** `_auto_cleanup` thêm pha LRU thứ hai; bản cũ chỉ xoá file > 7 ngày nên cache toàn file mới thì không dọn nổi một byte.
+4. **~~Tra cache O(N)~~:** `_find_cached()` thử thẳng đuôi đã biết thay vì liệt kê cả thư mục (đo trên cache thật: 0.115ms → 0.012ms mỗi lần tra).
+5. **~~Mất dấu job sau restart~~:** `_restore_jobs_from_disk()` dựng lại `JOBS` từ `render_status/` và `output/` lúc khởi động.
+6. **~~Path traversal qua `job_id`~~:** `project_service.safe_job_id()` dùng ở cả `PROJECTS_DIR` lẫn `IMAGES_DIR`.
+7. **~~Đường render nhanh hỏng câm~~:** Index input FFmpeg lệch +1 làm FastAssembly hỏng hoàn toàn trong khi job vẫn báo "Hoàn tất!" (chỉ chậm ~100 lần). Nay có `tests/test_ffmpeg_assembler.py` và fallback báo lên tận giao diện.
 
 ### 🟢 Định hướng tiếp theo:
 1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.
@@ -144,15 +170,29 @@ Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đ
 
 ### 6.3. Cổng chất lượng
 
-Ba lớp chạy tự động ở `start.bat`, `start-pm2.bat` và git pre-commit hook:
+Bốn lớp chạy tự động ở `start.bat`, `start-pm2.bat` và git pre-commit hook:
 
 | Lớp | Bắt được |
 |---|---|
 | `compileall` | Lỗi cú pháp |
 | `ruff --select F821,F811,E9` | Tên chưa import, định nghĩa trùng |
 | `scripts/check_imports.py` | `UnboundLocalError` do import cục bộ che module import |
+| `pytest tests` | Sai **hành vi**: cú pháp đúng, tên đủ, nhưng logic lệch |
 
 Lớp thứ ba tồn tại vì hai lớp trên **đều bỏ lọt** loại lỗi này — cú pháp hợp lệ, tên vẫn có import, chỉ sai thứ tự thực thi nên chỉ nổ lúc runtime ở nhánh hiếm chạy.
+
+Lớp thứ tư tồn tại vì cả ba lớp trên đều mù trước lỗi logic. Ba sự cố thật đã lọt qua chúng:
+`hook_sfx_volume` có trong model, frontend gửi đều, video_service đọc đúng tên — nhưng
+`main.py` quên nhét vào `render_kwargs` nên thanh trượt vô hiệu suốt nhiều bản render;
+`req.intro_bgm_track` được đọc mà model không khai báo nên **mọi** job render chết ở
+`pending`; và index input của FastAssembly lệch +1 khiến đường render nhanh hỏng hoàn toàn
+trong khi job vẫn báo "Hoàn tất!". Bộ test chạy hết trong ~2 giây.
+
+**Loại test quan trọng nhất ở đây là test HỢP ĐỒNG**, không phải test đơn vị: chúng đối
+chiếu hai danh sách phải luôn khớp nhau (model ↔ passthrough ↔ kwargs thật; selector
+zustand ↔ khoá được đọc; PresetRequest ↔ RenderVideoRequest; index FFmpeg ↔ số input
+thật). Đó là chỗ **kwargs và selector im lặng ở cả hai chiều — thiếu thì dùng mặc định,
+thừa thì bỏ qua, không lỗi nào cả.
 
 ### 6.4. Bẫy đã gặp
 

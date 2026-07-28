@@ -81,7 +81,7 @@ export default function PresetManager() {
         voice: ctx.voice,
         art_style: ctx.style,
         bgm_track: ctx.bgm === 'none' ? null : ctx.bgm,
-        intro_bgm: ctx.introBgm === 'none' ? null : ctx.introBgm,
+        intro_bgm_track: ctx.introBgm === 'none' ? null : ctx.introBgm,
         intro_bgm_duration: ctx.introBgmDuration,
         target_duration: ctx.targetDuration,
         narration_tone: ctx.narrationTone,
