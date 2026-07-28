@@ -58,7 +58,12 @@ AI-VIDEO-MAKER/
 │   │   ├── preset_service.py     # Quản lý cấu hình lưu sẵn của người dùng
 │   │   ├── project_service.py    # Quản lý Checkpoint Smart Resume
 │   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
+│   │   ├── render_worker.py      # Chạy MoviePy/FFmpeg trong process con
+│   │   ├── hook_engine.py        # 4 hiệu ứng mở màn (Slot/Blackout/Typewriter/Vignette)
+│   │   ├── log_setup.py          # UTF-8 streams + log ra file + nhãn [job_id] (mục 6)
 │   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
+│   ├── scripts/check_imports.py  # Cổng chất lượng chống UnboundLocalError (mục 6)
+│   ├── logs/                     # backend.log, render_worker.log (xoay vòng 10MB×5)
 │   ├── config.py                 # NGUỒN SỰ THẬT DUY NHẤT cho mọi đường dẫn file
 │   ├── assets/                   # Nơi lưu trữ tài nguyên
 │   │   ├── bgm/, sfx/, slot_covers/, fonts/   # ĐI KÈM MÃ NGUỒN — không di dời
@@ -66,8 +71,11 @@ AI-VIDEO-MAKER/
 │   │   │                         # ↑ dữ liệu sinh ra — chuyển sang ổ khác được
 │   │   │                           qua CUSTOM_ASSETS_DIR trong .env
 │   └── .env                      # Lưu API Keys + CUSTOM_ASSETS_DIR
-├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình
-└── export_context.py             # Script tự động trích xuất mã nguồn cho AI
+├── start.bat, stop.bat           # Khởi chạy trực tiếp (uvicorn) và dọn tiến trình
+├── start-pm2.bat                 # Khởi chạy qua PM2 (autorestart + log bền) — NÊN DÙNG
+├── setup-pm2-autostart.bat       # Đăng ký Scheduled Task tự chạy cùng Windows
+├── ecosystem.config.js           # Cấu hình PM2
+└── scripts/export_context.py     # Trích xuất mã nguồn ra AI_CONTEXT.md (tiện ích rời)
 ```
 
 ---
@@ -95,7 +103,58 @@ Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đ
 3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt.
 4. **~~Smart Resume & Preset System~~:** Đã bổ sung cơ chế lưu file project tự động để nối tiếp render nếu lỗi, cùng hệ thống preset.
 
+### ✅ Đã xử lý (2026-07-28 — Vận hành & Chẩn đoán):
+1. **~~Mất dấu vết khi crash~~:** Log ghi ra file, có traceback đầy đủ và nhãn `[job_id]`. Xem mục 6.
+2. **~~Lỗi lọt mọi lớp kiểm tra~~:** `scripts/check_imports.py` bắt `UnboundLocalError` do import cục bộ.
+3. **~~Không có autorestart~~:** Chạy qua PM2 bằng `start-pm2.bat`.
+
 ### 🟢 Định hướng tiếp theo:
 1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.
 2. **Distributed Cache:** Cache hiện tại lưu trên disk local. Cần chuyển sang Redis/Memcached khi deploy multi-server.
 3. **Auto-publish:** Tích hợp API đăng video tự động lên TikTok/YouTube Shorts.
+4. **Log tập trung:** Khi chạy nhiều render worker song song, `RotatingFileHandler` mỗi tiến trình một file sẽ không đủ — cần `QueueHandler` + một tiến trình ghi log duy nhất.
+
+---
+
+## 6. Vận hành & Chẩn đoán (Operations & Diagnostics)
+
+*Bổ sung 2026-07-28, sinh ra từ một sự cố thật: 11/07 backend chết ngầm giữa job render với `UnboundLocalError`, nhưng vì log không được ghi ra file nên mãi 17 ngày sau mới truy được nguyên nhân.*
+
+### 6.1. Khởi chạy
+
+| Cách | Lệnh | Đặc điểm |
+|---|---|---|
+| PM2 (khuyến nghị) | `start-pm2.bat` | Autorestart khi crash, log bền, chạy nền |
+| Trực tiếp | `start.bat` | Xem log cuộn trực tiếp trong cmd |
+| Tự chạy khi boot | `setup-pm2-autostart.bat` | Scheduled Task gọi `pm2 resurrect` lúc đăng nhập |
+
+`pm2 startup` **không hỗ trợ Windows** — đó là lý do cần script riêng. `ecosystem.config.js` cố ý để `watch: false`: MoviePy/FFmpeg ghi file tạm trong cây dự án, bật watch sẽ restart server **giữa lúc đang render**.
+
+### 6.2. Hệ thống Log (`services/log_setup.py`)
+
+- `backend/logs/backend.log` — tiến trình FastAPI chính.
+- `backend/logs/render_worker.log` — process con (MoviePy, FFmpeg mastering).
+- Xoay vòng **10MB × 5**, encoding UTF-8 (mặc định cp1252 sẽ làm vỡ mọi dòng log tiếng Việt).
+
+**Nhãn `[job_id]` trên mọi dòng** — cài bằng `ContextVar` + `logging.Filter` ở tầng handler, nên phủ cả log của `services/` lẫn thư viện ngoài (`httpx`, `google_genai`) mà không phải sửa dòng nào trong các module đó. Đây là lý do không dùng `LoggerAdapter`: adapter chỉ gắn nhãn cho lời gọi qua chính nó, tức chỉ `main.py`.
+
+`ContextVar` không vượt qua ranh giới tiến trình, nên `render_worker._worker_main()` phải gọi lại `set_job_id()` cho riêng nó.
+
+**Mọi `logger.error` đều có `exc_info=True`** → traceback chỉ đúng file/dòng. Các `logger.warning` cố ý KHÔNG có, vì đó là những nhánh fallback đã biết trước nguyên nhân (Veo hết quota, Pexels 403) — thêm traceback chỉ làm loãng log.
+
+### 6.3. Cổng chất lượng
+
+Ba lớp chạy tự động ở `start.bat`, `start-pm2.bat` và git pre-commit hook:
+
+| Lớp | Bắt được |
+|---|---|
+| `compileall` | Lỗi cú pháp |
+| `ruff --select F821,F811,E9` | Tên chưa import, định nghĩa trùng |
+| `scripts/check_imports.py` | `UnboundLocalError` do import cục bộ che module import |
+
+Lớp thứ ba tồn tại vì hai lớp trên **đều bỏ lọt** loại lỗi này — cú pháp hợp lệ, tên vẫn có import, chỉ sai thứ tự thực thi nên chỉ nổ lúc runtime ở nhánh hiếm chạy.
+
+### 6.4. Bẫy đã gặp
+
+- **Log PM2 cũ có thể đánh lừa.** Sự cố 11/07 nằm trong `~/.pm2/logs/` nhưng file đó đóng băng vì backend thực tế chạy qua `start.bat`. Các file cũ đã đổi tên thành `*.2026-07-11.log`. Luôn kiểm tra `mtime` và đối chiếu tên hàm trong traceback với code hiện tại trước khi kết luận.
+- **File `.bat` phải dùng CRLF** — `cmd.exe` xử lý sai khối `if (...)` nhiều dòng nếu file là LF.
