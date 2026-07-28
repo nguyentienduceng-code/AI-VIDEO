@@ -69,10 +69,10 @@ export default function AdvancedSettings() {
           tooltip="Tự động zoom/pan nhẹ trên ảnh tĩnh nếu không dùng Veo"
         />
         <ToggleRow
-          label="Tự thêm SFX mở màn (Hook)"
+          label="Tiếng động phụ hoạ (SFX các cảnh)"
           checked={ctx.useSfx}
           onChange={ctx.setUseSfx}
-          tooltip="Tự chèn tiếng Riser dâng trào ở cảnh mở màn (khi bật Hook Zoom Boost). Lưu ý: SFX bạn chọn RIÊNG cho từng cảnh trong phần Kịch bản LUÔN phát, không phụ thuộc nút này."
+          tooltip="Cho phép phát các hiệu ứng âm thanh (SFX) mà bạn đã cấu hình riêng cho từng cảnh ở bước Kịch bản. Nếu tắt, toàn bộ SFX chuyển cảnh sẽ bị loại bỏ."
         />
         <ToggleRow
           label={<span>🎙️ Đọc <b>liền mạch cả bài</b> (1 lần gọi)</span>}
@@ -136,18 +136,18 @@ export default function AdvancedSettings() {
         </div>
         <div className="input-group" style={{ opacity: ctx.hookEffect !== 'none' ? 1 : 0.4, pointerEvents: ctx.hookEffect !== 'none' ? 'auto' : 'none' }}>
           <label className="field-label">ÂM THANH HIỆU ỨNG (HOOK SFX)</label>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
             <select
               className="form-select form-select-sm"
               value={ctx.hookReelSfx}
               onChange={e => ctx.setHookReelSfx(e.target.value)}
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 0 }}
             >
               {(HOOK_SFX_OPTIONS[ctx.hookEffect] || []).map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 90 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 80, flexShrink: 0 }}>
               <span style={{ fontSize: 10, color: 'gray' }}>Vol</span>
               <input
                 type="range"
@@ -156,7 +156,7 @@ export default function AdvancedSettings() {
                 max="200"
                 value={ctx.hookSfxVolume}
                 onChange={e => ctx.setHookSfxVolume(Number(e.target.value))}
-                style={{ flex: 1 }}
+                style={{ flex: 1, minWidth: 0 }}
                 title={`Âm lượng Hook SFX: ${ctx.hookSfxVolume}% (200% là cực đại)`}
               />
             </div>

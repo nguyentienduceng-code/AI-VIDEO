@@ -16,6 +16,7 @@ export default function PresetManager() {
     speechRate: s.speechRate,
     speechPitch: s.speechPitch,
     bgmVolume: s.bgmVolume,
+    hookSfxVolume: s.hookSfxVolume,   // payload lưu preset đọc giá trị này
     subtitleStyle: s.subtitleStyle,
     colorGrading: s.colorGrading,
     preferStockVideo: s.preferStockVideo,

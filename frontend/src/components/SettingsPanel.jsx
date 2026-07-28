@@ -28,6 +28,9 @@ export default function SettingsPanel() {
     apiKey: s.apiKey,
     characterDescription: s.characterDescription,
     setEstimatedDurationS: s.setEstimatedDurationS,
+    voice: s.voice,
+    speechRate: s.speechRate,
+    setScriptNotice: s.setScriptNotice,
     bgm: s.bgm,
     setBgm: s.setBgm,
     hookText: s.hookText,
@@ -64,6 +67,9 @@ export default function SettingsPanel() {
         content_niche: ctx.contentNiche || undefined,
         script_text: ctx.scriptText || undefined, upload_session_id: ctx.uploadSessionId || undefined,
         gemini_api_key: ctx.apiKey || undefined, character_description: ctx.characterDescription || undefined,
+        // Giọng + tốc độ để backend ước lượng thời lượng bằng ĐÚNG giọng sẽ đọc, khi
+        // cân lại nhịp các cảnh (mode Script → Video).
+        voice: ctx.voice, speech_rate: ctx.speechRate,
       };
       const res = await fetch(`${API_BASE}/api/generate-script`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -74,6 +80,17 @@ export default function SettingsPanel() {
       }
       const data = await res.json();
       ctx.setScenes(data.scenes || []);
+      // Backend đã tự cân lại nhịp: nói cho user biết vì số cảnh có thể khác con số họ
+      // chọn — im lặng đổi thì trông như lỗi.
+      if (data.rebalance) {
+        const { before, after } = data.rebalance;
+        ctx.setScriptNotice(
+          `Đã tự cân lại nhịp: ${before.scenes} → ${after.scenes} cảnh, ` +
+          `cảnh dài nhất ${before.longest}s → ${after.longest}s. Lời thoại giữ nguyên từng chữ.`,
+        );
+      } else {
+        ctx.setScriptNotice('');
+      }
       if (data.estimated_duration_s !== undefined) {
         ctx.setEstimatedDurationS(data.estimated_duration_s);
       }

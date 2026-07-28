@@ -71,6 +71,9 @@ const INITIAL_STATE = {
   videoUrl: null,
   srtUrl: null,
   errorMsg: '',
+  // Thông báo KHÔNG phải lỗi về kịch bản vừa sinh — vd "đã cân lại nhịp các cảnh".
+  // Tách khỏi errorMsg vì đây là việc bình thường đã làm xong, không phải sự cố.
+  scriptNotice: '',
   activeJobId: null,
 };
 

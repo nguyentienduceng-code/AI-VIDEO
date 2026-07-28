@@ -62,7 +62,7 @@ echo  [2/3] Khoi dong Backend (FastAPI :8000)...
 echo.
 
 :: Khởi Backend trong cửa sổ mới
-start "AI-Backend" cmd /k "cd /d C:\dev\AI-VIDEO-MAKER\backend && .\venv\Scripts\activate && uvicorn main:app --reload --port 8000"
+start "AI-Backend" cmd /k "cd /d C:\dev\AI-VIDEO-MAKER\backend && .\venv\Scripts\activate && uvicorn main:app --port 8000"
 
 :: Chờ 2 giây để Backend khởi động trước
 timeout /t 2 /nobreak > nul

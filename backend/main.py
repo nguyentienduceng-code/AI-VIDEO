@@ -30,9 +30,10 @@ os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe
 
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # PHẢI chạy trước dòng log tiếng Việt đầu tiên: khi stdout bị chuyển hướng (chạy như
 # service, ghi ra file), Windows mở nó bằng cp1252/strict và mọi dấu tiếng Việt sẽ
@@ -176,6 +177,11 @@ class GenerateScriptRequest(BaseModel):
     sync_characters: bool = False
     content_niche: Optional[str] = None  # book|finance|history|psychology|truecrime|travel — palette hiệu ứng chính xác
     variation_seed: int = 0
+    # Cân lại nhịp sau khi Gemini chia cảnh (chỉ áp dụng cho mode script_video).
+    # Đặt False nếu muốn giữ ĐÚNG cách chia của Gemini để đối chiếu.
+    auto_balance_scenes: bool = True
+    voice: Optional[str] = None      # để ước lượng thời lượng đúng giọng sẽ dùng
+    speech_rate: str = "+0%"
 
 class RenderVideoRequest(BaseModel):
     scenes: List[dict]
@@ -359,7 +365,12 @@ def _pick_visual_source(req, scene: dict, scene_index: int) -> str:
     return "ai_image"
 
 
-def _estimate_scene_duration(text: str) -> float:
+# Biên an toàn khi chọn clip stock: thà lấy clip dài dư rồi cắt, còn hơn lấy clip
+# thiếu vài giây và phải ping-pong (chạy tiến rồi lùi) thấy rõ trên màn hình.
+_STOCK_CLIP_SAFETY = 1.15
+
+
+def _estimate_scene_duration(text: str, voice: str | None = None, rate: str | None = None) -> float:
     """
     Ước lượng thời lượng cảnh từ số từ, dùng LÚC CHỌN clip stock.
 
@@ -367,10 +378,15 @@ def _estimate_scene_duration(text: str) -> float:
     lượng thật từ word_boundaries CHƯA có khi ta phải quyết định tải clip nào. Con số
     này chỉ dùng để chấm điểm "clip có đủ dài không", còn việc cắt/ping-pong về đúng
     thời lượng thật thì làm sau, ở bước normalize_stock_clip.
-    Giọng Việt Edge-TTS đọc ~2.6 từ/giây.
+
+    LỖI CŨ: hàm này có công thức riêng `words * 0.38 + 0.7` (2.6 từ/giây) trong khi
+    gemini_service ước lượng bằng 3.0 từ/giây và cảnh báo trên UI ngầm định 3.0 — ba
+    thước đo lệch nhau tới 15% cho cùng một kịch bản. Giờ tất cả gọi chung
+    duration_model, và con số đó tự hiệu chỉnh theo giọng người dùng thật sự đang dùng.
     """
-    words = len((text or "").split())
-    return max(3.0, words * 0.38 + 0.7)
+    from services import duration_model
+
+    return max(3.0, duration_model.estimate_duration(text, voice, rate) * _STOCK_CLIP_SAFETY)
 
 
 def _compose_speech_rate(user_rate: str, scene_modifier: str) -> str:
@@ -398,6 +414,9 @@ OVERRIDE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 OVERRIDE_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
 OVERRIDE_ALLOWED_EXTS = OVERRIDE_IMAGE_EXTS | OVERRIDE_VIDEO_EXTS
 MAX_OVERRIDE_BYTES = 200 * 1024 * 1024   # 200MB — đủ cho một clip quay bằng điện thoại
+# Ảnh thay cho MỘT cảnh thì không cần rộng rãi như video: 30MB đã dư cho ảnh máy ảnh
+# full-frame chưa nén. Xem /api/projects/{job_id}/scenes/{i}/upload-image.
+MAX_SCENE_IMAGE_BYTES = 30 * 1024 * 1024
 
 
 def _stock_cache_params(image_prompt: str, aspect_ratio: str) -> dict:
@@ -490,6 +509,16 @@ async def _update_job(job_id: str, **kwargs):
 # ---------------------------------------------------------------------------
 # Pipeline chạy nền — đa chế độ
 # ---------------------------------------------------------------------------
+# Nhịp hỏi thăm render worker qua file status.
+RENDER_POLL_INTERVAL = 2
+
+# Worker còn sống nhưng bao lâu không ghi thêm dòng nào thì coi là treo.
+# 15 phút: bước nặng nhất (FFmpeg mastering + burn phụ đề của video dài) có thể chạy
+# liền vài phút mà không phát tiến độ, nên ngưỡng phải rộng hơn hẳn khoảng đó —
+# báo treo nhầm giữa lúc máy vẫn đang làm việc còn tệ hơn là báo muộn.
+RENDER_STALL_TIMEOUT = 900
+
+
 async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
     # Gắn job_id vào MỌI dòng log sinh ra từ đây trở đi — kể cả log của services/
     # (tts_service, video_service, image_router...). Không có nhãn này thì hai job
@@ -500,6 +529,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
     job_dir_images = os.path.join(IMAGES_DIR, job_id)
     os.makedirs(job_dir_audio, exist_ok=True)
     os.makedirs(job_dir_images, exist_ok=True)
+
+    # Render kết thúc trong lỗi hay không — quyết định có được xoá ảnh/giọng đọc đã sinh
+    # ở cuối hàm không. Xem vòng poll worker và khối dọn dẹp cuối hàm.
+    render_failed = False
 
     mode = req.mode
     api_key = req.gemini_api_key
@@ -600,6 +633,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
 
             img_prompt = scene.get("image_prompt", "")
 
+            # Tốc độ đọc CUỐI CÙNG của cảnh này, tính MỘT LẦN ở đây thay vì trong _do_tts:
+            # _do_visuals chạy song song cũng cần đúng con số đó để ước lượng thời lượng
+            # (chọn clip stock đủ dài) — hai closure phải nhìn thấy cùng một giá trị.
+            scene_rate = _compose_speech_rate(speech_rate, scene.get("speech_rate_modifier", "0%"))
+
             async def _do_tts():
                 # Chế độ đọc liền mạch: giọng đã sinh xong trước vòng lặp. Không có file audio
                 # riêng cho cảnh (audio_path=None) — cả bài dùng chung master_audio_path.
@@ -628,9 +666,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     async def _voice_warning(msg: str):
                         await _update_job(job_id, message=msg)
                     
-                    dynamic_rate = scene.get("speech_rate_modifier", "0%")
-                    final_rate = _compose_speech_rate(speech_rate, dynamic_rate)
-                    
+                    final_rate = scene_rate
+
                     try:
                         dur, wbs = await tts_service.synthesize_speech(
                             tts_text, a_path, voice=voice, rate=final_rate, pitch=req.speech_pitch, mode=mode,
@@ -638,6 +675,12 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             warning_callback=_voice_warning,
                             use_breathing=req.use_breathing
                         )
+                        # Số đo THẬT — kéo dần ước lượng của toàn hệ thống về đúng tốc độ
+                        # đọc của chính giọng này. Trước đây dur chỉ dùng dựng timeline
+                        # rồi bỏ, nên hệ thống mãi ước lượng bằng hằng số gõ tay.
+                        from services import duration_model
+                        duration_model.record_observation(tts_text, dur, voice=voice, rate=final_rate)
+
                         if os.path.exists(a_path) and os.path.getsize(a_path) > 0:
                             return dur, wbs, a_path
                         if os.path.exists(wav_alt) and os.path.getsize(wav_alt) > 0:
@@ -720,7 +763,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             try:
                                 return await _fetch_stock_video_cached(
                                     img_prompt, final_img_path, imagen_aspect, pexels_key,
-                                    needed_duration=_estimate_scene_duration(text),
+                                    needed_duration=_estimate_scene_duration(text, voice, scene_rate),
                                     used_ids=stock_used_ids, api_key=api_key,
                                 )
                             except Exception as pex_v_err:
@@ -740,7 +783,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         try:
                             return await _fetch_stock_video_cached(
                                 img_prompt, final_img_path, imagen_aspect, pexels_key,
-                                needed_duration=_estimate_scene_duration(text),
+                                needed_duration=_estimate_scene_duration(text, voice, scene_rate),
                                 used_ids=stock_used_ids, api_key=api_key,
                             )
                         except Exception as pexels_err:
@@ -770,7 +813,6 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
 
             # Checkpoint tự động lưu project state sau từng scene
             from services import project_service
-            import time
             project_service.save_project_state(job_id, {
                 "job_id": job_id,
                 "title": getattr(req, "topic", None) or f"Dự án {job_id[:8]}",
@@ -1033,23 +1075,81 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             )
         else:
             # Worker đang chạy → poll file status và broadcast qua WebSocket
+            from services.render_worker import cleanup_status, is_render_active
+
+            # LỖI CŨ: mọi đường thoát khỏi vòng poll đều là `break` bình thường, nên khối
+            # `except` bên dưới KHÔNG chạy và hàm rơi thẳng xuống phần dọn asset ở cuối —
+            # xoá sạch ảnh + giọng đọc kể cả khi worker báo lỗi. Ngược hẳn ý đồ đã ghi
+            # trong chính khối except ("giữ lại để resume, khỏi tốn API chạy lại").
+            # Người dùng bấm render lại sau một lần lỗi là tốn quota Gemini/TTS lần nữa.
             while True:
-                await asyncio.sleep(2)
+                await asyncio.sleep(RENDER_POLL_INTERVAL)
                 ws = read_render_status(job_id)
-                if ws is None:
-                    continue
-                await _update_job(
-                    job_id,
-                    status=ws.get("status", "rendering"),
-                    progress=ws.get("progress", 80),
-                    message=ws.get("message", "Đang render..."),
-                    video_url=ws.get("video_url"),
-                    srt_url=ws.get("srt_url"),
-                    error=ws.get("error"),
-                )
-                if ws.get("status") in ("done", "error"):
-                    from services.render_worker import cleanup_status
+
+                if ws is not None:
+                    await _update_job(
+                        job_id,
+                        status=ws.get("status", "rendering"),
+                        progress=ws.get("progress", 80),
+                        message=ws.get("message", "Đang render..."),
+                        video_url=ws.get("video_url"),
+                        srt_url=ws.get("srt_url"),
+                        error=ws.get("error"),
+                    )
+                    if ws.get("status") in ("done", "error"):
+                        render_failed = ws.get("status") == "error"
+                        cleanup_status(job_id)
+                        break
+
+                # ── Hai lưới an toàn cho trường hợp worker KHÔNG kịp ghi trạng thái cuối ──
+                #
+                # LỖI CŨ: vòng lặp này chỉ thoát khi đọc được status "done"/"error". Nhưng
+                # spawn_render() đã ghi sẵn status "rendering" TRƯỚC khi start process, nên
+                # read_render_status không bao giờ trả None nữa. Nếu worker bị giết cứng —
+                # MemoryError của MoviePy, Windows kill, PM2 max_memory_restart — thì khối
+                # `except` trong _worker_main KHÔNG chạy, file status đứng nguyên ở
+                # "rendering", và vòng này quay mãi mãi: WebSocket phát "Đang render..." vô
+                # hạn còn người dùng ngồi chờ một job đã chết từ lâu.
+                if not is_render_active(job_id):
+                    logger.error(
+                        "[Render] Worker của job %s đã chết mà không ghi trạng thái cuối.",
+                        job_id,
+                    )
                     cleanup_status(job_id)
+                    await _update_job(
+                        job_id, status="error", progress=0,
+                        error="Render worker dừng đột ngột",
+                        message=(
+                            "❌ Tiến trình render dừng đột ngột (thường là hết RAM khi dựng "
+                            "video dài). Ảnh và giọng đọc đã sinh vẫn được giữ lại — mở dự án "
+                            "và render lại sẽ không tốn thêm quota API. "
+                            "Chi tiết lỗi: backend/logs/render_worker.log"
+                        ),
+                    )
+                    render_failed = True
+                    break
+
+                # Process còn sống nhưng im lặng quá lâu = treo (FFmpeg đợi I/O ổ mạng,
+                # deadlock...). Không tự giết nó, chỉ trả quyền quyết định cho người dùng
+                # thay vì để họ nhìn một thanh tiến trình đứng yên vô thời hạn.
+                last_beat = (ws or {}).get("updated_at", 0)
+                if last_beat and time.time() - last_beat > RENDER_STALL_TIMEOUT:
+                    logger.error(
+                        "[Render] Job %s không nhúc nhích %.0f giây — coi như treo.",
+                        job_id, time.time() - last_beat,
+                    )
+                    await _update_job(
+                        job_id, status="error",
+                        error="Render treo quá lâu",
+                        message=(
+                            f"⚠️ Không có tín hiệu nào từ tiến trình render trong "
+                            f"{RENDER_STALL_TIMEOUT // 60} phút. Nhiều khả năng nó đã treo. "
+                            f"Bấm Huỷ để dừng hẳn, hoặc xem backend/logs/render_worker.log."
+                        ),
+                    )
+                    # KHÔNG dọn asset: worker có thể vẫn đang sống và giữ file mở —
+                    # xoá lúc này vừa mất dữ liệu vừa có thể làm nó chết theo.
+                    render_failed = True
                     break
 
     except Exception as e:
@@ -1064,9 +1164,18 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             cleanup_upload(req.upload_session_id)
         return
 
-    # Chỉ dọn asset tạm khi pipeline thành công.
-    shutil.rmtree(job_dir_audio, ignore_errors=True)
-    shutil.rmtree(job_dir_images, ignore_errors=True)
+    # Chỉ dọn asset tạm khi pipeline THẬT SỰ thành công. Render lỗi thì giữ nguyên ảnh
+    # và giọng đọc để lần render lại nhặt được từ cache, khỏi tốn quota Gemini/TTS —
+    # cùng lý do với khối `except` bên trên. Chúng vẫn được dọn sau 24h bởi
+    # _cleanup_old_outputs(), nên không có nguy cơ tích rác vĩnh viễn.
+    if not render_failed:
+        shutil.rmtree(job_dir_audio, ignore_errors=True)
+        shutil.rmtree(job_dir_images, ignore_errors=True)
+    else:
+        logger.info(
+            "[Render] Job %s lỗi — giữ lại ảnh/giọng đọc trong %s và %s để render lại.",
+            job_id, job_dir_audio, job_dir_images,
+        )
     if req.upload_session_id:
         cleanup_upload(req.upload_session_id)
 
@@ -1156,6 +1265,53 @@ async def cancel_job(job_id: str):
 async def get_quota():
     return quota_service.get_quota()
 
+def _balance_split_scenes(result, req: GenerateScriptRequest):
+    """Cân lại nhịp các cảnh do Gemini chia ra từ kịch bản user dán vào (script_video).
+
+    VÌ SAO CẦN: Gemini chia theo ý nghĩa nội dung chứ không theo đồng hồ, nên thường ra
+    một cảnh 15 giây nằm cạnh một cảnh 1.5 giây. Ở mode này lời thoại là của user và
+    được giữ nguyên văn 100%, nên việc dịch ranh giới cảnh KHÔNG đụng gì tới nội dung —
+    chỉ đổi chỗ ngắt hình. image_prompt của cảnh chi phối được giữ lại (xem
+    scene_balancer._build_scene) nên không tốn thêm một lần gọi Gemini nào.
+
+    CHỈ áp dụng khi thật sự tốt hơn: cách chia của Gemini bám theo mạch kể, đổi nó mà
+    không cải thiện được nhịp thì chỉ tổ làm mất công đạo diễn của nó.
+    """
+    from services import scene_balancer
+
+    scenes = result.get("scenes") if isinstance(result, dict) else result
+    if not scenes or len(scenes) < 2:
+        return result
+
+    try:
+        balanced = scene_balancer.rebalance_scenes(scenes, req.voice, req.speech_rate)
+    except Exception as e:
+        # Cân nhịp là bước làm đẹp thêm — hỏng thì trả nguyên cách chia của Gemini,
+        # tuyệt đối không để user mất cả kịch bản vừa sinh.
+        logger.warning(f"[ScriptSplit] Bỏ qua bước cân nhịp: {e}", exc_info=True)
+        return result
+
+    before, after = balanced["report"]["before"], balanced["report"]["after"]
+    tot_hon = after["off_pace"] < before["off_pace"] or (
+        after["off_pace"] == before["off_pace"] and after["std"] < before["std"] * 0.8
+    )
+    if not tot_hon:
+        logger.info("[ScriptSplit] Cách chia của Gemini đã đủ đều, giữ nguyên.")
+        return result
+
+    logger.info(
+        f"[ScriptSplit] Cân lại nhịp: {before['scenes']} cảnh → {after['scenes']} cảnh, "
+        f"cảnh dài nhất {before['longest']}s → {after['longest']}s, "
+        f"lệch nhịp {before['off_pace']} → {after['off_pace']}."
+    )
+    if isinstance(result, dict):
+        result = dict(result)
+        result["scenes"] = balanced["scenes"]
+        result["rebalance"] = balanced["report"]  # để UI nói cho user biết đã đổi gì
+        return result
+    return balanced["scenes"]
+
+
 @app.post("/api/generate-script")
 async def generate_script(req: GenerateScriptRequest):
     if req.mode not in VALID_MODES:
@@ -1188,6 +1344,8 @@ async def generate_script(req: GenerateScriptRequest):
                 narration_tone=req.narration_tone or "viral",
                 content_niche=req.content_niche,
             )
+            if req.auto_balance_scenes:
+                scenes = _balance_split_scenes(scenes, req)
 
         elif req.mode == "photo_narration":
             if not req.upload_session_id:
@@ -1274,6 +1432,45 @@ async def bgm_list():
 async def voices_list():
     """Trả về danh sách giọng đọc tiếng Việt (gồm cả giọng clone cá nhân)."""
     return {"voices": tts_service.get_available_voices()}
+
+
+class RebalanceRequest(BaseModel):
+    scenes: List[Dict[str, Any]]
+    voice: Optional[str] = None
+    speech_rate: str = "+0%"
+
+
+@app.post("/api/rebalance-scenes")
+async def rebalance_scenes(req: RebalanceRequest):
+    """Chia lại ranh giới cảnh cho đều nhịp, KHÔNG sửa nội dung.
+
+    CHỈ TRẢ VỀ ĐỀ XUẤT — không tự lưu gì. Giao diện dựng preview trước/sau rồi để user
+    quyết định áp dụng hay bỏ. Việc chia lại làm mất một số image_prompt (khi hai cảnh
+    gộp làm một) nên không được phép tự động chạy sau lưng người dùng.
+    """
+    from services import scene_balancer
+
+    if not req.scenes:
+        raise HTTPException(status_code=400, detail="Chưa có cảnh nào để chia lại.")
+
+    result = await asyncio.to_thread(
+        scene_balancer.rebalance_scenes, req.scenes, req.voice, req.speech_rate
+    )
+    return result
+
+
+@app.get("/api/timing-profile")
+async def timing_profile(voice: str = "", rate: str = "+0%"):
+    """Tốc độ đọc (từ/giây) mà backend đang dùng để ước lượng thời lượng.
+
+    Có endpoint này để giao diện KHÔNG phải giữ hằng số riêng: trước đây ScriptEditor
+    tự nhân "12 từ/cảnh" trong khi backend tính bằng con số khác, nên cảnh báo trên màn
+    hình và thời lượng video thật không bao giờ khớp nhau. Giờ UI hỏi đúng nguồn.
+    `is_learned` cho biết con số đã được hiệu chỉnh từ số đo thật hay còn là mặc định.
+    """
+    from services import duration_model
+
+    return duration_model.profile_summary(voice or None, rate)
 
 
 @app.get("/api/tts-health")
@@ -1513,7 +1710,9 @@ async def regenerate_scene_image(job_id: str, scene_idx: int, req: RegenerateSce
     
     scene = scenes[scene_idx]
     prompt = req.new_prompt or scene.get("image_prompt", "")
-    job_dir_images = os.path.join(IMAGES_DIR, job_id)
+    # load_project_state() ở trên đã lọc job_id, nhưng nó ghép vào PROJECTS_DIR còn đây
+    # là IMAGES_DIR — một gốc thư mục khác, phải tự lọc lại chứ không thừa hưởng được.
+    job_dir_images = os.path.join(IMAGES_DIR, project_service.safe_job_id(job_id))
     os.makedirs(job_dir_images, exist_ok=True)
     img_path = os.path.join(job_dir_images, f"scene_{scene_idx+1}.png")
     
@@ -1545,14 +1744,50 @@ async def upload_scene_image(job_id: str, scene_idx: int, file: UploadFile = Fil
     if scene_idx < 0 or scene_idx >= len(scenes):
         raise HTTPException(status_code=400, detail="Chỉ số phân cảnh không hợp lệ.")
 
-    job_dir_images = os.path.join(IMAGES_DIR, job_id)
+    # Cùng bộ chốt chặn với /api/scene-asset. Trước đây endpoint này KHÔNG kiểm tra gì:
+    # đọc trọn file vào RAM rồi ghi thẳng thành scene_N.png — một file 4GB làm sập
+    # backend, còn một file không phải ảnh thì lọt tới tận FFmpeg mới nổ, giữa lúc render.
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in OVERRIDE_IMAGE_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng {ext or '(không rõ)'} không hỗ trợ. Chấp nhận: "
+                   + ", ".join(sorted(OVERRIDE_IMAGE_EXTS)),
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File rỗng.")
+    if len(content) > MAX_SCENE_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ảnh nặng {len(content) / 1024 / 1024:.0f}MB, vượt giới hạn "
+                   f"{MAX_SCENE_IMAGE_BYTES // 1024 // 1024}MB.",
+        )
+
+    job_dir_images = os.path.join(IMAGES_DIR, project_service.safe_job_id(job_id))
     os.makedirs(job_dir_images, exist_ok=True)
     img_path = os.path.join(job_dir_images, f"scene_{scene_idx+1}.png")
-    
-    content = await file.read()
-    with open(img_path, "wb") as f:
-        f.write(content)
-        
+
+    # Giải mã rồi ghi lại thành PNG THẬT, không đổ nguyên byte người dùng gửi lên.
+    # Hai việc cùng lúc: chặn file không phải ảnh (Pillow ném lỗi ngay tại đây), và bảo
+    # đảm nội dung khớp với cái tên .png mà toàn bộ downstream đang trông đợi — pipeline
+    # tìm đúng "scene_N.png" nên không thể giữ đuôi gốc của file tải lên.
+    def _write_png():
+        import io
+        from PIL import Image
+
+        with Image.open(io.BytesIO(content)) as img:
+            img.load()
+            # PNG không nhận CMYK (ảnh JPEG xuất từ phần mềm in ấn) — quy về RGB trước.
+            if img.mode not in ("RGB", "RGBA", "L", "P"):
+                img = img.convert("RGB")
+            img.save(img_path, format="PNG")
+
+    try:
+        await asyncio.to_thread(_write_png)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"File không phải ảnh hợp lệ: {e}")
+
     project_service.update_scene_asset(job_id, scene_idx, image_path=img_path)
     return {"message": f"Đã cập nhật ảnh tùy chỉnh cho cảnh {scene_idx+1}.", "image_path": img_path}
 

@@ -759,8 +759,9 @@ def render_final_video(
         if sfx_name and use_sfx:
             sfx_path = os.path.join(SFX_DIR, f"{sfx_name}.wav")
             if os.path.isfile(sfx_path):
-                # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc
-                audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN, 0.0))
+                # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc, kết hợp vol riêng của cảnh
+                scene_vol_ratio = asset.get("sfxVolume", 100) / 100.0
+                audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN * scene_vol_ratio, 0.0))
 
         final_duration = max(final_duration, start_time + dur)
 

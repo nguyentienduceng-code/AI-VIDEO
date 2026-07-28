@@ -1,14 +1,34 @@
 import os
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
 
 from config import PROJECTS_DIR
 
+# job_id đi thẳng từ URL (/api/projects/{job_id}) vào os.path.join. Không lọc thì
+# "..%5C..%5C..%5Cevil" — Starlette giải mã %5C thành "\", dấu phân cách hợp lệ trên
+# Windows — trỏ ra ngoài PROJECTS_DIR, và endpoint upload-image sẽ GHI file ra đó.
+# Mọi job_id thật đều là uuid4, nên tập ký tự này rộng hơn nhu cầu thực tế rất nhiều.
+_SAFE_JOB_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def safe_job_id(job_id: str) -> str:
+    """Chuẩn hoá job_id trước khi ghép vào bất kỳ đường dẫn nào. Ném ValueError nếu bẩn.
+
+    Dùng CẢ ở main.py cho os.path.join(IMAGES_DIR, job_id) — nơi cùng một giá trị
+    được ghép vào một gốc thư mục khác.
+    """
+    candidate = os.path.basename(str(job_id or "").strip())
+    if candidate in ("", ".", "..") or not _SAFE_JOB_ID.fullmatch(candidate):
+        raise ValueError(f"job_id không hợp lệ: {job_id!r}")
+    return candidate
+
+
 def get_project_file_path(job_id: str) -> str:
-    return os.path.join(PROJECTS_DIR, f"{job_id}.json")
+    return os.path.join(PROJECTS_DIR, f"{safe_job_id(job_id)}.json")
 
 def save_project_state(job_id: str, data: Dict[str, Any]) -> str:
     """Lưu toàn bộ trạng thái dự án vào tệp JSON checkpoint."""
@@ -23,8 +43,14 @@ def save_project_state(job_id: str, data: Dict[str, Any]) -> str:
         return ""
 
 def load_project_state(job_id: str) -> Optional[Dict[str, Any]]:
-    """Tải dữ liệu dự án từ tệp JSON checkpoint."""
-    file_path = get_project_file_path(job_id)
+    """Tải dữ liệu dự án từ tệp JSON checkpoint. Trả None nếu không có / job_id bẩn."""
+    try:
+        file_path = get_project_file_path(job_id)
+    except ValueError as e:
+        # "Không tìm thấy" là câu trả lời đúng cho một id không hợp lệ — mọi endpoint
+        # gọi hàm này đều đã dịch None thành 404, không cần nhánh xử lý riêng.
+        logger.warning("[Project] %s", e)
+        return None
     if not os.path.exists(file_path):
         return None
     try:

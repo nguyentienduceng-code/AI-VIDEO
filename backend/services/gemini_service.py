@@ -223,6 +223,36 @@ IMAGE_PROMPT_REVISION = "2026-07-26-scene-word-budget"
 # Luật cũ ghi "15-20 từ ≈ 3-5 giây" là BẤT KHẢ THI về số học — 18 từ cần ~6 giây, không
 # thể 3-5 giây. Chính sự sai lệch đó khiến cảnh dài gấp rưỡi so với ý đồ. Muốn nhịp
 # 3-5 giây/cảnh thật thì ngân sách phải là ~12 từ.
+# GIỮ tên cũ cho tương thích, nhưng giá trị giờ lấy từ duration_model — nơi con số này
+# tự hiệu chỉnh theo số đo thật của từng giọng. Đây từng là một trong BA hằng số ước
+# lượng lệch nhau nằm rải rác trong hệ thống (xem docstring duration_model.py).
+def _default_wps() -> float:
+    from services import duration_model
+
+    return duration_model.words_per_second()
+
+
+# Mỗi lần chuyển cảnh tốn thêm ~0.5s (crossfade + nhịp nghỉ giữa hai câu).
+SCENE_TRANSITION_OVERHEAD = 0.5
+
+
+def _estimate_script_duration(scenes) -> float:
+    """Thời lượng dự kiến của TOÀN kịch bản, để hiển thị cho user trước khi render.
+
+    Tính qua duration_model nên tự khớp với tốc độ đọc thật đã học được, và tính cả các
+    thẻ <break/> mà biên kịch chèn vào — công thức cũ `total_words / 3.0` bỏ qua cả hai,
+    nên với kịch bản dùng nhiều nhịp nghỉ thì ước lượng hụt tới vài giây.
+    """
+    from services import duration_model
+
+    total = 0.0
+    for s in scenes:
+        text = getattr(s, "text", "") or ""
+        pause_ms = getattr(s, "pause_after_ms", 0) or 0
+        total += duration_model.estimate_duration(text, pause_after_ms=pause_ms)
+    return round(total + len(scenes) * SCENE_TRANSITION_OVERHEAD, 1)
+
+
 VIETNAMESE_WORDS_PER_SECOND = 3.0
 WORDS_PER_SCENE_TARGET = 12   # ≈ 4 giây/cảnh
 
@@ -622,8 +652,11 @@ async def generate_script(
     # Ngân sách từ MỖI CẢNH suy ra từ (tổng số từ của thời lượng ÷ số cảnh thực tế).
     # Con số này thay cho luật cứng "15-20 từ" trước đây — xem scene_word_budget().
     _w_lo, _w_hi = scene_word_budget(target_duration, num_scenes)
-    _sec_lo = _w_lo / (VIETNAMESE_WORDS_PER_SECOND + 0.2)
-    _sec_hi = _w_hi / (VIETNAMESE_WORDS_PER_SECOND - 0.4)
+    # Lấy tốc độ ĐÃ HỌC thay vì hằng số: nói với Gemini "12 từ ≈ 4 giây" trong khi giọng
+    # thật đọc 2.7 từ/giây (≈4.4 giây) là tự đẩy kịch bản lố ngay từ khâu sinh chữ.
+    _wps = _default_wps()
+    _sec_lo = _w_lo / (_wps + 0.2)
+    _sec_hi = _w_hi / max(0.5, _wps - 0.4)
     scene_word_rule = (
         f"Mỗi phân cảnh tuyệt đối KHÔNG ĐƯỢC VƯỢT QUÁ {_w_hi} từ "
         f"(lý tưởng {_w_lo}-{_w_hi} từ, tương đương {_sec_lo:.1f}-{_sec_hi:.1f} giây đọc)."
@@ -799,8 +832,7 @@ async def generate_script(
             scenes_with_quotes = sum(1 for s in final_scenes if s.source_quote and s.source_quote.strip())
             source_coverage = scenes_with_quotes / max(1, len(final_scenes))
 
-            total_words = sum(len(s.text.split()) for s in final_scenes if s.text)
-            est_duration = total_words / 3.0 + len(final_scenes) * 0.5 # 3.0 WPS + 0.5s per transition
+            est_duration = _estimate_script_duration(final_scenes)
             
             final_result = ScriptResponse(
                 estimated_duration_s=round(est_duration, 1),
@@ -847,7 +879,7 @@ async def generate_script_from_images(
     # ở scene_word_budget() — luật cứng đó từng đá nhau với luật tổng số từ, và Gemini
     # chọn phá luật số từ, làm cảnh dài 8+ giây.
     _w_hi = WORDS_PER_SCENE_TARGET + 3
-    _sec_hi = _w_hi / VIETNAMESE_WORDS_PER_SECOND
+    _sec_hi = _w_hi / _default_wps()
 
     system_prompt = (
         "Bạn là biên kịch video chuyên nghiệp. "
@@ -1020,8 +1052,7 @@ async def split_script_to_scenes(
                 visual_effect=mech['visual_effect']
             ))
             
-        total_words = sum(len(s.text.split()) for s in final_scenes if s.text)
-        est_duration = total_words / 3.0 + len(final_scenes) * 0.5 # 3.0 WPS + 0.5s per transition
+        est_duration = _estimate_script_duration(final_scenes)
         final_result = ScriptResponse(
             estimated_duration_s=round(est_duration, 1),
             sentiment=parsed.sentiment,

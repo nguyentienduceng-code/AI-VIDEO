@@ -10,12 +10,22 @@ const CACHE_PROBE_DELAY_MS = 600;
 
 const BREAK_SNIPPET = '<break time="1s"/>';
 
-// Đếm từ để cảnh báo kịch bản lố — khớp với ngân sách backend đang nhắm (xem comment
-// DURATION_OPTIONS trong constants.js: "~12 từ/cảnh ≈ 4 giây/cảnh"). Không có
-// DURATION_CONFIG dạng dict trong constants.js như tưởng — DURATION_OPTIONS là mảng
-// {value, label, scenes}, dùng đúng field `scenes` có sẵn để suy ra ngân sách từ.
-const WORDS_PER_SCENE_TARGET = 12;
+// Tốc độ đọc dự phòng, CHỈ dùng khi chưa hỏi được backend. Con số thật lấy từ
+// /api/timing-profile — nó tự hiệu chỉnh theo giọng người dùng đang dùng.
+//
+// LỖI CŨ: file này giữ hằng số riêng "12 từ/cảnh" và cảnh báo dựa trên SỐ TỪ, trong
+// khi backend ước lượng bằng 2.6 và 3.0 từ/giây ở hai chỗ khác nhau. Ba thước đo lệch
+// nhau tới 15% nên cảnh báo trên màn hình không bao giờ khớp thời lượng video thật —
+// user rút gọn kịch bản theo cảnh báo mà video vẫn dài quá, hoặc ngược lại.
+const FALLBACK_WPS = 3.0;
+
+// Nhịp xem: một ảnh đứng yên quá 6.5 giây là ì, dưới 2.5 giây là chớp qua chưa kịp nhìn.
+const SHOT_MIN_S = 2.5;
+const SHOT_MAX_S = 6.5;
+const SCENE_TRANSITION_OVERHEAD = 0.5;  // khớp gemini_service.SCENE_TRANSITION_OVERHEAD
+
 const BREAK_TAG_RE = /<break[^>]*>/gi;
+const BREAK_TIME_RE = /<break[^>]*time\s*=\s*"([\d.]+)\s*(ms|s)"[^>]*>/gi;
 
 // Bỏ thẻ <break time="..."/> trước khi đếm — đây là điều khiển nhịp đọc, không phải
 // lời thoại thật, đếm cả vào sẽ làm số từ ảo tăng so với những gì người xem thực nghe.
@@ -23,6 +33,42 @@ const countWords = (text) => {
   const cleaned = (text || '').replace(BREAK_TAG_RE, ' ').trim();
   return cleaned ? cleaned.split(/\s+/).length : 0;
 };
+
+// Khoảng lặng do thẻ <break/> tạo ra — có thật trong file audio nên phải cộng vào thời
+// lượng, nhưng không phải thời gian đọc chữ (khớp duration_model.break_seconds).
+const breakSeconds = (text) => {
+  let total = 0;
+  for (const [, value, unit] of (text || '').matchAll(BREAK_TIME_RE)) {
+    const v = parseFloat(value);
+    if (!Number.isNaN(v)) total += unit.toLowerCase() === 'ms' ? v / 1000 : v;
+  }
+  return total;
+};
+
+// Thời lượng dự kiến của một cảnh, cùng công thức với duration_model.estimate_duration.
+const estimateSceneSeconds = (scene, wps) => {
+  const words = countWords(scene?.text);
+  const speech = words > 0 ? words / (wps || FALLBACK_WPS) : 0;
+  return speech + breakSeconds(scene?.text) + (scene?.pause_after_ms || 0) / 1000;
+};
+
+// Nhãn thời lượng cạnh mỗi cảnh: xanh = nhịp đẹp, vàng = quá ngắn, đỏ = quá dài.
+function SceneTiming({ seconds }) {
+  if (!seconds) return null;
+  const tooLong = seconds > SHOT_MAX_S;
+  const tooShort = seconds < SHOT_MIN_S;
+  const color = tooLong ? 'var(--red, #ef4444)' : tooShort ? 'var(--amber, #f59e0b)' : 'var(--text-dim, #94a3b8)';
+  const title = tooLong
+    ? `Cảnh dài ~${seconds.toFixed(1)}s. Một ảnh đứng yên quá ${SHOT_MAX_S}s khiến nhịp video ì — cân nhắc tách bớt câu sang cảnh mới.`
+    : tooShort
+      ? `Cảnh chỉ ~${seconds.toFixed(1)}s. Ảnh chớp qua nhanh hơn ${SHOT_MIN_S}s thì người xem chưa kịp nhìn — cân nhắc gộp với cảnh liền kề.`
+      : `Ước lượng ~${seconds.toFixed(1)}s — nhịp tốt.`;
+  return (
+    <span style={{ color, fontSize: 11, fontWeight: 600 }} title={title}>
+      ~{seconds.toFixed(1)}s
+    </span>
+  );
+}
 
 export default function ScriptEditor() {
   const ctx = useAppStore(useShallow((s) => ({
@@ -45,8 +91,14 @@ export default function ScriptEditor() {
     hookText: s.hookText, setHookText: s.setHookText,
     preferStockVideo: s.preferStockVideo, visualSource: s.visualSource,
     useSinglePassNarration: s.useSinglePassNarration, hookReelSfx: s.hookReelSfx,
+    // LỖI CŨ: payload render đọc ctx.hookSfxVolume nhưng dòng này thiếu nó → undefined
+    // / 100 = NaN → JSON.stringify biến thành null → Pydantic từ chối, MỌI lần bấm
+    // Render trả 422. Thanh trượt Hook SFX có ba mắt xích và đã đứt ở cả ba: model,
+    // render_kwargs, và ngay đây.
+    hookSfxVolume: s.hookSfxVolume,
     subscribeToJob: s.subscribeToJob, stopAllAudio: s.stopAllAudio,
     estimatedDurationS: s.estimatedDurationS, setEstimatedDurationS: s.setEstimatedDurationS,
+    scriptNotice: s.scriptNotice, setScriptNotice: s.setScriptNotice,
   })));
 
   // Trạng thái bộ nhớ đệm từng cảnh: null = chưa biết, [] = mảng theo chỉ số cảnh.
@@ -137,22 +189,49 @@ export default function ScriptEditor() {
       ctx.ratio, ctx.style, ctx.negativePrompt, ctx.activeMode, ctx.visualSource,
       ctx.preferStockVideo, ctx.useVeo]);
 
-  // ── Cảnh báo kịch bản lố từ ──────────────────────────────────────────────
-  // Prompt Gemini có giới hạn số từ/cảnh nhưng LLM thỉnh thoảng vẫn phá lệ — kịch bản
-  // dài hơn ngân sách khiến TTS phải đọc nhanh hơn tốc độ tự nhiên hoặc video kéo dài
-  // quá thời lượng mục tiêu user đã chọn. Không chặn render (LLM đôi khi cố ý viết dài
-  // hơn ở cảnh cao trào), chỉ cảnh báo để user tự cân nhắc rút gọn.
-  const wordBudget = useMemo(() => {
-    const totalWords = ctx.scenes.reduce((sum, s) => sum + countWords(s.text), 0);
+  // ── Tốc độ đọc thật, hỏi thẳng backend ───────────────────────────────────
+  // Không giữ hằng số riêng ở đây nữa: backend tự hiệu chỉnh con số này theo số đo
+  // thật của từng giọng sau mỗi lần render, nên hỏi lại mỗi khi user đổi giọng/tốc độ.
+  const [timing, setTiming] = useState({ wps: FALLBACK_WPS, isLearned: false });
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ voice: ctx.voice || '', rate: ctx.speechRate || '+0%' });
+    fetch(`${API_BASE}/api/timing-profile?${params}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.words_per_second > 0) {
+          setTiming({ wps: d.words_per_second, isLearned: Boolean(d.is_learned) });
+        }
+      })
+      .catch(() => { /* backend chưa chạy: dùng FALLBACK_WPS, không làm phiền user */ });
+    return () => { cancelled = true; };
+  }, [ctx.voice, ctx.speechRate]);
+
+  const sceneSeconds = useMemo(
+    () => ctx.scenes.map((s) => estimateSceneSeconds(s, timing.wps)),
+    [ctx.scenes, timing.wps],
+  );
+
+  // ── Cảnh báo thời lượng ──────────────────────────────────────────────────
+  // Đo bằng GIÂY chứ không bằng số từ. Số từ chỉ là đại lượng trung gian, còn thứ user
+  // thực sự quan tâm — và thứ quyết định video có bị đọc lê thê hay không — là giây.
+  // Không chặn render (LLM đôi khi cố ý viết dài hơn ở cảnh cao trào), chỉ báo để cân nhắc.
+  const durationBudget = useMemo(() => {
+    const speech = sceneSeconds.reduce((sum, s) => sum + s, 0);
+    const total = speech + ctx.scenes.length * SCENE_TRANSITION_OVERHEAD;
     const opt = DURATION_OPTIONS.find((o) => o.value === ctx.targetDuration);
-    const maxWords = opt ? opt.scenes * WORDS_PER_SCENE_TARGET : null;
+    const targetS = opt ? parseFloat(opt.value) : null;
+    const tooLongScenes = sceneSeconds.filter((s) => s > SHOT_MAX_S).length;
     return {
-      totalWords,
-      maxWords,
-      isOver: maxWords != null && totalWords > maxWords,
+      total,
+      targetS,
+      tooLongScenes,
+      // Ngưỡng 15%: dưới mức đó thì chênh lệch nằm trong sai số ước lượng, cảnh báo chỉ gây nhiễu.
+      isOver: targetS != null && total > targetS * 1.15,
+      isUnder: targetS != null && total < targetS * 0.7,
       durationLabel: opt ? opt.label : ctx.targetDuration,
     };
-  }, [ctx.scenes, ctx.targetDuration]);
+  }, [sceneSeconds, ctx.scenes.length, ctx.targetDuration]);
 
   useEffect(() => {
     if (!ctx.scenes.length) { setCacheStatus(null); return; }
@@ -351,6 +430,35 @@ export default function ScriptEditor() {
     }
   };
 
+  // ── Chia lại nhịp ────────────────────────────────────────────────────────
+  // Backend chỉ TRẢ VỀ đề xuất, không tự lưu. Việc gộp hai cảnh làm một khiến một
+  // image_prompt bị bỏ đi, nên phải cho user xem trước và tự quyết định.
+  const [balancing, setBalancing] = useState(false);
+  const [balancePreview, setBalancePreview] = useState(null);
+
+  const requestRebalance = async () => {
+    setBalancing(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/rebalance-scenes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenes: ctx.scenes, voice: ctx.voice, speech_rate: ctx.speechRate }),
+      });
+      if (!res.ok) throw new Error(`Máy chủ trả lỗi ${res.status}`);
+      setBalancePreview(await res.json());
+    } catch (e) {
+      ctx.setErrorMsg(`Không chia lại được nhịp: ${e.message}`);
+    } finally {
+      setBalancing(false);
+    }
+  };
+
+  const applyRebalance = () => {
+    if (!balancePreview?.scenes?.length) return;
+    ctx.setScenes(balancePreview.scenes);
+    setBalancePreview(null);
+  };
+
   // Nguồn hình quyết định cảnh sẽ tốn gì khi tạo mới — hiện trong tooltip để user hiểu
   // vì sao đèn đỏ, thay vì chỉ biết là đỏ.
   const SOURCE_LABEL = {
@@ -403,11 +511,90 @@ export default function ScriptEditor() {
 
       {ctx.errorMsg && <div className="error-box" style={{ marginBottom: 16 }}><AlertTriangle size={16} /> {ctx.errorMsg}</div>}
 
-      {wordBudget.isOver && (
+      {ctx.scriptNotice && (
+        <div
+          className="warning-box"
+          style={{ marginBottom: 16, borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)' }}
+        >
+          <span style={{ flex: 1 }}>{ctx.scriptNotice}</span>
+          <button className="btn-icon" onClick={() => ctx.setScriptNotice('')} title="Đóng thông báo">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {(durationBudget.isOver || durationBudget.isUnder || durationBudget.tooLongScenes > 0) && (
         <div className="warning-box" style={{ marginBottom: 16 }}>
           <AlertTriangle size={16} />
-          Cảnh báo: Kịch bản hiện đang có {wordBudget.totalWords} từ, vượt quá mức tối ưu cho video {wordBudget.durationLabel}
-          {' '}(~{wordBudget.maxWords} từ). Lời thoại có thể bị đọc quá nhanh hoặc làm video bị kéo dài, hãy cân nhắc rút gọn.
+          <span>
+            Kịch bản đọc hết khoảng <strong>{Math.round(durationBudget.total)}s</strong>
+            {durationBudget.targetS != null && <> so với mục tiêu {durationBudget.durationLabel}</>}
+            {durationBudget.isOver && ' — dài hơn đáng kể, cân nhắc rút gọn lời thoại.'}
+            {durationBudget.isUnder && ' — ngắn hơn nhiều, có thể thêm ý cho đủ nhịp.'}
+            {durationBudget.tooLongScenes > 0 && (
+              <> Có <strong>{durationBudget.tooLongScenes}</strong> cảnh vượt {SHOT_MAX_S}s (xem nhãn đỏ ở từng cảnh) — ảnh đứng yên quá lâu làm nhịp video ì.</>
+            )}
+            {!timing.isLearned && (
+              <em style={{ opacity: 0.75 }}> Ước lượng theo tốc độ đọc mặc định {timing.wps} từ/giây; sau vài lần render sẽ tự khớp với giọng bạn dùng.</em>
+            )}
+          </span>
+          <button
+            className="btn-outline"
+            onClick={requestRebalance}
+            disabled={balancing || !ctx.scenes.length}
+            title="Chia lại ranh giới các cảnh cho đều nhịp. KHÔNG sửa một chữ nào trong lời thoại — chỉ di chuyển chỗ ngắt cảnh. Bạn sẽ được xem trước rồi mới quyết định."
+            style={{ marginLeft: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
+            {balancing ? 'Đang tính...' : 'Chia lại nhịp'}
+          </button>
+        </div>
+      )}
+
+      {balancePreview && (
+        <div className="warning-box" style={{ marginBottom: 16, display: 'block', borderColor: 'var(--green, #22c55e)' }}>
+          {(() => {
+            const { before, after, groups, changed } = balancePreview.report;
+            if (!changed) {
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span>Kịch bản đã chia đều rồi — không có gì cần đổi.</span>
+                  <button className="btn-outline" onClick={() => setBalancePreview(null)}>Đóng</button>
+                </div>
+              );
+            }
+            return (
+              <>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Đề xuất chia lại nhịp</div>
+                <table style={{ fontSize: 12, marginBottom: 10, borderSpacing: '14px 2px' }}>
+                  <tbody>
+                    <tr style={{ opacity: 0.7 }}><td /><td>hiện tại</td><td>sau khi chia</td></tr>
+                    <tr><td>Số cảnh</td><td>{before.scenes}</td><td><strong>{after.scenes}</strong></td></tr>
+                    <tr><td>Cảnh dài nhất</td><td>{before.longest}s</td><td><strong>{after.longest}s</strong></td></tr>
+                    <tr><td>Cảnh ngắn nhất</td><td>{before.shortest}s</td><td><strong>{after.shortest}s</strong></td></tr>
+                    <tr><td>Số cảnh lệch nhịp</td><td>{before.off_pace}</td><td><strong>{after.off_pace}</strong></td></tr>
+                  </tbody>
+                </table>
+                <div style={{ maxHeight: 180, overflowY: 'auto', fontSize: 12, marginBottom: 10 }}>
+                  {groups.map((g) => (
+                    <div key={g.scene} style={{ opacity: g.action === 'keep' ? 0.6 : 1 }}>
+                      Cảnh {g.scene}: {g.seconds}s
+                      {g.action === 'merge' && <> — gộp lời của cảnh {g.from_scenes.join(' + ')}</>}
+                      {g.action === 'split' && <> — tách từ cảnh {g.from_scenes[0]}</>}
+                      {g.too_long && <span style={{ color: 'var(--red, #ef4444)' }}> (vẫn dài, câu quá dài không cắt được)</span>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+                  Lời thoại giữ nguyên từng chữ. Nhưng khi hai cảnh gộp làm một, ảnh của cảnh bị gộp
+                  sẽ không còn được dùng — các cảnh đã tự tải hình lên và thẻ trích dẫn thì luôn giữ nguyên.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn-outline" onClick={applyRebalance} style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)', fontWeight: 700 }}>Áp dụng</button>
+                  <button className="btn-outline" onClick={() => setBalancePreview(null)}>Huỷ</button>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -424,6 +611,7 @@ export default function ScriptEditor() {
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, alignItems: 'center', marginLeft: 12 }}>
                   <CacheDot state={status?.audio_cached} kindLabel="Giọng" />
                   <CacheDot state={status?.image_cached} kindLabel="Hình" source={status?.image_source} />
+                  <SceneTiming seconds={sceneSeconds[idx]} />
                 </div>
                 <div className="scene-actions">
                   <button className="btn-icon" onClick={() => moveScene(idx, idx - 1)} disabled={idx === 0} title="Di chuyển lên"><ChevronUp size={14} /></button>
@@ -605,23 +793,48 @@ export default function ScriptEditor() {
                           {TRANSITIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                         </select>
                       </div>
-                      <div style={{ flex: 1, minWidth: 160 }}>
+                      <div style={{ flex: 1, minWidth: 200 }}>
                         <label className="field-label"><Volume2 size={12} style={{ verticalAlign: 'middle' }} /> TIẾNG ĐỘNG (SFX) CẢNH NÀY</label>
-                        <select
-                          className="form-select form-select-sm"
-                          value={scene.sfx || ''}
-                          onChange={e => {
-                            const val = e.target.value;
-                            updateScene(idx, 'sfx', val);
-                            if (val) {
-                              const audio = new Audio(`${API_BASE}/api/preview/sfx/${val}`);
-                              audio.volume = ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5;
-                              audio.play().catch(err => console.error("SFX preview error:", err));
-                            }
-                          }}
-                        >
-                          {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                        </select>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
+                          <select
+                            className="form-select form-select-sm"
+                            value={scene.sfx || ''}
+                            onChange={e => {
+                              const val = e.target.value;
+                              updateScene(idx, 'sfx', val);
+                              if (val) {
+                                const audio = new Audio(`${API_BASE}/api/preview/sfx/${val}`);
+                                const vol = scene.sfxVolume !== undefined ? scene.sfxVolume : 100;
+                                audio.volume = (ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5) * (vol / 100);
+                                audio.play().catch(err => console.error("SFX preview error:", err));
+                              }
+                            }}
+                            style={{ flex: 1, minWidth: 0 }}
+                          >
+                            {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                          </select>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 80, flexShrink: 0 }}>
+                            <span style={{ fontSize: 10, color: 'gray' }}>Vol</span>
+                            <input
+                              type="range"
+                              className="vol-slider"
+                              min="0"
+                              max="200"
+                              value={scene.sfxVolume !== undefined ? scene.sfxVolume : 100}
+                              onChange={e => {
+                                const vol = Number(e.target.value);
+                                updateScene(idx, 'sfxVolume', vol);
+                                if (scene.sfx) {
+                                  const audio = new Audio(`${API_BASE}/api/preview/sfx/${scene.sfx}`);
+                                  audio.volume = (ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5) * (vol / 100);
+                                  audio.play().catch(err => console.error("SFX preview error:", err));
+                                }
+                              }}
+                              style={{ flex: 1, minWidth: 0 }}
+                              title={`Âm lượng SFX cảnh này: ${scene.sfxVolume !== undefined ? scene.sfxVolume : 100}%`}
+                            />
+                          </div>
+                        </div>
                       </div>
                       <div style={{ flex: 1, minWidth: 200 }}>
                         <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

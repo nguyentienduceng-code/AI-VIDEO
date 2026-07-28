@@ -124,6 +124,11 @@ def test_bien_gia_tri_hop_le_duoc_chan_o_tang_api():
 
 
 if __name__ == "__main__":
+    # Chạy trực tiếp bằng python.exe thì stdout là cp1252 và mọi dòng kết quả có dấu
+    # tiếng Việt sẽ ném UnicodeEncodeError — xem services/log_setup.py.
+    from services.log_setup import force_utf8_streams
+    force_utf8_streams()
+
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
     for fn in tests:
