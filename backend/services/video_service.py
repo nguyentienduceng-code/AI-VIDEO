@@ -145,6 +145,57 @@ HOOK_REEL_SOUNDS = {
     "film_projector": "film_projector.mp3",
 }
 DEFAULT_HOOK_REEL = "tick_wood"
+
+# Hiệu ứng nào được phép dùng tiếng nào — PHẢI khớp HOOK_SFX_OPTIONS bên
+# frontend/src/constants.js (tests/test_hook_sfx.py đối chiếu hai bên).
+#
+# VÌ SAO CẦN DANH SÁCH TRẮNG: các nhánh hiệu ứng đọc thẳng
+# `HOOK_REEL_SOUNDS.get(reel_key, <tên file gõ tay>)`. Fallback chỉ nổ khi reel_key
+# KHÔNG phải khoá hợp lệ — nhưng ca hỏng thật lại là reel_key HỢP LỆ mà SAI hiệu ứng:
+# `hook_reel_sfx` mặc định của model là "tick_wood", nên một request chọn
+# hook_effect="camera_shutter" mà không đụng tới ô âm thanh sẽ phát TIẾNG MÁY XÈNG cho
+# cú bấm máy ảnh. Giao diện có chặn (resolveValidHookSfx) nhưng backend thì không, và
+# preset cũ / gọi API trực tiếp đi thẳng qua.
+HOOK_EFFECT_SOUNDS = {
+    "carousel_quote":    ("tick_wood", "money_counter", "arcade_8bit"),
+    "blackout_question": ("impact_boom",),
+    "typewriter_quote":  ("typewriter_fast",),
+    "breathing_vignette": ("cinematic_swell", "ambient_mystic"),
+    "camera_shutter":    ("camera_shutter",),
+    "cyber_glitch":      ("digital_glitch",),
+    "vintage_film_burn": ("film_projector",),
+}
+
+# Tiếng mở màn/kết thúc là ĐIỂM NHẤN, không phải nền nhạc. Nó được ngân thêm chừng này
+# giây qua mốc kết thúc hiệu ứng (đuôi vang tự nhiên — cắt cụt một cú impact nghe rất
+# giả), nhưng không hơn.
+#
+# LỖI CŨ: chỉ typewriter được cắt, phần còn lại thả tự do. Đo trên chính kho tiếng của
+# dự án: impact_boom 3.1s trên cửa sổ 1.5s, camera_shutter 4.4s trên 2.0s,
+# cinematic_swell 6.0s trên 3.0s, và ambient_mystic 19.7s trên 3.0s — tức gần 17 GIÂY
+# tiếng nền đè lên lời thoại mở đầu, đúng đoạn quan trọng nhất để giữ chân người xem.
+HOOK_SFX_TAIL = 1.0
+
+
+def resolve_effect_sfx(effect: str, reel_key: str) -> str | None:
+    """
+    Đường dẫn tiếng động HỢP LỆ cho `effect`, hoặc None nếu không phát gì.
+
+    Khoá lạ hoặc khoá của hiệu ứng khác đều bị kéo về lựa chọn đầu tiên của chính hiệu
+    ứng đang chạy, thay vì rơi vào một tên file gõ tay. Trả None khi user chọn "none",
+    khi hiệu ứng không có tiếng, hoặc khi file không tồn tại.
+    """
+    allowed = HOOK_EFFECT_SOUNDS.get(effect)
+    if not allowed or not reel_key or reel_key == "none":
+        return None
+    key = reel_key if reel_key in allowed else allowed[0]
+    path = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS[key])
+    return path if os.path.isfile(path) else None
+
+
+def hook_sfx_max_dur(effect_duration: float) -> float:
+    """Trần độ dài cho một tiếng điểm nhấn của hiệu ứng dài `effect_duration` giây."""
+    return max(0.5, float(effect_duration) + HOOK_SFX_TAIL)
 SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)
 
 # QUAN TRỌNG: font PHẢI có glyph tiếng Việt đầy đủ, đặc biệt ư/Ư (U+01B0/01AF)
@@ -747,15 +798,11 @@ def render_final_video(
                 
                 # Audio cho carousel_quote
                 sfx_dir = SFX_DIR
-                reel_key = kwargs.get("hook_reel_sfx") or DEFAULT_HOOK_REEL
-                reel_file = HOOK_REEL_SOUNDS.get(reel_key, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
-                reel = os.path.join(sfx_dir, reel_file)
-                if not os.path.isfile(reel):
-                    reel = os.path.join(sfx_dir, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
+                reel = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx") or DEFAULT_HOOK_REEL)
                 ding = os.path.join(sfx_dir, "ding.wav")
 
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(reel):
+                if reel:
                     audio_placements.append((reel, 0.0, min(1.0, effective_volume * 1.2), 0.0, HOOK_NARRATION_LEAD))
                 if os.path.isfile(ding):
                     audio_placements.append((ding, SLOT_DURATION, min(1.0, effective_volume * 0.9), 0.0))
@@ -768,12 +815,15 @@ def render_final_video(
                 # `kwargs`, dùng ở nhánh carousel_quote phía trên) — NameError 100% mỗi
                 # khi chọn hiệu ứng này, bị try/except bên dưới nuốt lặng lẽ, hook mất
                 # trắng không báo lỗi. Verify bằng cách chạy lại đúng dòng này độc lập.
-                reel_key = kwargs.get("hook_reel_sfx", "impact_boom")
-                impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "impact_boom.mp3"))
+                impact_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "impact_boom"))
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(impact_sfx):
-                    # Tăng mạnh âm thanh impact_boom
-                    audio_placements.append((impact_sfx, 0.0, min(2.0, effective_volume * 3.0), 0.0))
+                if impact_sfx:
+                    # Tăng mạnh âm thanh impact_boom. Chặn đuôi: file dài 3.1s trên cửa
+                    # sổ 1.5s, thả tự do là cú nổ đè lên câu thoại đầu tiên.
+                    audio_placements.append((
+                        impact_sfx, 0.0, min(2.0, effective_volume * 3.0), 0.0,
+                        hook_sfx_max_dur(HOOK_EFFECTS[hook_type]["duration"]),
+                    ))
 
             elif hook_type == "typewriter_quote":
                 hook_dur = resolve_hook_timing(hook_type, hook_text)["duration"]
@@ -781,11 +831,10 @@ def render_final_video(
                     hook_text, video_width, video_height, hook_dur, cover_img
                 )
                 
-                reel_key = kwargs.get("hook_reel_sfx", "typewriter_fast")
-                typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "typewriter_fast.mp3"))
+                typewriter_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "typewriter_fast"))
                 effective_volume = hook_sfx_volume
-                
-                if os.path.isfile(typewriter_sfx):
+
+                if typewriter_sfx:
                     # Cắt độ dài vừa khít với thời gian chữ chạy xong (85% của hook_dur)
                     audio_placements.append((typewriter_sfx, 0.0, min(1.2, effective_volume * 0.6), 0.0, hook_dur * 0.85))
                 
@@ -805,42 +854,56 @@ def render_final_video(
                 hook_clip_overlay = build_breathing_vignette_hook(
                     cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
                 )
-                reel_key = kwargs.get("hook_reel_sfx", "cinematic_swell")
-                swell_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "cinematic_swell.mp3"))
+                swell_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "cinematic_swell"))
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(swell_sfx):
-                    audio_placements.append((swell_sfx, 0.0, min(1.0, effective_volume * 0.8), 0.0))
+                if swell_sfx:
+                    # Chặn đuôi RẤT quan trọng ở đây: ambient_mystic dài 19.7s trên cửa
+                    # sổ 3.0s — gần 17 giây tiếng nền đè lên lời dẫn mở đầu.
+                    audio_placements.append((
+                        swell_sfx, 0.0, min(1.0, effective_volume * 0.8), 0.0,
+                        hook_sfx_max_dur(HOOK_EFFECTS[hook_type]["duration"]),
+                    ))
                     
             elif hook_type == "camera_shutter":
                 hook_clip_overlay = build_camera_shutter_hook(
                     cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
                 )
-                # Phát tiếng tách máy ảnh hoặc reel sfx tương ứng
-                reel_key = kwargs.get("hook_reel_sfx", "none")
-                shutter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "tick.wav")) # Fallback
+                # LỖI CŨ: fallback là "tick.wav" — tiếng gõ của hook Máy Xèng, không liên
+                # quan gì tới cú bấm máy ảnh. resolve_effect_sfx kéo mọi khoá sai về đúng
+                # camera_shutter.mp3.
+                shutter_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "camera_shutter"))
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(shutter_sfx) and reel_key != "none":
-                    audio_placements.append((shutter_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                if shutter_sfx:
+                    audio_placements.append((
+                        shutter_sfx, 0.0, min(1.0, effective_volume), 0.0,
+                        hook_sfx_max_dur(HOOK_EFFECTS[hook_type]["duration"]),
+                    ))
                     
             elif hook_type == "cyber_glitch":
                 hook_clip_overlay = build_cyber_glitch_hook(
                     cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
                 )
-                reel_key = kwargs.get("hook_reel_sfx", "none")
-                glitch_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "whoosh.wav"))
+                # LỖI CŨ: fallback "whoosh.wav" — tiếng gió, không phải tiếng xẹt điện.
+                glitch_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "digital_glitch"))
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(glitch_sfx) and reel_key != "none":
-                    audio_placements.append((glitch_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                if glitch_sfx:
+                    audio_placements.append((
+                        glitch_sfx, 0.0, min(1.0, effective_volume), 0.0,
+                        hook_sfx_max_dur(HOOK_EFFECTS[hook_type]["duration"]),
+                    ))
                     
             elif hook_type == "vintage_film_burn":
                 hook_clip_overlay = build_vintage_film_burn_hook(
                     cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
                 )
-                reel_key = kwargs.get("hook_reel_sfx", "none")
-                burn_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "suspense.wav"))
+                # LỖI CŨ: fallback "suspense.wav" — nhạc hồi hộp, không phải tiếng máy chiếu.
+                burn_sfx = resolve_effect_sfx(hook_type, kwargs.get("hook_reel_sfx", "film_projector"))
                 effective_volume = hook_sfx_volume
-                if os.path.isfile(burn_sfx) and reel_key != "none":
-                    audio_placements.append((burn_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                if burn_sfx:
+                    audio_placements.append((
+                        burn_sfx, 0.0, min(1.0, effective_volume), 0.0,
+                        hook_sfx_max_dur(HOOK_EFFECTS[hook_type]["duration"]),
+                    ))
                 
             if hook_clip_overlay:
                 hook_clip_overlay = hook_clip_overlay.with_start(0.0).with_position("center")
@@ -921,34 +984,44 @@ def render_final_video(
                 # ghi "tick_wood.mp3" — một file KHÔNG TỒN TẠI ("tick_wood" là tên KHOÁ,
                 # file thật của nó là reel_spin.wav. Vì có os.path.isfile() che nên khoá
                 # lạ chỉ dẫn tới im lặng không tiếng, không lỗi nào.
-                reel_sfx = os.path.join(
-                    sfx_dir,
-                    HOOK_REEL_SOUNDS.get(outro_reel_key, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]),
-                )
+                reel_sfx = resolve_effect_sfx(outro_type, outro_reel_key or DEFAULT_HOOK_REEL)
                 whoosh_sfx = os.path.join(sfx_dir, "whoosh.wav")
                 ding_sfx = os.path.join(sfx_dir, "ding.wav")
                 slot_dur = SLOT_DURATION
+                # Mỗi tiếng chỉ được ngân tới hết cửa sổ outro (tính TỪ mốc nó bắt đầu),
+                # cộng đuôi vang. Không chặn thì chúng chạy hết độ dài file và bị cắt cụt
+                # thô ở mốc kết thúc video thay vì tắt mềm.
                 if os.path.isfile(whoosh_sfx):
-                    audio_placements.append((whoosh_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.7), 0.0))
-                if os.path.isfile(reel_sfx) and outro_reel_key != "none":
-                    audio_placements.append((reel_sfx, outro_start + slot_dur, min(1.5, outro_sfx_volume), 0.0))
+                    audio_placements.append((
+                        whoosh_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.7), 0.0,
+                        hook_sfx_max_dur(outro_duration),
+                    ))
+                if reel_sfx:
+                    audio_placements.append((
+                        reel_sfx, outro_start + slot_dur, min(1.5, outro_sfx_volume), 0.0,
+                        hook_sfx_max_dur(outro_duration - slot_dur),
+                    ))
                 if os.path.isfile(ding_sfx):
-                    audio_placements.append((ding_sfx, outro_start + HOOK_CAROUSEL_DURATION - 0.5, min(1.0, outro_sfx_volume * 0.8), 0.0))
+                    audio_placements.append((
+                        ding_sfx, outro_start + HOOK_CAROUSEL_DURATION - 0.5,
+                        min(1.0, outro_sfx_volume * 0.8), 0.0,
+                        hook_sfx_max_dur(0.5),
+                    ))
             
             elif outro_type == "blackout_question":
                 outro_clip_overlay = build_blackout_question_hook(
                     outro_text, video_width, video_height, outro_duration, subtitle_font_size
                 )
-                impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "impact_boom.mp3"))
-                if os.path.isfile(impact_sfx) and outro_reel_key != "none":
-                    audio_placements.append((impact_sfx, outro_start + 0.0, min(1.2, outro_sfx_volume * 0.9), 0.0))
+                impact_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if impact_sfx:
+                    audio_placements.append((impact_sfx, outro_start + 0.0, min(1.2, outro_sfx_volume * 0.9), 0.0, hook_sfx_max_dur(outro_duration)))
                     
             elif outro_type == "typewriter_quote":
                 outro_clip_overlay = build_typewriter_quote_hook(
                     outro_text, video_width, video_height, outro_duration, outro_cover_img
                 )
-                typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "typewriter_fast.mp3"))
-                if os.path.isfile(typewriter_sfx) and outro_reel_key != "none":
+                typewriter_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if typewriter_sfx:
                     audio_placements.append((typewriter_sfx, outro_start + 0.0, min(1.2, outro_sfx_volume * 0.6), 0.0, outro_duration * 0.85))
                 tick_sfx = os.path.join(SFX_DIR, "tick.wav")
                 if os.path.isfile(tick_sfx):
@@ -963,33 +1036,33 @@ def render_final_video(
                 outro_clip_overlay = build_breathing_vignette_hook(
                     outro_cover_img, video_width, video_height, outro_duration
                 )
-                swell_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "cinematic_swell.mp3"))
-                if os.path.isfile(swell_sfx) and outro_reel_key != "none":
-                    audio_placements.append((swell_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.8), 0.0))
+                swell_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if swell_sfx:
+                    audio_placements.append((swell_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.8), 0.0, hook_sfx_max_dur(outro_duration)))
                     
             elif outro_type == "camera_shutter":
                 outro_clip_overlay = build_camera_shutter_hook(
                     outro_cover_img, video_width, video_height, outro_duration
                 )
-                shutter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "tick.wav"))
-                if os.path.isfile(shutter_sfx) and outro_reel_key != "none":
-                    audio_placements.append((shutter_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                shutter_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if shutter_sfx:
+                    audio_placements.append((shutter_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0, hook_sfx_max_dur(outro_duration)))
                     
             elif outro_type == "cyber_glitch":
                 outro_clip_overlay = build_cyber_glitch_hook(
                     outro_cover_img, video_width, video_height, outro_duration
                 )
-                glitch_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "whoosh.wav"))
-                if os.path.isfile(glitch_sfx) and outro_reel_key != "none":
-                    audio_placements.append((glitch_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                glitch_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if glitch_sfx:
+                    audio_placements.append((glitch_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0, hook_sfx_max_dur(outro_duration)))
                     
             elif outro_type == "vintage_film_burn":
                 outro_clip_overlay = build_vintage_film_burn_hook(
                     outro_cover_img, video_width, video_height, outro_duration
                 )
-                burn_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "suspense.wav"))
-                if os.path.isfile(burn_sfx) and outro_reel_key != "none":
-                    audio_placements.append((burn_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                burn_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
+                if burn_sfx:
+                    audio_placements.append((burn_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0, hook_sfx_max_dur(outro_duration)))
                     
             if outro_clip_overlay:
                 outro_clip_overlay = outro_clip_overlay.with_start(outro_start).with_position("center")
