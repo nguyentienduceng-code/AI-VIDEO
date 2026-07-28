@@ -22,7 +22,16 @@ logger = logging.getLogger(__name__)
 from config import CACHE_DIR, MEDIA_CACHE_DIR  # thư mục do config tạo sẵn
 
 MAX_CACHE_SIZE_GB = 5       # Giới hạn dung lượng cache tối đa
-MAX_CACHE_AGE_DAYS = 7      # Xóa file cũ hơn 7 ngày khi vượt ngưỡng
+MAX_CACHE_AGE_DAYS = 7      # Ưu tiên xoá file cũ hơn 7 ngày khi vượt ngưỡng
+
+# Mọi đuôi file mà pipeline có thể đổ vào cache media:
+#   .png/.jpg/.jpeg/.webp — ảnh AI (Imagen, Pollinations)
+#   .mp4/.mov             — video (Veo, Pexels)
+#   .mp3/.wav             — giọng đọc (Edge-TTS ra mp3, OmniVoice ra wav)
+#
+# Danh sách này là NGUỒN CHÂN LÝ cho việc tra cache: _find_cached() thử thẳng từng
+# đuôi thay vì liệt kê cả thư mục. Xem docstring của _find_cached để biết vì sao.
+_MEDIA_EXTS = (".mp4", ".mp3", ".png", ".wav", ".jpg", ".jpeg", ".webp", ".mov")
 
 
 class CacheService:
@@ -68,43 +77,58 @@ class CacheService:
         hash_val = hashlib.md5(data_str.encode('utf-8')).hexdigest()
         return f"{prefix}_{hash_val}"
 
+    def _find_cached(self, key: str) -> Optional[str]:
+        """
+        Đường dẫn file cache ứng với `key`, hoặc None.
+
+        VÌ SAO THỬ THẲNG TỪNG ĐUÔI thay vì os.listdir + startswith: hàm này nằm trên
+        đường nóng nhất của cả hệ thống. /api/cache-probe gọi has_media() HAI LẦN cho
+        MỖI cảnh (giọng đọc + hình), và giao diện gọi endpoint đó mỗi lần người dùng gõ
+        phím trong trình sửa kịch bản. Với 19 cảnh, cách cũ = 38 lần liệt kê toàn bộ thư
+        mục cache cho MỘT phím bấm. Ở vài trăm file thì không ai thấy gì; ở mức 5GB mà
+        MAX_CACHE_SIZE_GB cho phép (hàng nghìn file) thì ô nhập chữ giật rõ rệt.
+        Thử tối đa 8 lần os.stat thì không phụ thuộc kích thước cache nữa.
+        """
+        for ext in _MEDIA_EXTS:
+            fpath = os.path.join(MEDIA_CACHE_DIR, key + ext)
+            try:
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    return fpath
+            except OSError:
+                continue
+        return None
+
     def get_media(self, prefix: str, output_path: str, **kwargs) -> bool:
         """
         Kiểm tra cache và copy file media vào output_path nếu có.
-        
+
         Args:
             prefix: Loại media ("imagen", "veo", "pexels_photo", ...)
             output_path: Đường dẫn đích mà pipeline mong đợi file sẽ nằm ở đó.
             **kwargs: Các tham số để tạo cache key (prompt, aspect_ratio, ...)
-        
+
         Returns:
             True nếu cache hit (đã copy file), False nếu miss.
         """
-        key = self._media_key(prefix, **kwargs)
-        
-        # Tìm file cache với bất kỳ extension nào
-        for fname in os.listdir(MEDIA_CACHE_DIR):
-            if fname.startswith(key + "."):
-                cached_path = os.path.join(MEDIA_CACHE_DIR, fname)
-                if os.path.isfile(cached_path) and os.path.getsize(cached_path) > 0:
-                    try:
-                        # Xác định extension từ file cache
-                        cached_ext = os.path.splitext(fname)[1]
-                        # Nếu output_path có extension khác, điều chỉnh
-                        out_base, out_ext = os.path.splitext(output_path)
-                        final_output = output_path
-                        if cached_ext != out_ext and cached_ext:
-                            final_output = out_base + cached_ext
-                        
-                        shutil.copy2(cached_path, final_output)
-                        # Cập nhật access time để LRU cleanup hoạt động
-                        os.utime(cached_path)
-                        logger.info(f"[Cache] HIT: {prefix} → {os.path.basename(final_output)}")
-                        return True
-                    except Exception as e:
-                        logger.warning(f"[Cache] Copy error: {e}")
-                        return False
-        return False
+        cached_path = self._find_cached(self._media_key(prefix, **kwargs))
+        if not cached_path:
+            return False
+
+        try:
+            # Đuôi file cache thắng đuôi của output_path: pipeline xin ".png" nhưng cảnh
+            # này có thể đã được cache dưới dạng video stock ".mp4".
+            cached_ext = os.path.splitext(cached_path)[1]
+            out_base, out_ext = os.path.splitext(output_path)
+            final_output = out_base + cached_ext if cached_ext != out_ext else output_path
+
+            shutil.copy2(cached_path, final_output)
+            # Cập nhật access time để LRU cleanup hoạt động
+            os.utime(cached_path)
+            logger.info(f"[Cache] HIT: {prefix} → {os.path.basename(final_output)}")
+            return True
+        except Exception as e:
+            logger.warning(f"[Cache] Copy error: {e}")
+            return False
 
     def has_media(self, prefix: str, **kwargs) -> bool:
         """
@@ -114,16 +138,7 @@ class CacheService:
         liên tục mỗi lần user gõ phím, nên tuyệt đối không được chạm vào file như
         get_media(). Cũng KHÔNG cập nhật access time — chỉ nhìn thì không tính là dùng.
         """
-        key = self._media_key(prefix, **kwargs)
-        try:
-            for fname in os.listdir(MEDIA_CACHE_DIR):
-                if fname.startswith(key + "."):
-                    fpath = os.path.join(MEDIA_CACHE_DIR, fname)
-                    if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                        return True
-        except OSError:
-            pass
-        return False
+        return self._find_cached(self._media_key(prefix, **kwargs)) is not None
 
     def set_media(self, prefix: str, source_path: str, **kwargs):
         """
@@ -136,11 +151,22 @@ class CacheService:
         """
         if not os.path.isfile(source_path) or os.path.getsize(source_path) == 0:
             return
-        
+
         key = self._media_key(prefix, **kwargs)
-        ext = os.path.splitext(source_path)[1] or ".bin"
+        # Đuôi chuẩn hoá về chữ thường để tên file cache luôn tiền đoán được — _find_cached
+        # dò đúng những chuỗi này.
+        ext = os.path.splitext(source_path)[1].lower()
+        if ext not in _MEDIA_EXTS:
+            # Lưu ra đuôi lạ = file nằm chiếm ổ đĩa mãi mãi mà không lần tra nào tìm thấy
+            # (cache miss vĩnh viễn, im lặng). Thà không lưu và nói to ra ở đây.
+            logger.error(
+                "[Cache] Bỏ qua %s: đuôi %r không nằm trong _MEDIA_EXTS nên sẽ không bao "
+                "giờ tra lại được. Thêm đuôi này vào _MEDIA_EXTS nếu nó hợp lệ.",
+                os.path.basename(source_path), ext or "(không có)",
+            )
+            return
         cache_path = os.path.join(MEDIA_CACHE_DIR, f"{key}{ext}")
-        
+
         try:
             # Atomic copy: ghi vào tmp rồi rename
             tmp_path = cache_path + ".tmp"
@@ -154,11 +180,23 @@ class CacheService:
         self._auto_cleanup()
 
     def _auto_cleanup(self):
-        """Xóa file cache cũ khi tổng dung lượng vượt MAX_CACHE_SIZE_GB."""
+        """
+        Xoá bớt cache khi tổng dung lượng vượt MAX_CACHE_SIZE_GB, theo HAI PHA.
+
+        LỖI CŨ: chỉ có pha 1 — và điều kiện xoá là `if age > MAX_CACHE_AGE_DAYS`. Nghĩa
+        là khi cache vượt 5GB nhưng TOÀN FILE MỚI (đúng kịch bản dùng nhiều trong một
+        tuần, hoặc vài chục video stock 1080p tải về liền tay), vòng lặp duyệt hết danh
+        sách rồi thoát mà không xoá một byte nào. MAX_CACHE_SIZE_GB trở thành con số
+        trang trí và ổ đĩa cứ thế đầy — không lỗi, không cảnh báo.
+
+        Pha 2 vá đúng chỗ đó: nếu hết file quá hạn mà vẫn còn vượt ngưỡng thì xoá tiếp
+        theo LRU (cũ nhất trước), bất kể tuổi. Cache bị xoá nhầm chỉ tốn công tạo lại,
+        còn ổ đầy thì chết cả máy.
+        """
         try:
             total_size = 0
             files_info = []
-            
+
             for dirpath, _, filenames in os.walk(MEDIA_CACHE_DIR):
                 for fname in filenames:
                     fpath = os.path.join(dirpath, fname)
@@ -166,25 +204,52 @@ class CacheService:
                         stat = os.stat(fpath)
                         total_size += stat.st_size
                         files_info.append((fpath, stat.st_mtime))
-            
+
             max_bytes = MAX_CACHE_SIZE_GB * 1024 * 1024 * 1024
             if total_size <= max_bytes:
                 return
-            
-            # Sắp xếp theo thời gian sửa đổi (cũ nhất trước)
-            files_info.sort(key=lambda x: x[1])
+
+            # Xuống 80% ngưỡng chứ không dừng ngay ở mép: dọn sát ngưỡng thì mỗi lần
+            # set_media tiếp theo lại kích hoạt một lượt quét toàn thư mục.
+            target = max_bytes * 0.8
             now = time.time()
             max_age_seconds = MAX_CACHE_AGE_DAYS * 86400
-            
-            for fpath, mtime in files_info:
-                if total_size <= max_bytes * 0.8:  # Giảm xuống 80% ngưỡng
-                    break
-                age = now - mtime
-                if age > max_age_seconds:
-                    fsize = os.path.getsize(fpath)
-                    os.remove(fpath)
+
+            files_info.sort(key=lambda x: x[1])   # cũ nhất trước
+            removed = 0
+            freed = 0
+
+            # Pha 1: file quá hạn. Pha 2: bất kỳ file nào, cũ nhất trước.
+            for only_expired in (True, False):
+                for fpath, mtime in files_info:
+                    if total_size <= target:
+                        break
+                    age = now - mtime
+                    if only_expired and age <= max_age_seconds:
+                        continue
+                    try:
+                        fsize = os.path.getsize(fpath)
+                        os.remove(fpath)
+                    except OSError:
+                        # Đang bị một job render mở → bỏ qua, lượt dọn sau sẽ tới lượt nó.
+                        continue
                     total_size -= fsize
-                    logger.info(f"[Cache] CLEANUP: Xóa {os.path.basename(fpath)} ({fsize / 1024 / 1024:.1f}MB, {age / 86400:.0f} ngày tuổi)")
+                    removed += 1
+                    freed += fsize
+                if total_size <= target:
+                    break
+
+            if removed:
+                logger.info(
+                    "[Cache] CLEANUP: xoá %d file, giải phóng %.1fMB, còn %.1fMB/%.1fGB.",
+                    removed, freed / 1024 / 1024, total_size / 1024 / 1024, MAX_CACHE_SIZE_GB,
+                )
+            if total_size > max_bytes:
+                # Chỉ xảy ra khi mọi file còn lại đều đang bị khoá — đáng để biết.
+                logger.warning(
+                    "[Cache] Vẫn vượt ngưỡng sau khi dọn (%.1fMB): các file còn lại đang bị "
+                    "tiến trình khác giữ.", total_size / 1024 / 1024,
+                )
         except Exception as e:
             logger.warning(f"[Cache] Cleanup error: {e}")
 

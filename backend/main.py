@@ -28,10 +28,12 @@ import imageio_ffmpeg
 # Inject ffmpeg path globally
 os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 
+import json
 import re
 import shutil
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -61,7 +63,26 @@ from services.image_upload_service import (
     process_uploaded_images,
 )
 
-app = FastAPI(title="AI Video Studio API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Việc phải làm lúc bật/tắt server.
+
+    Thay cho @app.on_event("startup") — decorator đó đã bị FastAPI đánh dấu deprecated
+    và sẽ bị gỡ. Thân hàm chỉ chạy lúc khởi động nên vẫn gọi được những thứ định nghĩa
+    ở phía dưới file này.
+    """
+    restored = _restore_jobs_from_disk()
+    if restored:
+        logger.info("[Startup] Khôi phục %d job từ đĩa sau khi khởi động lại.", restored)
+
+    # Warmup OmniVoice + whisper-align chạy nền (tắt bằng OMNIVOICE_WARMUP=0).
+    if os.getenv("OMNIVOICE_WARMUP", "1") != "0":
+        asyncio.create_task(tts_service.warmup_omnivoice())
+
+    yield
+
+
+app = FastAPI(title="AI Video Studio API", lifespan=lifespan)
 
 # CORS cấu hình qua env ALLOWED_ORIGINS (danh sách phân tách bằng dấu phẩy).
 #
@@ -105,6 +126,7 @@ from config import (
     IMAGES_DIR,
     OUTPUT_DIR,
     OVERRIDES_DIR,
+    RENDER_STATUS_DIR,
     SFX_DIR,
     TEMP_DIR,
     VOICES_PREVIEW_DIR,
@@ -1190,48 +1212,171 @@ def _create_placeholder_image(path: str):
     img.save(path)
 
 
-async def _cleanup_old_outputs(max_age_hours: int = 24, override_max_age_days: int = 30):
-    """Dọn các video/srt final và thư mục asset tạm (audio/images) cũ hơn max_age_hours."""
+# ── Chính sách giữ file, tách theo GIÁ TRỊ của thứ bị xoá ───────────────────
+#
+# LỖI CŨ: video thành phẩm và file tạm dùng CHUNG một hạn 24 giờ, trong khi ảnh ghi đè
+# được giữ 30 ngày. Thứ tự ưu tiên ngược hẳn: thứ tốn nhiều thời gian và quota API nhất
+# để tạo ra lại là thứ bị xoá sớm nhất. Người dùng render buổi tối, hôm sau mở lại thấy
+# mục dự án còn nguyên nhưng bấm tải thì 404 — không có cảnh báo nào.
+#
+# Nguyên tắc: càng khó tạo lại thì giữ càng lâu.
+OUTPUT_MAX_AGE_DAYS = 14      # mp4/ass thành phẩm — tốn cả tiếng render + quota API
+OVERRIDE_MAX_AGE_DAYS = 30    # ảnh người dùng tự chuẩn bị — không tái tạo được
+JOB_ASSET_MAX_AGE_HOURS = 24  # audio/images từng cảnh — cache dựng lại được, và cồng kềnh
+TEMP_MAX_AGE_HOURS = 6        # rác của MoviePy + bản nghe thử — vô giá trị
+
+
+async def _cleanup_old_outputs():
+    """Dọn file cũ theo hạn riêng của từng loại (xem các hằng số ngay trên)."""
     now = datetime.now(timezone.utc).timestamp()
 
-    # 1. Dọn output files (MP4/ASS)
-    for fname in os.listdir(OUTPUT_DIR):
-        fpath = os.path.join(OUTPUT_DIR, fname)
-        if os.path.isfile(fpath):
-            age_hours = (now - os.path.getmtime(fpath)) / 3600
-            if age_hours > max_age_hours:
-                try: os.remove(fpath)
-                except OSError: pass
+    def _sweep_files(dirpath: str, max_age_seconds: float, label: str):
+        removed = 0
+        try:
+            names = os.listdir(dirpath)
+        except OSError:
+            return
+        for fname in names:
+            fpath = os.path.join(dirpath, fname)
+            try:
+                if not os.path.isfile(fpath) or (now - os.path.getmtime(fpath)) <= max_age_seconds:
+                    continue
+                os.remove(fpath)
+                removed += 1
+            except OSError:
+                pass  # đang bị mở → lượt dọn sau
+        if removed:
+            logger.info("[Cleanup] Xoá %d file quá hạn trong %s.", removed, label)
 
-    # 1b. Dọn file ghi đè thủ công — hạn DÀI hơn nhiều (30 ngày, không phải 24 giờ).
-    # Ảnh user tự chuẩn bị phải sống qua nhiều phiên "Chỉnh sửa & Render lại"; xoá theo
-    # nhịp 24h của file tạm sẽ làm cảnh mất hình khi mở lại dự án hôm sau.
-    override_max_age = override_max_age_days * 24 * 3600
-    for fname in os.listdir(OVERRIDES_DIR):
-        fpath = os.path.join(OVERRIDES_DIR, fname)
-        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > override_max_age:
-            try: os.remove(fpath)
-            except OSError: pass
+    # 1. Video/phụ đề thành phẩm
+    _sweep_files(OUTPUT_DIR, OUTPUT_MAX_AGE_DAYS * 86400, "output")
 
-    # 1c. Dọn TEMP_DIR: file tạm MoviePy bỏ lại khi encode chết giữa chừng, và bản nghe
-    # thử mà client ngắt kết nối trước khi BackgroundTask kịp xoá. Hạn 6 giờ — đủ dài để
-    # không cắt ngang một job render đang chạy dở.
-    for fname in os.listdir(TEMP_DIR):
-        fpath = os.path.join(TEMP_DIR, fname)
-        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > 6 * 3600:
-            try: os.remove(fpath)
-            except OSError: pass
+    # 2. Ảnh/video người dùng tải lên để ghi đè một cảnh cụ thể. Phải sống qua nhiều
+    #    phiên "Chỉnh sửa & Render lại" — xoá theo nhịp file tạm sẽ làm cảnh mất hình
+    #    khi mở lại dự án hôm sau.
+    _sweep_files(OVERRIDES_DIR, OVERRIDE_MAX_AGE_DAYS * 86400, "overrides")
 
-    # 2. Dọn thư mục tạm (audio/images)
+    # 3. File tạm MoviePy bỏ lại khi encode chết giữa chừng, và bản nghe thử mà client
+    #    ngắt kết nối trước khi BackgroundTask kịp xoá.
+    _sweep_files(TEMP_DIR, TEMP_MAX_AGE_HOURS * 3600, "temp")
+
+    # 4. Thư mục asset theo job (audio/, images/). Hạn ngắn vì đây là phần cồng kềnh
+    #    nhất (images/ thường vài trăm MB) và cache media đã giữ bản dùng lại được.
+    #    Cũng chính là lưới dọn cho asset của những job render lỗi mà pipeline cố ý
+    #    giữ lại — xem cuối _run_render_pipeline.
     for base_dir in (AUDIO_DIR, IMAGES_DIR):
-        if not os.path.exists(base_dir): continue
-        for job_folder in os.listdir(base_dir):
+        try:
+            job_folders = os.listdir(base_dir)
+        except OSError:
+            continue
+        for job_folder in job_folders:
             job_path = os.path.join(base_dir, job_folder)
-            if os.path.isdir(job_path):
-                age_hours = (now - os.path.getmtime(job_path)) / 3600
-                if age_hours > max_age_hours:
-                    try: shutil.rmtree(job_path, ignore_errors=True)
-                    except OSError: pass
+            try:
+                if not os.path.isdir(job_path):
+                    continue
+                if (now - os.path.getmtime(job_path)) / 3600 <= JOB_ASSET_MAX_AGE_HOURS:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(job_path, ignore_errors=True)
+
+
+def _restore_jobs_from_disk() -> int:
+    """Dựng lại JOBS sau khi backend khởi động lại. Trả về số job khôi phục được.
+
+    VÌ SAO CẦN: JOBS là dict nằm trong RAM, mất sạch mỗi lần tiến trình chết. Nhưng
+    ecosystem.config.js bật `autorestart: true` — tức kiến trúc ĐÃ TÍNH chuyện restart —
+    và setup-pm2-autostart.bat còn dựng lại cả khi đăng nhập Windows. Sau mỗi lần đó,
+    giao diện hỏi /api/job-status/{id} của job vừa nãy thì nhận 404 và WebSocket không
+    bám lại được: người dùng mất dấu công việc của chính mình, kể cả những video đã
+    render XONG và file mp4 vẫn nằm nguyên trên đĩa.
+
+    Hai nguồn, theo thứ tự tin cậy giảm dần:
+      1. render_status/*.json — job đang render dở lúc tiến trình chết.
+      2. output/*.mp4        — job đã hoàn tất, chỉ mất bản ghi trong RAM.
+    """
+    restored = 0
+
+    # ── 1. Job đang render dở ────────────────────────────────────────────────
+    # Worker là process con daemon nên chết theo tiến trình cha; sau restart không còn
+    # ai poll file status này nữa. Job nào chưa có mp4 thì coi như đứt gánh, đánh dấu
+    # lỗi ngay để giao diện thôi quay vòng chờ.
+    try:
+        status_files = os.listdir(RENDER_STATUS_DIR)
+    except OSError:
+        status_files = []
+
+    for fname in status_files:
+        if not fname.endswith(".json"):
+            continue
+        job_id = fname[: -len(".json")]
+        fpath = os.path.join(RENDER_STATUS_DIR, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+        mp4 = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+        ass = os.path.join(OUTPUT_DIR, f"{job_id}.ass")
+        finished = data.get("status") == "done" or os.path.isfile(mp4)
+
+        JOBS[job_id] = JobState(
+            job_id=job_id,
+            status="done" if finished else "error",
+            progress=100 if finished else data.get("progress", 0),
+            message=(
+                "Hoàn tất!" if finished else
+                "❌ Backend khởi động lại giữa lúc đang render nên job này bị đứt. "
+                "Ảnh và giọng đọc đã sinh vẫn còn — render lại sẽ không tốn thêm quota API."
+            ),
+            error=None if finished else "Bị gián đoạn do backend khởi động lại",
+            video_url=f"/api/download/{job_id}.mp4" if os.path.isfile(mp4) else None,
+            srt_url=f"/api/download/{job_id}.ass" if os.path.isfile(ass) else None,
+            created_at=_mtime_utc(fpath),
+        )
+        restored += 1
+        # File status đã hết vai trò: không còn worker nào ghi vào nó nữa.
+        try:
+            os.remove(fpath)
+        except OSError:
+            pass
+
+    # ── 2. Video đã render xong còn trên đĩa ─────────────────────────────────
+    # Để link tải trong lịch sử vẫn bấm được sau restart thay vì trả 404.
+    try:
+        output_files = os.listdir(OUTPUT_DIR)
+    except OSError:
+        output_files = []
+
+    for fname in output_files:
+        if not fname.endswith(".mp4"):
+            continue
+        job_id = fname[: -len(".mp4")]
+        if job_id in JOBS:
+            continue
+        mp4 = os.path.join(OUTPUT_DIR, fname)
+        ass = os.path.join(OUTPUT_DIR, f"{job_id}.ass")
+        JOBS[job_id] = JobState(
+            job_id=job_id, status="done", progress=100, message="Hoàn tất!",
+            video_url=f"/api/download/{job_id}.mp4",
+            srt_url=f"/api/download/{job_id}.ass" if os.path.isfile(ass) else None,
+            created_at=_mtime_utc(mp4),
+        )
+        restored += 1
+
+    # created_at lấy từ mtime nên _prune_old_jobs cắt đúng những job cũ nhất, thay vì
+    # cắt bừa theo thứ tự đọc thư mục.
+    _prune_old_jobs()
+    return restored
+
+
+def _mtime_utc(path: str) -> datetime:
+    """mtime của file dưới dạng datetime UTC (mặc định về 'bây giờ' nếu file biến mất)."""
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    except OSError:
+        return datetime.now(timezone.utc)
 
 
 def _prune_old_jobs(max_jobs: int = 200):
@@ -1477,13 +1622,6 @@ async def timing_profile(voice: str = "", rate: str = "+0%"):
 async def tts_health():
     """Trạng thái hạ tầng TTS: OmniVoice/GPU/whisper-align sẵn sàng hay chưa."""
     return tts_service.get_tts_health()
-
-
-@app.on_event("startup")
-async def _startup_warmup():
-    """Warmup OmniVoice + whisper-align trong background (tắt bằng OMNIVOICE_WARMUP=0)."""
-    if os.getenv("OMNIVOICE_WARMUP", "1") != "0":
-        asyncio.create_task(tts_service.warmup_omnivoice())
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,16 @@ if errorlevel 1 (
 python scripts\check_imports.py
 if errorlevel 1 set "PREFLIGHT_FAIL=1"
 
+:: Lop 4 - bo test hop dong & don vi (chay ~2 giay)
+::         Bat duoc loai loi ma 3 lop tren mu tit: logic sai nhung cu phap dung.
+::         Vi du that: main.py quen nhet hook_sfx_volume vao render_kwargs -
+::         thanh truot cua user vo hieu qua nhieu ban render ma khong ai biet.
+python -m pytest tests -q
+if errorlevel 1 (
+    set "PREFLIGHT_FAIL=1"
+    echo    [LOI] Co test khong dat.
+)
+
 popd
 
 if defined PREFLIGHT_FAIL (
