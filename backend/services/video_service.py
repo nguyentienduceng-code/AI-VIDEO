@@ -624,12 +624,13 @@ def render_final_video(
                 impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "impact_boom.mp3"))
                 effective_volume = sfx_volume if sfx_volume > 0 else 0.5
                 if os.path.isfile(impact_sfx):
-                    audio_placements.append((impact_sfx, 0.0, min(1.0, effective_volume * 1.5), 0.0))
+                    # Tăng mạnh âm thanh impact_boom
+                    audio_placements.append((impact_sfx, 0.0, min(2.0, effective_volume * 3.0), 0.0))
 
             elif hook_type == "typewriter_quote":
                 hook_dur = resolve_hook_timing(hook_type, hook_text)["duration"]
                 hook_clip_overlay = build_typewriter_quote_hook(
-                    hook_text, video_width, video_height, hook_dur
+                    hook_text, video_width, video_height, hook_dur, cover_img
                 )
                 
                 reel_key = kwargs.get("hook_reel_sfx", "typewriter_fast")
@@ -637,8 +638,8 @@ def render_final_video(
                 effective_volume = sfx_volume if sfx_volume > 0 else 0.5
                 
                 if os.path.isfile(typewriter_sfx):
-                    # Giảm âm lượng bgm typewriter_fast xuống để nhường chỗ cho âm thanh phím gõ từng chữ
-                    audio_placements.append((typewriter_sfx, 0.0, min(1.0, effective_volume * 0.4), 0.0))
+                    # Nâng nhẹ âm nền gõ lách cách
+                    audio_placements.append((typewriter_sfx, 0.0, min(1.2, effective_volume * 1.0), 0.0))
                 
                 # Thêm âm thanh gõ từng chữ (tick.wav) khớp với nhịp xuất hiện TextClip
                 tick_sfx = os.path.join(SFX_DIR, "tick.wav")
@@ -649,7 +650,8 @@ def render_final_video(
                     step_dur = (hook_dur * 0.85) / steps
                     
                     for i in range(steps):
-                        audio_placements.append((tick_sfx, i * step_dur, min(1.0, effective_volume * 1.2), 0.0))
+                        # Tăng âm gõ tick.wav lên tối đa để dội nhịp gõ phím
+                        audio_placements.append((tick_sfx, i * step_dur, min(2.5, effective_volume * 4.0), 0.0))
 
             elif hook_type == "breathing_vignette":
                 hook_clip_overlay = build_breathing_vignette_hook(

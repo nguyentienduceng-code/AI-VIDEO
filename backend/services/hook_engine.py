@@ -303,9 +303,13 @@ def build_typewriter_quote_hook(
     video_width: int,
     video_height: int,
     duration: float = 2.5,
+    cover_image_path: str = "",
 ) -> CompositeVideoClip:
     '''Nền tối, câu trích dẫn hiện dần theo TỪ (typewriter thật, không phải crossfade nguyên khối).'''
-    bg = ColorClip(size=(video_width, video_height), color=(15, 15, 20)).with_duration(duration)
+    if cover_image_path:
+        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.25)
+    else:
+        bg = ColorClip(size=(video_width, video_height), color=(15, 15, 20)).with_duration(duration)
 
     text = (quote_text or "").strip()
     if not text:
