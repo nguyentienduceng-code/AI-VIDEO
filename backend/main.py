@@ -1702,17 +1702,48 @@ async def rebalance_scenes(req: RebalanceRequest):
 
 
 @app.get("/api/timing-profile")
-async def timing_profile(voice: str = "", rate: str = "+0%"):
-    """Tốc độ đọc (từ/giây) mà backend đang dùng để ước lượng thời lượng.
+async def timing_profile(
+    voice: str = "",
+    rate: str = "+0%",
+    hook_effect: str = "",
+    hook_text: str = "",
+    outro_effect: str = "",
+    outro_text: str = "",
+):
+    """Tốc độ đọc (từ/giây) + thời lượng hook/outro mà backend sẽ dùng khi render.
 
     Có endpoint này để giao diện KHÔNG phải giữ hằng số riêng: trước đây ScriptEditor
     tự nhân "12 từ/cảnh" trong khi backend tính bằng con số khác, nên cảnh báo trên màn
     hình và thời lượng video thật không bao giờ khớp nhau. Giờ UI hỏi đúng nguồn.
     `is_learned` cho biết con số đã được hiệu chỉnh từ số đo thật hay còn là mặc định.
+
+    `hook`/`outro` trả về CÙNG con số mà pipeline render dùng thật (qua
+    resolve_hook_timing / resolve_outro_timing). Tuyệt đối không tính lại bằng JS:
+    blackout_question và typewriter_quote có thời lượng ĐỘNG theo độ dài chữ, nên một
+    bản sao ở frontend sẽ lệch ngay khi ai đó chỉnh công thức ở Python.
+
+    `narration_lead` khác `duration` ở carousel_quote: clip dài 4.5s nhưng lời thoại chỉ
+    bị dời 2.35s vì pha Quote cố ý phủ lên đầu Cảnh 1.
     """
     from services import duration_model
+    from services.video_service import resolve_hook_timing, resolve_outro_timing
 
-    return duration_model.profile_summary(voice or None, rate)
+    out = duration_model.profile_summary(voice or None, rate)
+
+    ht = resolve_hook_timing(hook_effect, hook_text) if hook_effect else None
+    out["hook"] = {
+        "effect": hook_effect,
+        "duration": round(ht["duration"], 2),
+        "narration_lead": round(ht["narration_lead"], 2),
+    } if ht else None
+
+    ot = resolve_outro_timing(outro_effect, outro_text or hook_text) if outro_effect else None
+    out["outro"] = {
+        "effect": outro_effect,
+        "duration": round(ot["duration"], 2),
+    } if ot else None
+
+    return out
 
 
 @app.get("/api/tts-health")

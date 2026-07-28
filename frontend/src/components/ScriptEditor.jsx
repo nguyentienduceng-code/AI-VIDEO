@@ -239,20 +239,33 @@ export default function ScriptEditor() {
   // ── Tốc độ đọc thật, hỏi thẳng backend ───────────────────────────────────
   // Không giữ hằng số riêng ở đây nữa: backend tự hiệu chỉnh con số này theo số đo
   // thật của từng giọng sau mỗi lần render, nên hỏi lại mỗi khi user đổi giọng/tốc độ.
-  const [timing, setTiming] = useState({ wps: FALLBACK_WPS, isLearned: false });
+  // Hỏi luôn cả thời lượng hook/outro trong cùng lời gọi này. KHÔNG tính lại bằng JS:
+  // blackout_question và typewriter_quote có thời lượng ĐỘNG theo độ dài chữ, nên một
+  // bản sao công thức ở đây sẽ lệch ngay lần đầu ai đó chỉnh ở Python — đúng loại lệch
+  // mà /api/timing-profile được sinh ra để dập (xem docstring của nó).
+  const [timing, setTiming] = useState({ wps: FALLBACK_WPS, isLearned: false, hook: null, outro: null });
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ voice: ctx.voice || '', rate: ctx.speechRate || '+0%' });
+    const params = new URLSearchParams({
+      voice: ctx.voice || '', rate: ctx.speechRate || '+0%',
+      hook_effect: ctx.hookEffect || '', hook_text: ctx.hookText || '',
+      outro_effect: ctx.outroEffect || '', outro_text: ctx.outroText || '',
+    });
     fetch(`${API_BASE}/api/timing-profile?${params}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d?.words_per_second > 0) {
-          setTiming({ wps: d.words_per_second, isLearned: Boolean(d.is_learned) });
+          setTiming({
+            wps: d.words_per_second,
+            isLearned: Boolean(d.is_learned),
+            hook: d.hook || null,
+            outro: d.outro || null,
+          });
         }
       })
       .catch(() => { /* backend chưa chạy: dùng FALLBACK_WPS, không làm phiền user */ });
     return () => { cancelled = true; };
-  }, [ctx.voice, ctx.speechRate]);
+  }, [ctx.voice, ctx.speechRate, ctx.hookEffect, ctx.hookText, ctx.outroEffect, ctx.outroText]);
 
   const sceneSeconds = useMemo(
     () => ctx.scenes.map((s) => estimateSceneSeconds(s, timing.wps)),
@@ -279,6 +292,30 @@ export default function ScriptEditor() {
       durationLabel: opt ? opt.label : ctx.targetDuration,
     };
   }, [sceneSeconds, ctx.scenes.length, ctx.targetDuration]);
+
+  // ── Bố cục thời gian của video thành phẩm ────────────────────────────────
+  // Hook/outro CỘNG THÊM vào tổng thời lượng chứ không lấy bớt từ lời thoại — kịch bản
+  // được sinh ra mà không hề biết tới chúng (GenerateScriptRequest không có trường
+  // hook/outro nào). Nên chọn "30s" rồi bật cả hook lẫn outro sẽ ra video ~37s.
+  // Bảng này để thấy con số đó NGAY LÚC CHỈNH thay vì phát hiện sau khi render xong.
+  //
+  // Dùng narration_lead chứ không dùng duration của hook: carousel_quote có clip 4.5s
+  // nhưng chỉ dời lời thoại 2.35s vì pha Quote cố ý phủ lên đầu Cảnh 1 — lấy duration
+  // sẽ cộng dư 2.15 giây không có thật.
+  const timeline = useMemo(() => {
+    const speech = durationBudget.total;
+    const hookLead = timing.hook?.narration_lead ?? 0;
+    const outroDur = timing.outro?.duration ?? 0;
+    return {
+      hookLead,
+      speech,
+      outroDur,
+      total: hookLead + speech + outroDur,
+      // Cửa sổ nhạc mở màn khi để "hết Cảnh 1": backend lấy mốc KẾT THÚC cảnh 1 trên
+      // timeline, tức đã gồm phần dời do hook (xem actual_intro_bgm_duration ở main.py).
+      introBgmAuto: hookLead + (sceneSeconds[0] ?? 0),
+    };
+  }, [durationBudget.total, timing.hook, timing.outro, sceneSeconds]);
 
   useEffect(() => {
     if (!ctx.scenes.length) { setCacheStatus(null); return; }
@@ -540,9 +577,37 @@ export default function ScriptEditor() {
               — 🟢 <strong>{reusedCount}</strong> cảnh tái dùng, 🔴 <strong>{ctx.scenes.length - reusedCount}</strong> cảnh tạo mới
             </span>
           )}
-          {ctx.estimatedDurationS > 0 && (
-            <span style={{ marginLeft: 16, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}>
-              ⏳ Ước lượng: <strong>~{ctx.estimatedDurationS}s</strong>
+          {ctx.scenes.length > 0 && (
+            <span
+              style={{ marginLeft: 16, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}
+              title={
+                'Hook và Outro CỘNG THÊM vào tổng thời lượng, không lấy bớt từ lời thoại — '
+                + 'kịch bản được sinh ra mà không biết tới chúng. Muốn video đúng mốc mong '
+                + 'muốn thì chọn thời lượng kịch bản thấp hơn khoảng bằng tổng hook + outro.'
+              }
+            >
+              ⏳ Video <strong>~{timeline.total.toFixed(1)}s</strong>
+              {(timeline.hookLead > 0 || timeline.outroDur > 0) && (
+                <span style={{ opacity: 0.75, marginLeft: 6 }}>
+                  = {timeline.hookLead > 0 && `${timeline.hookLead.toFixed(1)}s hook + `}
+                  {timeline.speech.toFixed(1)}s lời
+                  {timeline.outroDur > 0 && ` + ${timeline.outroDur.toFixed(1)}s outro`}
+                </span>
+              )}
+            </span>
+          )}
+          {ctx.scenes.length > 0 && ctx.introBgm && ctx.introBgm !== 'none' && (
+            <span
+              style={{ marginLeft: 8, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}
+              title={
+                'Khoảng thời gian nhạc mở màn chiếm, trước khi chuyển êm sang nhạc nền chính. '
+                + 'Chọn "hết Cảnh 1" thì mốc này tự tính từ timeline thật (đã gồm phần dời do hook).'
+              }
+            >
+              🎵 Nhạc mở màn phủ <strong>
+                {(ctx.introBgmDuration > 0 ? ctx.introBgmDuration : timeline.introBgmAuto).toFixed(1)}s
+              </strong>
+              {!(ctx.introBgmDuration > 0) && <span style={{ opacity: 0.75 }}> (hết Cảnh 1)</span>}
             </span>
           )}
         </div>
