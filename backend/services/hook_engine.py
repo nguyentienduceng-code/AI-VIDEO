@@ -318,3 +318,135 @@ def build_breathing_vignette_hook(
 
     return CompositeVideoClip([zoomed, overlay], size=(video_width, video_height)).with_duration(duration)
 
+
+# ══════════════════════════════════════════════════════════════════════
+# HOOK C4: Camera Shutter (Nháy máy ảnh)
+# ══════════════════════════════════════════════════════════════════════
+def build_camera_shutter_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 2.0,
+) -> CompositeVideoClip:
+    '''Chớp nháy trắng lóa mỏng 0.15s, sau đó ảnh bị thu nhỏ lại (chụp ảnh) và đứng yên.'''
+    from PIL import Image, ImageOps
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base_clip = ImageClip(np.array(img_filled)).with_duration(duration)
+    except Exception as e:
+        logger.error(f"Camera Shutter cover error: {e}")
+        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30)).with_duration(duration)
+
+    # Nền mờ cho phần viền (khi ảnh bị thu nhỏ)
+    bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.3)
+
+    # Freeze frame sau flash chớp (sau 0.15s, thu nhỏ lại một chút 0.95 scale)
+    def resize_shutter(t):
+        if t < 0.15:
+            return 1.05
+        return 0.92
+
+    photo_clip = base_clip.resized(resize_shutter).with_position("center")
+    
+    # Flash chớp trắng (0 -> 0.15s)
+    flash = ColorClip(size=(video_width, video_height), color=(255, 255, 255)).with_duration(0.15).with_opacity(0.8)
+
+    return CompositeVideoClip([bg, photo_clip, flash], size=(video_width, video_height)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HOOK C5: Cyber Glitch (Nhiễu sóng)
+# ══════════════════════════════════════════════════════════════════════
+def build_cyber_glitch_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 2.0,
+) -> CompositeVideoClip:
+    '''Nhiễu sọc ngang, nháy đen trắng vài khung hình đầu.'''
+    from PIL import Image, ImageOps
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base_clip = ImageClip(np.array(img_filled)).with_duration(duration)
+    except Exception as e:
+        logger.error(f"Glitch cover error: {e}")
+        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30)).with_duration(duration)
+
+    def glitch_filter(get_frame, t):
+        frame = get_frame(t)
+        # Glitch trong 0.4s đầu
+        if t < 0.4:
+            # Nháy âm bản ở t=0.1, t=0.3
+            if (0.1 < t < 0.15) or (0.25 < t < 0.3):
+                frame = 255 - frame
+            # Dịch sọc ngang (RGB split giả)
+            if (0.05 < t < 0.2) or (0.3 < t < 0.35):
+                shift = int(video_width * 0.05)
+                # Dịch kênh Đỏ sang phải
+                frame_shifted = np.copy(frame)
+                frame_shifted[:, shift:, 0] = frame[:, :-shift, 0]
+                return frame_shifted
+        return frame
+
+    glitched = base_clip.transform(glitch_filter)
+    return CompositeVideoClip([glitched], size=(video_width, video_height)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HOOK C6: Vintage Film Burn (Cháy phim)
+# ══════════════════════════════════════════════════════════════════════
+def build_vintage_film_burn_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 2.5,
+) -> CompositeVideoClip:
+    '''Vệt sáng màu cam/đỏ mờ lan tỏa trên khung hình phim cổ điển.'''
+    from PIL import Image, ImageOps
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base_clip = ImageClip(np.array(img_filled)).with_duration(duration)
+    except Exception as e:
+        logger.error(f"Film burn cover error: {e}")
+        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30)).with_duration(duration)
+
+    # Zoom chậm ra
+    zoomed = base_clip.resized(lambda t: 1.05 - 0.02 * (t / duration)).with_position("center").with_duration(duration)
+
+    # Vệt cháy phim: ColorClip cam, opacity lên xuống theo thời gian
+    burn = ColorClip(size=(video_width, video_height), color=(255, 100, 30)).with_duration(duration)
+    
+    def burn_opacity(t):
+        if t < 0.3: return 0.6 * (t / 0.3)
+        if t < 0.6: return 0.6
+        if t < 1.0: return 0.6 * (1 - (t - 0.6)/0.4)
+        return 0.0
+
+    burn = burn.with_opacity(burn_opacity)
+
+    return CompositeVideoClip([zoomed, burn], size=(video_width, video_height)).with_duration(duration)
+

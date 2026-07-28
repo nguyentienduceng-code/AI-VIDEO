@@ -185,6 +185,11 @@ VOICES_PREVIEW_DIR = os.path.join(DATA_DIR, "voices_preview")
 # bị cleanup_upload() xoá theo session ngay sau khi render xong, còn file ghi đè phải
 # sống qua nhiều lần render lại.
 OVERRIDES_DIR = os.path.join(DATA_DIR, "overrides")
+# Tiếng động do NGƯỜI DÙNG tự nạp. Tách hẳn khỏi SFX_DIR (tài nguyên đi kèm mã nguồn,
+# chỉ đọc, được git theo dõi): ghi file upload vào đó sẽ làm mọi lần tải lên hiện trong
+# `git status` — .gitignore có ngoại lệ `!backend/assets/sfx/*.wav` — và giữ dữ liệu
+# người dùng nằm lại ổ C kể cả khi đã trỏ CUSTOM_ASSETS_DIR sang ổ khác.
+CUSTOM_SFX_DIR = os.path.join(DATA_DIR, "custom_sfx")
 # File tạm của MoviePy và các bản nghe thử. MoviePy 2.1.2 đặt temp_audiofile_path=""
 # mặc định, tức là ghi "<tên>TEMP_MPY_wvf_snd.mp4" vào CWD — thư mục backend/ — và bỏ
 # lại đó nếu encode chết giữa chừng. Trỏ vào đây để rác đi theo ổ dữ liệu và bị dọn tự động.
@@ -197,7 +202,7 @@ QUOTA_FILE = os.path.join(CACHE_DIR, "quota.json")
 _DATA_SUBDIRS = (
     AUDIO_DIR, IMAGES_DIR, OUTPUT_DIR, CACHE_DIR, MEDIA_CACHE_DIR, VEO_TMP_DIR,
     PROJECTS_DIR, UPLOADS_DIR, RENDER_STATUS_DIR, VOICES_PREVIEW_DIR, OVERRIDES_DIR,
-    TEMP_DIR,
+    TEMP_DIR, CUSTOM_SFX_DIR,
 )
 
 for _d in _DATA_SUBDIRS:

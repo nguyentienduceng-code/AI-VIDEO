@@ -150,6 +150,9 @@ def assemble(
     audio_path: Optional[str] = None,
     hook_video: Optional[str] = None,
     hook_duration: float = 0.0,
+    outro_video: Optional[str] = None,
+    outro_start: float = 0.0,
+    outro_duration: float = 0.0,
     use_gpu: bool = True,
     timeout: int = 3600,
 ) -> str:
@@ -166,12 +169,15 @@ def assemble(
     cmd = [_ff(), "-y"]
     for a in scene_assets:
         cmd += ["-i", a["image_path"]]
-    hook_idx = audio_idx = None
+    hook_idx = outro_idx = audio_idx = None
     if hook_video and os.path.isfile(hook_video):
-        hook_idx = n
+        hook_idx = len(cmd) // 2
         cmd += ["-i", hook_video]
+    if outro_video and os.path.isfile(outro_video):
+        outro_idx = len(cmd) // 2
+        cmd += ["-i", outro_video]
     if audio_path and os.path.isfile(audio_path):
-        audio_idx = n + (1 if hook_idx is not None else 0)
+        audio_idx = len(cmd) // 2
         cmd += ["-i", audio_path]
 
     fc: List[str] = []
@@ -226,17 +232,33 @@ def assemble(
 
     chain_lbl = "[vcat]"
 
-    # ── 3. Chèn khoảng trống đầu cho hook ──
+    # ── 3. Chèn khoảng trống đầu cho hook và cuối cho outro ──
+    # Pad đầu video
     if lead_in > 0.01:
-        fc.append(f"{chain_lbl}tpad=start_duration={lead_in:.3f}:start_mode=add:color=black[vpad]")
-        chain_lbl = "[vpad]"
+        fc.append(f"{chain_lbl}tpad=start_duration={lead_in:.3f}:start_mode=add:color=black[vpad1]")
+        chain_lbl = "[vpad1]"
+        
+    # Pad cuối video nếu outro làm tăng thời lượng
+    # Do outro overlay lên, nếu outro nằm ngoài thời lượng hiện tại của video, ta cần pad thêm
+    if outro_idx is not None and outro_duration > 0:
+        # Ở video_service.py chúng ta sẽ tự tính final_duration đã bao gồm outro hay chưa.
+        # Nhưng an toàn nhất là pad cuối video một khoảng thời lượng bằng outro_duration
+        # để chắc chắn có nền đen cho outro nếu video chưa đủ dài.
+        fc.append(f"{chain_lbl}tpad=stop_duration={outro_duration:.3f}:stop_mode=clone[vpad2]")
+        chain_lbl = "[vpad2]"
 
-    # ── 4. Lớp phủ hook ──
+    # ── 4. Lớp phủ hook và outro ──
     if hook_idx is not None:
         fc.append(f"[{hook_idx}:v]fps={fps},format=yuv420p,setpts=PTS-STARTPTS[hk]")
-        fc.append(f"{chain_lbl}[hk]overlay=0:0:enable='lt(t,{hook_duration:.3f})'[vout]")
-        chain_lbl = "[vout]"
-    else:
+        fc.append(f"{chain_lbl}[hk]overlay=0:0:enable='lt(t,{hook_duration:.3f})'[vout1]")
+        chain_lbl = "[vout1]"
+        
+    if outro_idx is not None:
+        fc.append(f"[{outro_idx}:v]fps={fps},format=yuv420p,setpts=PTS-STARTPTS[outrov]")
+        fc.append(f"{chain_lbl}[outrov]overlay=0:0:enable='gte(t,{outro_start:.3f})'[vout2]")
+        chain_lbl = "[vout2]"
+        
+    if hook_idx is None and outro_idx is None:
         fc.append(f"{chain_lbl}null[vout]")
         chain_lbl = "[vout]"
 

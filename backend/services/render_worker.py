@@ -187,7 +187,15 @@ def _worker_main(
         from services.audio_mix_service import master_audio_and_export
         
         ass_path = output_srt_path if os.path.isfile(output_srt_path) else None
+        # Track chỉ-giọng cho ducking: render_final_video ghi nó cạnh video thô theo quy
+        # ước hậu tố cố định, nên không cần thêm một kênh truyền tham số nữa.
+        from services.video_service import VOICE_SIDECHAIN_SUFFIX
+        sidechain = raw_video_path + VOICE_SIDECHAIN_SUFFIX
+        if not os.path.isfile(sidechain):
+            sidechain = None
+
         master_audio_and_export(
+            sidechain_audio_path=sidechain,
             input_video_path=raw_video_path,
             output_path=output_video_path,
             bgm_path=master_kwargs.get("bgm_path"),
@@ -205,6 +213,8 @@ def _worker_main(
         # Dọn file thô
         if os.path.isfile(raw_video_path):
             os.remove(raw_video_path)
+        if sidechain and os.path.isfile(sidechain):
+            os.remove(sidechain)
 
         write_status(
             job_id, status="done", progress=100,

@@ -77,16 +77,19 @@ export default function ScriptEditor() {
     setStep: s.setStep, setStatus: s.setStatus, setProgress: s.setProgress,
     setJobMessage: s.setJobMessage, setProgressLog: s.setProgressLog,
     setVideoUrl: s.setVideoUrl, setSrtUrl: s.setSrtUrl,
-    activeMode: s.activeMode, ratio: s.ratio, voice: s.voice, style: s.style, bgm: s.bgm, setBgm: s.setBgm,
+    activeMode: s.activeMode, ratio: s.ratio, voice: s.voice, style: s.style,
+    bgm: s.bgm, setBgm: s.setBgm,
+    introBgm: s.introBgm, introBgmDuration: s.introBgmDuration,
+    speechRate: s.speechRate, speechPitch: s.speechPitch, bgmVolume: s.bgmVolume,
     targetDuration: s.targetDuration,
     uploadSessionId: s.uploadSessionId,
-    speechRate: s.speechRate, speechPitch: s.speechPitch, bgmVolume: s.bgmVolume,
     negativePrompt: s.negativePrompt, apiKey: s.apiKey, useVeo: s.useVeo, ctaText: s.ctaText, setCtaText: s.setCtaText,
     useAnimatedCaptions: s.useAnimatedCaptions, characterDescription: s.characterDescription,
     useFrameChaining: s.useFrameChaining, useKenBurns: s.useKenBurns, useBeatSync: s.useBeatSync,
     useVeoAmbientAudio: s.useVeoAmbientAudio, useGpuEncode: s.useGpuEncode, hookZoomBoost: s.hookZoomBoost,
     useSfx: s.useSfx, sfxVolume: s.sfxVolume, subtitleStyle: s.subtitleStyle, colorGrading: s.colorGrading,
     watermarkText: s.watermarkText, coverImageSessionId: s.coverImageSessionId, coverImagePosition: s.coverImagePosition,
+    useAudioDucking: s.useAudioDucking,
     useBreathing: s.useBreathing, hookEffect: s.hookEffect, hookQuote: s.hookQuote, setHookQuote: s.setHookQuote,
     hookText: s.hookText, setHookText: s.setHookText,
     preferStockVideo: s.preferStockVideo, visualSource: s.visualSource,
@@ -96,6 +99,7 @@ export default function ScriptEditor() {
     // Render trả 422. Thanh trượt Hook SFX có ba mắt xích và đã đứt ở cả ba: model,
     // render_kwargs, và ngay đây.
     hookSfxVolume: s.hookSfxVolume,
+    outroEffect: s.outroEffect, outroReelSfx: s.outroReelSfx, outroSfxVolume: s.outroSfxVolume,
     subscribeToJob: s.subscribeToJob, stopAllAudio: s.stopAllAudio,
     estimatedDurationS: s.estimatedDurationS, setEstimatedDurationS: s.setEstimatedDurationS,
     scriptNotice: s.scriptNotice, setScriptNotice: s.setScriptNotice,
@@ -106,6 +110,41 @@ export default function ScriptEditor() {
   const [probing, setProbing] = useState(false);
   const [expandedAdvanced, setExpandedAdvanced] = useState(new Set());
   
+  const [customSfxList, setCustomSfxList] = useState([]);
+  
+  useEffect(() => {
+    fetch(`${API_BASE}/api/sfx-list`)
+      .then(res => res.json())
+      .then(data => setCustomSfxList(data.sfx_list || []))
+      .catch(err => console.error("Failed to load custom SFX", err));
+  }, []);
+
+  const handleUploadSfx = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) return alert("File quá lớn! Tối đa 10MB.");
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const res = await fetch(`${API_BASE}/api/upload-sfx`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCustomSfxList(prev => [...prev, { value: data.filename, label: data.label }]);
+        alert("Upload thành công!");
+      } else {
+        alert(data.detail || "Upload thất bại.");
+      }
+    } catch (err) {
+      alert("Lỗi kết nối: " + err.message);
+    }
+    e.target.value = '';
+  };
+
   const toggleAdvanced = (idx) => {
     setExpandedAdvanced(prev => {
       const next = new Set(prev);
@@ -143,6 +182,7 @@ export default function ScriptEditor() {
         use_ken_burns: ctx.useKenBurns, use_beat_sync: ctx.useBeatSync, use_veo_ambient_audio: ctx.useVeoAmbientAudio,
         use_gpu_encode: ctx.useGpuEncode, hook_zoom_boost: ctx.hookZoomBoost,
         use_sfx: ctx.useSfx, sfx_volume: ctx.sfxVolume / 100,
+        use_audio_ducking: ctx.useAudioDucking,
         subtitle_style: ctx.subtitleStyle, color_grading: ctx.colorGrading, watermark_text: ctx.watermarkText || undefined,
         cover_image_session_id: ctx.coverImageSessionId || undefined,
         cover_image_position: ctx.coverImagePosition,
@@ -150,9 +190,14 @@ export default function ScriptEditor() {
         hook_text: ctx.hookText,
         prefer_stock_video: ctx.preferStockVideo,
         visual_source: ctx.visualSource,
+        intro_bgm_track: ctx.introBgm === 'none' ? null : ctx.introBgm,
+        intro_bgm_duration: ctx.introBgmDuration,
         use_single_pass_narration: ctx.useSinglePassNarration,
         hook_reel_sfx: ctx.hookReelSfx,
         hook_sfx_volume: ctx.hookSfxVolume / 100,
+        outro_effect: ctx.outroEffect,
+        outro_reel_sfx: ctx.outroReelSfx,
+        outro_sfx_volume: ctx.outroSfxVolume / 100,
       };
 
       const res = await fetch(`${API_BASE}/api/render-video`, {
@@ -811,7 +856,14 @@ export default function ScriptEditor() {
                             }}
                             style={{ flex: 1, minWidth: 0 }}
                           >
-                            {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                            <optgroup label="SFX Mặc định">
+                              {SFX_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                            </optgroup>
+                            {customSfxList.length > 0 && (
+                              <optgroup label="SFX Tự Tải Lên">
+                                {customSfxList.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                              </optgroup>
+                            )}
                           </select>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 80, flexShrink: 0 }}>
                             <span style={{ fontSize: 10, color: 'gray' }}>Vol</span>
@@ -834,6 +886,10 @@ export default function ScriptEditor() {
                               title={`Âm lượng SFX cảnh này: ${scene.sfxVolume !== undefined ? scene.sfxVolume : 100}%`}
                             />
                           </div>
+                          <label className="btn btn-sm btn-outline-secondary" style={{ padding: '2px 6px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }} title="Tải SFX của riêng bạn">
+                            <span>➕</span>
+                            <input type="file" accept=".wav,.mp3" style={{ display: 'none' }} onChange={handleUploadSfx} />
+                          </label>
                         </div>
                       </div>
                       <div style={{ flex: 1, minWidth: 200 }}>

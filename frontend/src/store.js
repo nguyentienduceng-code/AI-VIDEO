@@ -21,6 +21,8 @@ const INITIAL_STATE = {
   voice: 'vi-VN-NamMinhNeural',
   style: STYLES[0].value,
   bgm: 'auto',
+  introBgm: 'none',
+  introBgmDuration: 0,
   apiKey: '',
   showApiKey: false,
 
@@ -42,6 +44,7 @@ const INITIAL_STATE = {
   sfxVolume: 8,
   subtitleStyle: 'karaoke_bold',
   colorGrading: 'warm_cinematic',
+  useAudioDucking: true,
   watermarkText: '',
   hookText: '',
   hookQuote: '',
@@ -59,6 +62,9 @@ const INITIAL_STATE = {
   useSinglePassNarration: false,
   hookReelSfx: 'tick_wood',
   hookSfxVolume: 100,
+  outroEffect: 'none',
+  outroReelSfx: 'none',
+  outroSfxVolume: 100,
 
   scenes: [],
   estimatedDurationS: 0,
@@ -116,6 +122,12 @@ export const useAppStore = create((set, get) => {
         set((state) => ({
           hookEffect: effect,
           hookReelSfx: resolveValidHookSfx(effect, state.hookReelSfx),
+        }));
+    } else if (key === 'outroEffect') {
+      setters['setOutroEffect'] = (effect) =>
+        set((state) => ({
+          outroEffect: effect,
+          outroReelSfx: resolveValidHookSfx(effect, state.outroReelSfx),
         }));
     } else {
       setters[`set${capitalize(key)}`] = (value) =>
@@ -323,6 +335,8 @@ export const useAppStore = create((set, get) => {
     if (preset.voice) patch.voice = preset.voice;
     if (preset.art_style) patch.style = preset.art_style;
     if (preset.bgm_track !== undefined) patch.bgm = preset.bgm_track === null ? 'none' : preset.bgm_track;
+    if (preset.intro_bgm !== undefined) patch.introBgm = preset.intro_bgm;
+    if (preset.intro_bgm_duration !== undefined) patch.introBgmDuration = preset.intro_bgm_duration;
     if (preset.target_duration) patch.targetDuration = preset.target_duration;
     if (preset.narration_tone) patch.narrationTone = preset.narration_tone;
     if (preset.speech_rate) patch.speechRate = preset.speech_rate;
@@ -335,6 +349,7 @@ export const useAppStore = create((set, get) => {
     if (preset.use_single_pass_narration !== undefined) patch.useSinglePassNarration = preset.use_single_pass_narration;
     if (preset.use_sfx !== undefined) patch.useSfx = preset.use_sfx;
     if (preset.sfx_volume !== undefined) patch.sfxVolume = preset.sfx_volume;
+    if (preset.use_audio_ducking !== undefined) patch.useAudioDucking = preset.use_audio_ducking;
     // Preset lưu hook_sfx_volume theo thang % (đúng con số trên thanh trượt), nên gán
     // thẳng vào state — KHÔNG nhân/chia 100 ở đây. Thiếu dòng này thì lưu preset xong
     // nạp lại, riêng mức âm lượng Hook SFX âm thầm quay về mặc định 100 trong khi mọi
@@ -360,6 +375,14 @@ export const useAppStore = create((set, get) => {
     const effectiveHookEffect = patch.hookEffect ?? get().hookEffect;
     const requestedSfx = preset.hook_reel_sfx ?? get().hookReelSfx;
     patch.hookReelSfx = resolveValidHookSfx(effectiveHookEffect, requestedSfx);
+    
+    // Tương tự cho outroEffect
+    if (preset.outro_effect) patch.outroEffect = preset.outro_effect;
+    if (preset.outro_sfx_volume !== undefined) patch.outroSfxVolume = preset.outro_sfx_volume;
+    
+    const effectiveOutroEffect = patch.outroEffect ?? get().outroEffect;
+    const requestedOutroSfx = preset.outro_reel_sfx ?? get().outroReelSfx;
+    patch.outroReelSfx = resolveValidHookSfx(effectiveOutroEffect, requestedOutroSfx);
 
     set(patch);
   };

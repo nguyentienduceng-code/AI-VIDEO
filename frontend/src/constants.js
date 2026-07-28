@@ -140,6 +140,15 @@ export const HOOK_SFX_OPTIONS = {
     { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
     { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
   ],
+  camera_shutter: [
+    { value: 'tick', label: '📸 Tách máy ảnh (Camera Shutter)' },
+  ],
+  cyber_glitch: [
+    { value: 'whoosh', label: '⚡ Xẹt điện/Glitch (Digital Whoosh)' },
+  ],
+  vintage_film_burn: [
+    { value: 'suspense', label: '🎞️ Lạch cạch máy chiếu (Film Projector)' },
+  ],
   none: [],
 };
 

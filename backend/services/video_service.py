@@ -62,6 +62,9 @@ HOOK_EFFECTS = {
     "blackout_question": {"duration": 1.5, "narration_lead": 1.5},
     "typewriter_quote":  {"duration": 2.5, "narration_lead": 2.5},
     "breathing_vignette": {"duration": 3.0, "narration_lead": 3.0},
+    "camera_shutter":    {"duration": 2.0, "narration_lead": 2.0},
+    "cyber_glitch":      {"duration": 2.0, "narration_lead": 2.0},
+    "vintage_film_burn": {"duration": 2.5, "narration_lead": 2.5},
 }
 
 # ── Thời lượng ĐỘNG cho hook có chữ, theo độ dài hook_quote ──────────────────
@@ -100,6 +103,30 @@ def resolve_hook_timing(hook_type: str, hook_quote: str) -> dict | None:
     # thẳng sang Cảnh 1), không có pha "im lặng riêng" như carousel_quote (trục quay
     # xong mới tới pha Quote) nên không cần tách 2 giá trị khác nhau.
     return {"duration": duration, "narration_lead": duration}
+
+def resolve_outro_timing(outro_type: str, hook_quote: str = "") -> dict | None:
+    """
+    Thời lượng phần đuôi video — NGUỒN CHÂN LÝ DUY NHẤT, đối xứng với resolve_hook_timing.
+
+    VÌ SAO PHẢI CÓ: Outro Engine làm video DÀI THÊM (`final_duration += outro_duration`),
+    nhưng main.py tính `video_total_duration` chỉ từ scene_assets nên không hề biết. Con số
+    đó đi thẳng vào thanh tiến trình FFmpeg (`color=...:d={total_duration}`), nên thanh vàng
+    chạy hết 100% RỒI BIẾN MẤT trước khi outro kết thúc — người xem thấy nó hụt mất mấy giây
+    cuối. Đây đúng là loại lệch mà resolve_hook_timing() đã được tạo ra để dập cho đầu video;
+    đuôi video cần bản đối xứng, thay vì để video_service tự cộng thầm.
+
+    Trả None khi không có outro, để caller bỏ qua toàn bộ nhánh này.
+    """
+    if not outro_type or outro_type == "none":
+        return None
+    # carousel_quote KHÔNG lấy theo HOOK_EFFECTS: clip máy xèng có độ dài cố định riêng.
+    if outro_type == "carousel_quote":
+        return {"duration": HOOK_CAROUSEL_DURATION}
+    base = resolve_hook_timing(outro_type, hook_quote)
+    if base is None:
+        return None
+    return {"duration": base["duration"]}
+
 
 # ── Thư viện tiếng trục quay cho Hook Máy Xèng ──────────────────────
 # Thêm tiếng mới: chạy `python tools/fit_hook_sfx.py <file tải về> --name <id>`,
@@ -413,9 +440,13 @@ def _build_scene_clip(
 # BGM Mix and Mastering are now delegated to FFmpeg in audio_mix_service.py
 
 
-def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
+def _mix_audio_tracks(placements, total_duration, sr: int = 44100, return_array: bool = False):
     """
     Trộn nhiều đoạn audio thành 1 AudioArrayClip bằng numpy.
+
+    `return_array=True` trả thẳng (mảng numpy, sample_rate) thay vì bọc AudioArrayClip —
+    dùng khi cần GHI RA FILE (track sidechain chỉ-giọng), khỏi phải render ngược clip
+    về mảng một lần nữa. Xem write_voice_sidechain().
 
     Mỗi phần tử: (path, start_time, volume, fadeout) hoặc (path, start, volume, fadeout, max_dur).
     `max_dur` (tuỳ chọn) CẮT CỨNG độ dài đoạn đó — dùng cho SFX mà người dùng tự nạp vào,
@@ -498,7 +529,10 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
         used = True
 
     if not used:
-        return None
+        # Giữ đúng ARITY của giá trị trả về ở cả hai chế độ: caller dùng return_array
+        # unpack thành 2 biến, trả None trần ở đây sẽ ném TypeError thay vì cho nó
+        # kiểm tra "không có audio" một cách bình thường.
+        return (None, sr) if return_array else None
 
     # CẮT về đúng thời lượng video.
     # `total_samples` cộng thêm 1 giây đệm để mọi SFX đặt sát cuối vẫn ghi được trọn vẹn,
@@ -539,7 +573,45 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
                 f"(đỉnh gốc {float(absm.max()):.2f}) — giọng đọc giữ nguyên âm lượng."
             )
 
+    if return_array:
+        return master, sr
     return AudioArrayClip(master, fps=sr)
+
+
+# Hậu tố cố định của track chỉ-giọng dùng làm tín hiệu điều khiển ducking.
+# Quy ước đường dẫn (thay vì đổi giá trị trả về của render_final_video) để cả đường
+# worker lẫn đường inline tự tìm được file mà không phải nối thêm một kênh truyền nữa.
+VOICE_SIDECHAIN_SUFFIX = ".voice.wav"
+
+
+def write_voice_sidechain(voice_placements, master_audio_path, total_duration, video_path) -> str | None:
+    """
+    Ghi một track CHỈ CÓ GIỌNG ĐỌC, làm tín hiệu điều khiển cho sidechain ducking.
+
+    VÌ SAO CẦN: bước master trước đây lấy `[0:a]` — track audio của video thô — làm
+    sidechain. Nhưng track đó đã được trộn sẵn giọng đọc + TOÀN BỘ SFX + tiếng hook.
+    Hậu quả: mỗi tiếng whoosh, impact_boom, tiếng máy xèng đều dìm nhạc nền xuống y hệt
+    giọng nói — nhạc bị nén xuống đúng vào khoảnh khắc lẽ ra phải hoành tráng nhất.
+    SFX là NỘI DUNG, không phải tín hiệu điều khiển.
+
+    Trả None nếu không có giọng (photo_slideshow) — caller tự hiểu là khỏi ducking.
+    """
+    placements = _all_placements(voice_placements, master_audio_path, total_duration)
+    if not placements:
+        return None
+    try:
+        import soundfile as sf
+
+        master, sr = _mix_audio_tracks(placements, total_duration, return_array=True)
+        if master is None or not getattr(master, "size", 0):
+            return None
+        out = video_path + VOICE_SIDECHAIN_SUFFIX
+        sf.write(out, master, sr)
+        return out
+    except Exception as e:
+        # Không có sidechain thì ducking rơi về dùng [0:a] như cũ — kém hơn, không chết.
+        logger.warning("[AudioMix] Không ghi được track sidechain chỉ-giọng: %s", e)
+        return None
 
 
 def _all_placements(audio_placements, master_audio_path, total_duration):
@@ -572,6 +644,9 @@ RENDER_KWARG_KEYS = frozenset({
     "hook_reel_sfx",
     "hook_sfx_volume",
     "hook_text",
+    "outro_effect",
+    "outro_reel_sfx",
+    "outro_sfx_volume",
     "use_fast_assembly",
     "use_gpu_encode",
 })
@@ -618,6 +693,9 @@ def render_final_video(
 
     clips = []
     audio_placements = []  # (path, start_time, volume, fadeout) — trộn bằng numpy sau vòng lặp
+    # TẬP CON chỉ gồm giọng đọc, không SFX. Dùng làm tín hiệu điều khiển ducking ở bước
+    # master — xem write_voice_sidechain() để biết vì sao không thể dùng track đã trộn.
+    voice_placements = []
     speech_segments = []
     final_duration = 0.0
 
@@ -649,7 +727,10 @@ def render_final_video(
                 build_carousel_hook, SLOT_DURATION,
                 build_blackout_question_hook,
                 build_typewriter_quote_hook,
-                build_breathing_vignette_hook
+                build_breathing_vignette_hook,
+                build_camera_shutter_hook,
+                build_cyber_glitch_hook,
+                build_vintage_film_burn_hook
             )
             cover_img = scene_assets[0]["image_path"]
 
@@ -721,6 +802,37 @@ def render_final_video(
                 effective_volume = hook_sfx_volume
                 if os.path.isfile(swell_sfx):
                     audio_placements.append((swell_sfx, 0.0, min(1.0, effective_volume * 0.8), 0.0))
+                    
+            elif hook_type == "camera_shutter":
+                hook_clip_overlay = build_camera_shutter_hook(
+                    cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
+                )
+                # Phát tiếng tách máy ảnh hoặc reel sfx tương ứng
+                reel_key = kwargs.get("hook_reel_sfx", "none")
+                shutter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "tick.wav")) # Fallback
+                effective_volume = hook_sfx_volume
+                if os.path.isfile(shutter_sfx) and reel_key != "none":
+                    audio_placements.append((shutter_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                    
+            elif hook_type == "cyber_glitch":
+                hook_clip_overlay = build_cyber_glitch_hook(
+                    cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
+                )
+                reel_key = kwargs.get("hook_reel_sfx", "none")
+                glitch_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "whoosh.wav"))
+                effective_volume = hook_sfx_volume
+                if os.path.isfile(glitch_sfx) and reel_key != "none":
+                    audio_placements.append((glitch_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                    
+            elif hook_type == "vintage_film_burn":
+                hook_clip_overlay = build_vintage_film_burn_hook(
+                    cover_img, video_width, video_height, HOOK_EFFECTS[hook_type]["duration"]
+                )
+                reel_key = kwargs.get("hook_reel_sfx", "none")
+                burn_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "suspense.wav"))
+                effective_volume = hook_sfx_volume
+                if os.path.isfile(burn_sfx) and reel_key != "none":
+                    audio_placements.append((burn_sfx, 0.0, min(1.0, effective_volume), 0.0))
                 
             if hook_clip_overlay:
                 hook_clip_overlay = hook_clip_overlay.with_start(0.0).with_position("center")
@@ -751,7 +863,9 @@ def render_final_video(
         # Thu thập vị trí audio để TRỘN bằng numpy sau vòng lặp (xem _mix_audio_tracks).
         # Track giọng đọc (TTS) — fade-out nhẹ cuối để không cụt chữ.
         if has_audio and os.path.isfile(asset["audio_path"]):
-            audio_placements.append((asset["audio_path"], start_time, 1.0, AUDIO_FADEOUT_DURATION))
+            voice_entry = (asset["audio_path"], start_time, 1.0, AUDIO_FADEOUT_DURATION)
+            audio_placements.append(voice_entry)
+            voice_placements.append(voice_entry)
 
         # SFX chọn riêng cho từng cảnh giờ ĐÃ BỊ CHẶN bởi toggle global use_sfx
         # theo yêu cầu của user (không bật SFX thì tắt sạch tiếng xoẹt chuyển cảnh).
@@ -764,6 +878,110 @@ def render_final_video(
                 audio_placements.append((sfx_path, start_time, sfx_volume * SFX_MIX_GAIN * scene_vol_ratio, 0.0))
 
         final_duration = max(final_duration, start_time + dur)
+
+    # ── Outro Engine ──
+    outro_type = kwargs.get("outro_effect")
+    outro_clip_overlay = None
+    outro_duration = 0.0
+    outro_start = final_duration
+
+    if outro_type and outro_type != "none" and scene_assets:
+        try:
+            from services.hook_engine import (
+                build_carousel_hook, SLOT_DURATION,
+                build_blackout_question_hook,
+                build_typewriter_quote_hook,
+                build_breathing_vignette_hook,
+                build_camera_shutter_hook,
+                build_cyber_glitch_hook,
+                build_vintage_film_burn_hook
+            )
+            outro_cover_img = scene_assets[-1]["image_path"]
+            outro_sfx_volume = kwargs.get("outro_sfx_volume", 1.0)
+            outro_reel_key = kwargs.get("outro_reel_sfx", "none")
+            
+            # Cùng một hàm mà main.py dùng để cộng outro vào tổng thời lượng — hai nơi
+            # không thể lệch nhau. KHÔNG tính lại tay ở đây.
+            outro_duration = (resolve_outro_timing(outro_type, hook_text) or {}).get("duration", 2.0)
+
+            if outro_type == "carousel_quote":
+                outro_clip_overlay = build_carousel_hook(outro_cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
+                sfx_dir = SFX_DIR
+                reel_sfx = os.path.join(sfx_dir, HOOK_REEL_SOUNDS.get(outro_reel_key, "tick_wood.mp3"))
+                whoosh_sfx = os.path.join(sfx_dir, "whoosh.wav")
+                ding_sfx = os.path.join(sfx_dir, "ding.wav")
+                slot_dur = SLOT_DURATION
+                if os.path.isfile(whoosh_sfx):
+                    audio_placements.append((whoosh_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.7), 0.0))
+                if os.path.isfile(reel_sfx) and outro_reel_key != "none":
+                    audio_placements.append((reel_sfx, outro_start + slot_dur, min(1.5, outro_sfx_volume), 0.0))
+                if os.path.isfile(ding_sfx):
+                    audio_placements.append((ding_sfx, outro_start + HOOK_CAROUSEL_DURATION - 0.5, min(1.0, outro_sfx_volume * 0.8), 0.0))
+            
+            elif outro_type == "blackout_question":
+                outro_clip_overlay = build_blackout_question_hook(
+                    hook_text, video_width, video_height, outro_duration, subtitle_font_size
+                )
+                impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "impact_boom.mp3"))
+                if os.path.isfile(impact_sfx) and outro_reel_key != "none":
+                    audio_placements.append((impact_sfx, outro_start + 0.0, min(1.2, outro_sfx_volume * 0.9), 0.0))
+                    
+            elif outro_type == "typewriter_quote":
+                outro_clip_overlay = build_typewriter_quote_hook(
+                    hook_text, video_width, video_height, outro_duration, outro_cover_img
+                )
+                typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "typewriter_fast.mp3"))
+                if os.path.isfile(typewriter_sfx) and outro_reel_key != "none":
+                    audio_placements.append((typewriter_sfx, outro_start + 0.0, min(1.2, outro_sfx_volume * 0.6), 0.0, outro_duration * 0.85))
+                tick_sfx = os.path.join(SFX_DIR, "tick.wav")
+                if os.path.isfile(tick_sfx):
+                    words = hook_text.strip().split()
+                    n_words = len(words)
+                    steps = max(1, min(n_words, 24))
+                    step_dur = (outro_duration * 0.85) / steps
+                    for i in range(steps):
+                        audio_placements.append((tick_sfx, outro_start + i * step_dur, min(2.5, outro_sfx_volume * 1.5), 0.0))
+                        
+            elif outro_type == "breathing_vignette":
+                outro_clip_overlay = build_breathing_vignette_hook(
+                    outro_cover_img, video_width, video_height, outro_duration
+                )
+                swell_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "cinematic_swell.mp3"))
+                if os.path.isfile(swell_sfx) and outro_reel_key != "none":
+                    audio_placements.append((swell_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume * 0.8), 0.0))
+                    
+            elif outro_type == "camera_shutter":
+                outro_clip_overlay = build_camera_shutter_hook(
+                    outro_cover_img, video_width, video_height, outro_duration
+                )
+                shutter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "tick.wav"))
+                if os.path.isfile(shutter_sfx) and outro_reel_key != "none":
+                    audio_placements.append((shutter_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                    
+            elif outro_type == "cyber_glitch":
+                outro_clip_overlay = build_cyber_glitch_hook(
+                    outro_cover_img, video_width, video_height, outro_duration
+                )
+                glitch_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "whoosh.wav"))
+                if os.path.isfile(glitch_sfx) and outro_reel_key != "none":
+                    audio_placements.append((glitch_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                    
+            elif outro_type == "vintage_film_burn":
+                outro_clip_overlay = build_vintage_film_burn_hook(
+                    outro_cover_img, video_width, video_height, outro_duration
+                )
+                burn_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "suspense.wav"))
+                if os.path.isfile(burn_sfx) and outro_reel_key != "none":
+                    audio_placements.append((burn_sfx, outro_start + 0.0, min(1.0, outro_sfx_volume), 0.0))
+                    
+            if outro_clip_overlay:
+                outro_clip_overlay = outro_clip_overlay.with_start(outro_start).with_position("center")
+                final_duration += outro_duration
+                
+        except Exception as e:
+            logger.error(f"Outro Engine Error ({outro_type}): {e}", exc_info=True)
+            outro_clip_overlay = None
+            outro_duration = 0.0
 
     # ══════════════════════════════════════════════════════════════════
     # ĐƯỜNG NHANH: dựng cả timeline bằng MỘT lệnh FFmpeg (xfade + NVENC).
@@ -785,12 +1003,28 @@ def render_final_video(
                     audio_wav = output_path + ".mix.wav"
                     mixed.write_audiofile(audio_wav, fps=44100, logger=None)
 
+                # Track chỉ-giọng cho ducking ở bước master. Ghi CẢ Ở ĐƯỜNG NHANH, nếu
+                # không thì bật FastAssembly (mặc định) sẽ âm thầm mất sidechain và
+                # ducking rơi về dùng track đã trộn lẫn SFX — đúng cái đang muốn tránh.
+                write_voice_sidechain(
+                    voice_placements, master_audio_path, final_duration, output_path
+                )
+
                 hook_mp4 = None
                 if hook_clip_overlay is not None:
                     # Hook chỉ ~105 khung, để MoviePy dựng riêng ra file rồi FFmpeg phủ lên
                     hook_mp4 = output_path + ".hook.mp4"
                     hook_clip_overlay.write_videofile(
                         hook_mp4, fps=FPS, codec="libx264", preset="veryfast",
+                        audio=False, logger=None,
+                        temp_audiofile_path=TEMP_DIR,
+                    )
+                    
+                outro_mp4 = None
+                if outro_clip_overlay is not None:
+                    outro_mp4 = output_path + ".outro.mp4"
+                    outro_clip_overlay.write_videofile(
+                        outro_mp4, fps=FPS, codec="libx264", preset="veryfast",
                         audio=False, logger=None,
                         temp_audiofile_path=TEMP_DIR,
                     )
@@ -815,9 +1049,12 @@ def render_final_video(
                     crossfade_dur=crossfade_dur, audio_path=audio_wav,
                     hook_video=hook_mp4,
                     hook_duration=_timing.get("duration", 0.0),
+                    outro_video=outro_mp4,
+                    outro_start=outro_start,
+                    outro_duration=outro_duration,
                     use_gpu=kwargs.get("use_gpu_encode", True),
                 )
-                for tmp_f in (audio_wav, hook_mp4):
+                for tmp_f in (audio_wav, hook_mp4, outro_mp4):
                     if tmp_f and os.path.exists(tmp_f):
                         try:
                             os.remove(tmp_f)
@@ -825,6 +1062,8 @@ def render_final_video(
                             pass
                 if hook_clip_overlay is not None:
                     hook_clip_overlay.close()
+                if outro_clip_overlay is not None:
+                    outro_clip_overlay.close()
                 return output_path
         except Exception as fast_err:
             logger.warning(f"[FastAssembly] Thất bại ({fast_err}). Quay về MoviePy.")
@@ -858,6 +1097,7 @@ def render_final_video(
     # TRƯỚC ĐÂY nhánh này gọi `final.with_audio(master_audio)` SAU khi đã trộn xong —
     # tức là THAY TRẮNG toàn bộ track vừa trộn, xoá sạch SFX từng cảnh lẫn tiếng Máy Xèng
     # mở màn. Giờ nó tham gia vào cùng một lần trộn nên mọi thứ cùng vang lên.
+    write_voice_sidechain(voice_placements, master_audio_path, final_duration, output_path)
     slow_placements = _all_placements(audio_placements, master_audio_path, final_duration)
     if master_audio_path and os.path.exists(master_audio_path):
         speech_segments = [(0.0, final_duration)]
@@ -876,9 +1116,14 @@ def render_final_video(
     # cả hai phủ lên TOÀN BỘ video nên MoviePy phải trộn chúng ở mọi khung hình bằng
     # Python — đo thực tế mất 1.93 lần tốc độ (6.83 fps → 3.54 fps). FFmpeg làm cùng việc
     # đó bằng C, trong chính lượt encode vốn đã phải chạy, nên gần như miễn phí.
-    if hook_clip_overlay is not None:
+    if hook_clip_overlay is not None or outro_clip_overlay is not None:
+        overlays = [final]
+        if hook_clip_overlay is not None:
+            overlays.append(hook_clip_overlay)
+        if outro_clip_overlay is not None:
+            overlays.append(outro_clip_overlay)
         final = CompositeVideoClip(
-            [final, hook_clip_overlay], size=(video_width, video_height)
+            overlays, size=(video_width, video_height)
         ).with_duration(final_duration).with_audio(final.audio)
 
     final.write_videofile(

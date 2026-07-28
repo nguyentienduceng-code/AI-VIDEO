@@ -123,6 +123,50 @@ def test_bien_gia_tri_hop_le_duoc_chan_o_tang_api():
             pass
 
 
+_REQ_ATTR_RE = re.compile(r"\breq\.([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _pipeline_source(main_py_source: str) -> str:
+    """Thân hàm _run_render_pipeline — nơi DUY NHẤT nhận RenderVideoRequest.
+
+    Phải cắt đúng hàm này: gần như MỌI endpoint trong main.py đều đặt tên tham số là
+    `req`, nhưng của các model khác (GenerateScriptRequest, PresetRequest...). Quét cả
+    file sẽ báo động giả hàng loạt và test bị vô hiệu hoá vì không ai tin nó nữa.
+    """
+    start = main_py_source.index("async def _run_render_pipeline")
+    rest = main_py_source[start:]
+    # Hàm kết thúc ở định nghĩa top-level kế tiếp (không thụt đầu dòng).
+    end = re.search(r"\n(?=(?:async def |def |@app\.|class ))", rest)
+    return rest[: end.start()] if end else rest
+
+
+def test_moi_field_req_doc_deu_ton_tai_trong_model():
+    """
+    Mọi `req.<field>` trong main.py phải có thật trong RenderVideoRequest.
+
+    ĐÂY LÀ LƯỚI CHO MỘT SỰ CỐ THẬT: bản Outro/Dynamic-BGM thêm `req.intro_bgm_track` vào
+    pipeline nhưng QUÊN khai báo field ở model. Pydantic mặc định BỎ IM LẶNG khoá lạ, nên
+    frontend gửi đúng tên vẫn bị vứt, rồi MỌI job render chết bằng AttributeError — ở vị
+    trí ngoài khối try nên lỗi thoát khỏi BackgroundTask và job đứng ở "pending" vĩnh
+    viễn, giao diện không hiện lỗi gì.
+
+    Không lớp nào trong bốn cổng chất lượng bắt được: cú pháp hợp lệ, ruff không kiểm tra
+    thuộc tính Pydantic, và nhánh lỗi chỉ nổ lúc chạy thật.
+    """
+    main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
+    with open(main_py, encoding="utf-8") as f:
+        source = f.read()
+
+    fields = set(RenderVideoRequest.model_fields)
+    duoc_doc = set(_REQ_ATTR_RE.findall(_pipeline_source(source)))
+    thieu = sorted(a for a in duoc_doc if a not in fields and not a.startswith("model_"))
+
+    assert not thieu, (
+        "main.py đọc req.{" + ", ".join(thieu) + "} nhưng RenderVideoRequest không khai báo. "
+        "Pydantic bỏ im lặng khoá lạ → AttributeError giữa job render."
+    )
+
+
 if __name__ == "__main__":
     # Chạy trực tiếp bằng python.exe thì stdout là cp1252 và mọi dòng kết quả có dấu
     # tiếng Việt sẽ ném UnicodeEncodeError — xem services/log_setup.py.

@@ -139,8 +139,10 @@ def _bgm_volume_expr(bgm_volume: float, segments: list | None) -> str:
 def master_audio_and_export(
     input_video_path: str,
     output_path: str,
-    bgm_path: str = None,
-    ass_subtitle_path: str = None,
+    bgm_path: str | None = None,
+    intro_bgm_path: str | None = None,
+    intro_bgm_duration: float = 0.0,
+    ass_subtitle_path: str | None = None,
     use_gpu: bool = False,
     bgm_volume: float = 0.15,
     watermark_text: str = None,
@@ -149,6 +151,10 @@ def master_audio_and_export(
     progress_bar: bool = True,
     total_duration: float = 0.0,
     bgm_volume_segments: list | None = None,
+    use_audio_ducking: bool = True,
+    # Track CHỈ-GIỌNG do video_service.write_voice_sidechain() ghi ra, dùng làm tín hiệu
+    # điều khiển ducking. None → rơi về tách đôi track đã trộn (kém hơn, xem chỗ dùng).
+    sidechain_audio_path: str | None = None,
 ) -> str:
     """
     Bước cuối: trộn BGM, master âm thanh, lọc màu, vignette, thanh tiến trình, phụ đề, encode.
@@ -167,31 +173,106 @@ def master_audio_and_export(
     ]
 
     has_bgm = bgm_path and os.path.isfile(bgm_path)
+    has_intro_bgm = intro_bgm_path and os.path.isfile(intro_bgm_path) and intro_bgm_duration > 0
+    
+    # 1: Main BGM (if present)
     if has_bgm:
         cmd.extend(["-stream_loop", "-1", "-i", bgm_path])
+    
+    # 2: Intro BGM (if present)
+    intro_idx = 2 if has_bgm else 1
+    if has_intro_bgm:
+        cmd.extend(["-stream_loop", "-1", "-i", intro_bgm_path])
+
+    # 3: track CHỈ-GIỌNG, chỉ dùng làm tín hiệu điều khiển ducking (không phát ra loa).
+    # KHÔNG -stream_loop: nó dài đúng bằng video, lặp lại là vô nghĩa.
+    sc_idx = None
+    if use_audio_ducking and sidechain_audio_path and os.path.isfile(sidechain_audio_path):
+        sc_idx = 1 + int(bool(has_bgm)) + int(bool(has_intro_bgm))
+        cmd.extend(["-i", sidechain_audio_path])
 
     input_has_audio = _has_audio_stream(input_video_path)
     filter_complex = []
     bgm_vol_filter = _bgm_volume_expr(bgm_volume, bgm_volume_segments)
 
-    if input_has_audio:
+    # ── Chuyển tông Intro BGM → Main BGM ────────────────────────────────────────
+    # DÙNG acrossfade, KHÔNG dùng afade+amix. Ba lý do, đều đã cắn trong bản trước:
+    #
+    #  1. amix mặc định `normalize=1` → CHIA biên độ cho số input. Intro và Main đều chỉ
+    #     còn 0.5 (−6dB), trong khi nhánh không có intro (`[1:a]` trần) là nguyên 100%.
+    #     Kết quả: BẬT nhạc mở màn làm nhạc nền cả video nhỏ hẳn đi so với khi tắt —
+    #     loudnorm phía sau chuẩn hoá tổng nên không lộ ở âm lượng chung, nhưng TỈ LỆ
+    #     nhạc/giọng thì đổi thật và nghe ra ngay.
+    #  2. Hai afade độc lập không bù nhau ở điểm giao: cả hai cùng ~0.5 biên độ tạo một
+    #     chỗ TRŨNG âm lượng giữa crossfade. acrossfade với c1/c2=tri giữ năng lượng phẳng.
+    #  3. afade=t=in chỉ BỊT TIẾNG nhạc chính chứ không giữ nó lại — bài hát vẫn chạy từ
+    #     t=0, nên lúc hiện ra thì đã trôi mất T giây đầu, đúng đoạn intro hay nhất.
+    #     atrim + acrossfade cho nhạc chính vào từ giây 0 của chính nó.
+    #
+    # atrim biến luồng `-stream_loop -1` vô hạn thành hữu hạn đúng T giây (và tự lặp nếu
+    # bản nhạc intro ngắn hơn T) — acrossfade bắt buộc input đầu phải hữu hạn.
+    bgm_stream = None
+    if has_intro_bgm:
+        t = intro_bgm_duration
+        fade_d = min(2.0, t / 2.0)
+        filter_complex.append(f"[{intro_idx}:a]atrim=0:{t:.3f},asetpts=N/SR/TB[intro_t]")
         if has_bgm:
-            filter_complex.append(f"[1:a]equalizer=f=2000:t=q:w=2:g=-6,{bgm_vol_filter}[bgm_eq]")
+            filter_complex.append(
+                f"[intro_t][1:a]acrossfade=d={fade_d:.3f}:c1=tri:c2=tri[bgm_mix]"
+            )
+        else:
+            # Chỉ có nhạc mở màn: tự tắt dần rồi im, không có gì nối tiếp.
+            filter_complex.append(
+                f"[intro_t]afade=t=out:st={max(0.0, t - fade_d):.3f}:d={fade_d:.3f}[bgm_mix]"
+            )
+        bgm_stream = "[bgm_mix]"
+    elif has_bgm:
+        bgm_stream = "[1:a]"
+
+
+    if input_has_audio:
+        if bgm_stream:
+            filter_complex.append(f"{bgm_stream}equalizer=f=2000:t=q:w=2:g=-6,{bgm_vol_filter}[bgm_eq]")
             filter_complex.append("[0:a]bass=g=5:f=110,acompressor=threshold=-15dB:ratio=3:attack=5:release=50[voice_eq_raw]")
-            filter_complex.append("[voice_eq_raw]asplit=2[voice_eq1][voice_eq2]")
-            # release=1000ms (không phải 300): nhạc nền dâng lại CHẬM sau khi hết lời
-            # thoại. Ở 300ms nhạc bật lên ngay trong khoảng lặng giữa hai câu, nghe
-            # giật cục như đang bơm — 1s thì mượt, tai gần như không nhận ra.
-            filter_complex.append("[bgm_eq][voice_eq1]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=1000[bgm_ducked]")
-            filter_complex.append("[voice_eq2][bgm_ducked]amix=inputs=2:duration=first[mixed]")
+
+            if use_audio_ducking:
+                if sc_idx is not None:
+                    # Tín hiệu điều khiển là track CHỈ-GIỌNG do video_service ghi riêng.
+                    filter_complex.append(f"[{sc_idx}:a]highpass=f=120,acompressor=threshold=-20dB:ratio=4[sc_key]")
+                    ducking_key = "[sc_key]"
+                    voice_out = "[voice_eq_raw]"
+                else:
+                    # Không có track riêng → đành tách đôi chính track đã trộn. Kém hơn
+                    # (SFX cũng dìm nhạc) nhưng vẫn tốt hơn là không ducking gì.
+                    filter_complex.append("[voice_eq_raw]asplit=2[voice_eq1][voice_eq2]")
+                    ducking_key = "[voice_eq1]"
+                    voice_out = "[voice_eq2]"
+
+                # threshold 0.03 (~-30dBFS) thay cho 0.05: giọng đã qua bass boost +
+                # acompressor nên rất "nóng", ngưỡng cũ gần như luôn bị vượt → ducking
+                # thành thường trực chứ không theo nhịp nói.
+                # attack 20ms thay cho 5ms: 5ms bập vào quá nhanh, nghe rõ tiếng "chụp"
+                # ở đầu mỗi câu.
+                # release 350ms thay cho 1000ms: 1 giây thì nhạc không kịp nổi lên trong
+                # các khoảng nghỉ giữa câu, nghe như nhạc bị tắt hẳn suốt đoạn thoại.
+                filter_complex.append(
+                    f"[bgm_eq]{ducking_key}sidechaincompress="
+                    "threshold=0.03:ratio=6:attack=20:release=350[bgm_ducked]"
+                )
+                # normalize=0: xem lý do ở khối crossfade phía trên. Ở đây nó giữ đúng
+                # TỈ LỆ giọng/nhạc mà người dùng đã chỉnh, thay vì bóp cả hai còn một nửa.
+                filter_complex.append(f"{voice_out}[bgm_ducked]amix=inputs=2:duration=first:normalize=0[mixed]")
+            else:
+                filter_complex.append("[voice_eq_raw][bgm_eq]amix=inputs=2:duration=first:normalize=0[mixed]")
+
             audio_out = "[mixed]"
         else:
             filter_complex.append("[0:a]bass=g=5:f=110,acompressor=threshold=-15dB:ratio=3:attack=5:release=50[voice_eq]")
             audio_out = "[voice_eq]"
         filter_complex.append(f"{audio_out}loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.95:attack=5:release=50,aresample={OUTPUT_AUDIO_RATE}[audio_master]")
     else:
-        if has_bgm:
-            filter_complex.append(f"[1:a]equalizer=f=2000:t=q:w=2:g=-6,{bgm_vol_filter}[bgm_eq]")
+        if bgm_stream:
+            filter_complex.append(f"{bgm_stream}equalizer=f=2000:t=q:w=2:g=-6,{bgm_vol_filter}[bgm_eq]")
             filter_complex.append(f"[bgm_eq]loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.95:attack=5:release=50,aresample={OUTPUT_AUDIO_RATE}[audio_master]")
 
     video_chain = "[0:v]"
@@ -250,7 +331,11 @@ def master_audio_and_export(
     else:
         cmd.extend(["-map", "0:v"])
         
-    if input_has_audio or has_bgm:
+    # `bgm_stream`, KHÔNG phải `has_bgm`: bgm_stream bật cả khi CHỈ có nhạc mở màn.
+    # LỖI CŨ: điều kiện `has_bgm` bỏ sót đúng trường hợp đó — filtergraph vẫn dựng
+    # [audio_master] đầy đủ nhưng không map, nên video (vd photo_slideshow chỉ chọn
+    # Intro BGM) ra CÂM HOÀN TOÀN mà không một dòng lỗi nào.
+    if input_has_audio or bgm_stream:
         cmd.extend(["-map", "[audio_master]"])
 
     # Phần đuôi không phụ thuộc encoder. Tách ra để khi fallback thì DỰNG LẠI lệnh

@@ -25,8 +25,58 @@ export default function AdvancedSettings() {
     sfxVolume: s.sfxVolume, setSfxVolume: s.setSfxVolume,
     hookSfxVolume: s.hookSfxVolume, setHookSfxVolume: s.setHookSfxVolume,
     watermarkText: s.watermarkText, setWatermarkText: s.setWatermarkText,
+    introBgm: s.introBgm, setIntroBgm: s.setIntroBgm,
+    introBgmDuration: s.introBgmDuration, setIntroBgmDuration: s.setIntroBgmDuration,
+    // Outro + Ducking: THIẾU những dòng này thì ctx.setOutroEffect là undefined và bấm
+    // vào dropdown ném TypeError, còn nút Ducking thành uncontrolled — bật/tắt không có
+    // tác dụng gì. Cùng loại lỗi với hookSfxVolume; tests/test_frontend_store_contract.py
+    // đối chiếu selector với mọi khoá được đọc trong file này nên quên là test đỏ ngay.
+    useAudioDucking: s.useAudioDucking, setUseAudioDucking: s.setUseAudioDucking,
+    outroEffect: s.outroEffect, setOutroEffect: s.setOutroEffect,
+    outroReelSfx: s.outroReelSfx, setOutroReelSfx: s.setOutroReelSfx,
+    outroSfxVolume: s.outroSfxVolume, setOutroSfxVolume: s.setOutroSfxVolume,
     playPreview: s.playPreview,
   })));
+
+  const BGMOptions = (
+    <>
+      <optgroup label="🧘‍♀️ Thiền định & Chữa lành (Ambient)">
+        <option value="moment_of_peace">Moment Of Peace</option>
+        <option value="new_age_nature">New Age Nature</option>
+        <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
+      </optgroup>
+
+      <optgroup label="🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)">
+        <option value="ghost_piano_yeti_music_main_version">Ghost Piano (Yeti Music)</option>
+        <option value="black_light_all_good_folks_main">Black Light (All Good Folks)</option>
+        <option value="running_night">Running Night</option>
+      </optgroup>
+
+      <optgroup label="☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)">
+        <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
+        <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
+        <option value="livin_easy_oliver_massa_main">Livin Easy (Oliver Massa)</option>
+        <option value="Back_When">Back When</option>
+      </optgroup>
+
+      <optgroup label="🎉 Năng động & Tích cực (Upbeat)">
+        <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
+        <option value="afro_pop">Afro Pop</option>
+        <option value="music_promotion">Music Promotion</option>
+      </optgroup>
+
+      <optgroup label="🎧 Hip-hop & Đường phố (Rap/Trap)">
+        <option value="hype_drill">Hype Drill</option>
+        <option value="no_sleep_hiphop">No Sleep Hip-Hop</option>
+        <option value="rap_beat">Rap Beat</option>
+        <option value="type_beat">Type Beat</option>
+      </optgroup>
+
+      <optgroup label="🤡 Vui nhộn (Funny)">
+        <option value="comedy_cartoon">Comedy Cartoon</option>
+      </optgroup>
+    </>
+  );
 
   // Helper component for Toggle Switch
   const ToggleRow = ({ label, checked, onChange, tooltip }) => (
@@ -75,6 +125,12 @@ export default function AdvancedSettings() {
           tooltip="Cho phép phát các hiệu ứng âm thanh (SFX) mà bạn đã cấu hình riêng cho từng cảnh ở bước Kịch bản. Nếu tắt, toàn bộ SFX chuyển cảnh sẽ bị loại bỏ."
         />
         <ToggleRow
+          label="Tự động giảm nhạc nền khi đọc (Audio Ducking)"
+          checked={ctx.useAudioDucking}
+          onChange={ctx.setUseAudioDucking}
+          tooltip="Tự động giảm âm lượng nhạc nền (BGM) xuống nhỏ hơn khi có giọng đọc (để làm rõ lời thoại), và tăng lại khi có khoảng lặng."
+        />
+        <ToggleRow
           label={<span>🎙️ Đọc <b>liền mạch cả bài</b> (1 lần gọi)</span>}
           checked={ctx.useSinglePassNarration}
           onChange={ctx.setUseSinglePassNarration}
@@ -102,6 +158,9 @@ export default function AdvancedSettings() {
             <option value="blackout_question">⬛ Màn đen câu hỏi (A1 Blackout)</option>
             <option value="typewriter_quote">⌨️ Gõ chữ (A2 Typewriter)</option>
             <option value="breathing_vignette">🕯️ Thu phóng mờ (C3 Vignette)</option>
+            <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
+            <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
+            <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
             <option value="none">🚫 Không dùng Hook</option>
           </select>
         </div>
@@ -166,7 +225,69 @@ export default function AdvancedSettings() {
           </div>
         </div>
         <div className="input-group">
-          {/* Note: Title Hook is distinct from Quote. Using this field for Màn đen/Gõ chữ. */}
+          <label className="field-label">HIỆU ỨNG OUTRO KẾT THÚC</label>
+          <select className="form-select form-select-sm" value={ctx.outroEffect} onChange={e => ctx.setOutroEffect(e.target.value)}>
+            <option value="none">🚫 Không dùng Outro</option>
+            <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
+            <option value="blackout_question">⬛ Màn đen (Blackout)</option>
+            <option value="typewriter_quote">⌨️ Gõ chữ (Typewriter)</option>
+            <option value="breathing_vignette">🕯️ Thu phóng mờ (Vignette)</option>
+            <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
+            <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
+            <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
+          </select>
+        </div>
+        <div className="input-group" style={{ opacity: ctx.outroEffect !== 'none' ? 1 : 0.4, pointerEvents: ctx.outroEffect !== 'none' ? 'auto' : 'none' }}>
+          <label className="field-label">ÂM THANH OUTRO (OUTRO SFX)</label>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
+            <select
+              className="form-select form-select-sm"
+              value={ctx.outroReelSfx}
+              onChange={e => ctx.setOutroReelSfx(e.target.value)}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              {(HOOK_SFX_OPTIONS[ctx.outroEffect] || []).map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 80, flexShrink: 0 }}>
+              <span style={{ fontSize: 10, color: 'gray' }}>Vol</span>
+              <input
+                type="range"
+                className="vol-slider"
+                min="0"
+                max="200"
+                value={ctx.outroSfxVolume}
+                onChange={e => ctx.setOutroSfxVolume(Number(e.target.value))}
+                style={{ flex: 1, minWidth: 0 }}
+                title={`Âm lượng Outro SFX: ${ctx.outroSfxVolume}%`}
+              />
+            </div>
+          </div>
+        </div>
+        <div className="input-group">
+          <label className="field-label">♬ NHẠC MỞ ĐẦU (INTRO BGM - Tùy chọn)</label>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+            <select className="form-select form-select-sm" value={ctx.introBgm} onChange={e => ctx.setIntroBgm(e.target.value)} style={{ flex: 1 }}>
+              <option value="none">Không dùng nhạc mở đầu riêng</option>
+              {BGMOptions}
+            </select>
+            {ctx.introBgm !== 'none' && (
+              <select className="form-select form-select-sm" value={ctx.introBgmDuration} onChange={e => ctx.setIntroBgmDuration(Number(e.target.value))} style={{ width: 120 }}>
+                <option value={0}>Hết cảnh 1</option>
+                <option value={3}>3 giây</option>
+                <option value={5}>5 giây</option>
+                <option value={10}>10 giây</option>
+              </select>
+            )}
+            {ctx.introBgm !== 'none' && (
+              <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.introBgm)} title="Nghe thử Intro BGM">
+                <Play size={18} />
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="input-group">
           <label className="field-label">TIÊU ĐỀ HOOK CHỮ (MÀN ĐEN / GÕ CHỮ)</label>
           <input
             type="text"

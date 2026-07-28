@@ -123,6 +123,7 @@ app.add_middleware(
 from config import (
     AUDIO_DIR,
     BGM_DIR,
+    CUSTOM_SFX_DIR,
     IMAGES_DIR,
     OUTPUT_DIR,
     OVERRIDES_DIR,
@@ -236,6 +237,7 @@ class RenderVideoRequest(BaseModel):
     cover_image_position: str = "start"  # "start", "end", "both"
     use_sfx: bool = True
     sfx_volume: float = 0.08
+    use_audio_ducking: bool = True
     color_grading: str = "warm_cinematic"
     topic: Optional[str] = None
     use_breathing: bool = False
@@ -248,6 +250,20 @@ class RenderVideoRequest(BaseModel):
     # ge/le: chốt chặn ở tầng API để client quên chia 100 thì bị 422 ngay, thay vì lọt
     # xuống video_service rồi dựa vào các min() rải rác trong hook engine đỡ hộ.
     hook_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
+    outro_effect: str = "none"
+    outro_reel_sfx: str = "none"
+    outro_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
+    # Nhạc mở màn, chuyển sang bgm_track chính bằng crossfade. None/"" = không dùng.
+    #
+    # LỖI CŨ: hai field này bị QUÊN ở model trong khi _run_render_pipeline đọc
+    # `req.intro_bgm_track` vô điều kiện. Pydantic mặc định BỎ IM LẶNG field lạ, nên
+    # frontend gửi đúng tên vẫn bị vứt, rồi mọi job render chết bằng AttributeError —
+    # ở vị trí NGOÀI khối try nên lỗi thoát ra khỏi BackgroundTask và job đứng ở
+    # "pending" vĩnh viễn, giao diện không hiện lỗi nào. Xem tests/test_render_contract.py
+    # (test_moi_field_req_doc_deu_ton_tai_trong_model) — nay đã có lưới chặn.
+    intro_bgm_track: Optional[str] = None
+    # 0 = tự lấy bằng thời điểm KẾT THÚC cảnh 1 trên timeline (đã gồm phần dời do hook).
+    intro_bgm_duration: float = Field(0.0, ge=0.0, le=120.0)
     prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
     # Nguồn hình cho từng cảnh — thay cho heuristic dò chuỗi "photorealistic" trong prompt:
     #   auto        = theo lựa chọn user (prefer_stock_video / art_style thực sự là footage thật)
@@ -286,6 +302,15 @@ class PresetRequest(BaseModel):
     hook_sfx_volume: float = Field(100, ge=0, le=200)
     use_sfx: bool = True
     sfx_volume: float = 8
+    use_audio_ducking: bool = True
+    intro_bgm: Optional[str] = None
+    intro_bgm_duration: float = Field(0, ge=0, le=120)
+    outro_effect: str = "none"
+    outro_reel_sfx: str = "none"
+    # ĐƠN VỊ: PHẦN TRĂM (100 = 100%) — giống hook_sfx_volume ngay trên, KHÁC với
+    # RenderVideoRequest.outro_sfx_volume (hệ số). ScriptEditor.jsx chia 100 ở ranh giới
+    # gửi render; ở đây lưu đúng con số hiện trên thanh trượt.
+    outro_sfx_volume: float = Field(100, ge=0, le=200)
     use_ken_burns: bool = True
     hook_zoom_boost: bool = True
     use_breathing: bool = False
@@ -313,6 +338,9 @@ RENDER_PASSTHROUGH_FIELDS = (
     "hook_quote",
     "hook_reel_sfx",
     "hook_sfx_volume",  # HỆ SỐ (1.0 = 100%), frontend đã chia 100 trước khi gửi
+    "outro_effect",
+    "outro_reel_sfx",
+    "outro_sfx_volume",
     "use_fast_assembly",
     "use_gpu_encode",
 )
@@ -583,6 +611,18 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 bgm_path = candidate
 
     try:
+        # Đặt TRONG try: mọi thứ đọc từ `req` đều có thể ném (field thiếu, kiểu sai) và
+        # phải rơi vào lưới báo lỗi cuối hàm, chứ không được thoát ra khỏi BackgroundTask
+        # — thoát ra là job treo ở "pending" mà giao diện không biết gì.
+        intro_bgm_path = None
+        if req.intro_bgm_track:
+            candidate = os.path.join(BGM_DIR, os.path.basename(req.intro_bgm_track))
+            if not candidate.endswith(".mp3"):
+                candidate += ".mp3"
+            if os.path.isfile(candidate):
+                intro_bgm_path = candidate
+
+
         await _update_job(job_id, status="generating_assets")
         scenes = req.scenes
         total = len(scenes)
@@ -1020,12 +1060,32 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         from services.render_worker import spawn_render, read_status as read_render_status
 
         render_kwargs = build_render_kwargs(req, aspect_ratio, mode, master_audio_path)
-        # Tổng thời lượng cho thanh tiến trình FFmpeg vẽ ở bước master
-        video_total_duration = max(
+        # Tổng thời lượng cho thanh tiến trình FFmpeg vẽ ở bước master.
+        # PHẢI cộng cả outro: video_service làm video dài thêm đúng bằng chừng đó
+        # (final_duration += outro_duration). Thiếu nó thì thanh tiến trình chạy hết 100%
+        # rồi biến mất ở mấy giây cuối. Xem video_service.resolve_outro_timing().
+        from services.video_service import resolve_outro_timing
+        outro_timing = resolve_outro_timing(req.outro_effect, req.hook_text)
+        outro_duration = outro_timing["duration"] if outro_timing else 0.0
+        video_total_duration = (max(
             (a["start_time"] + a["duration"]) for a in scene_assets
-        ) if scene_assets else 0.0
+        ) if scene_assets else 0.0) + outro_duration
+
+        actual_intro_bgm_duration = 0.0
+        if intro_bgm_path and scene_assets:
+            actual_intro_bgm_duration = req.intro_bgm_duration
+            if actual_intro_bgm_duration <= 0.0:
+                # "Hết cảnh 1" = thời điểm cảnh 1 KẾT THÚC TRÊN TIMELINE, không phải độ
+                # dài của nó. Hai con số này lệch nhau đúng bằng phần dời do hook: với
+                # carousel_quote (lead 4.5s), lấy nhầm `duration` làm nhạc intro tắt sớm
+                # 4.5 giây — fade-out rơi vào GIỮA lời thoại cảnh 1, chỗ nghe rõ nhất.
+                first = scene_assets[0]
+                actual_intro_bgm_duration = first["start_time"] + first["duration"]
+
         master_kwargs = dict(
             bgm_path=bgm_path,
+            intro_bgm_path=intro_bgm_path,
+            intro_bgm_duration=actual_intro_bgm_duration,
             total_duration=video_total_duration,
             use_gpu=req.use_gpu_encode,
             bgm_volume=req.bgm_volume,
@@ -1034,6 +1094,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             subtitle_style=req.subtitle_style,
             hook_effect=req.hook_effect,
             bgm_volume_segments=bgm_volume_segments,
+            use_audio_ducking=req.use_audio_ducking,
         )
 
         spawned = spawn_render(
@@ -1065,19 +1126,31 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 )
             await _update_job(job_id, message="Đang Mastering Âm thanh & Tối ưu Video...", progress=90)
             from services.audio_mix_service import master_audio_and_export
+            from services.video_service import VOICE_SIDECHAIN_SUFFIX
+
+            # Cùng quy ước hậu tố với đường worker — hai nhánh phải nhìn thấy cùng file.
+            inline_sidechain = raw_video + VOICE_SIDECHAIN_SUFFIX
+            if not os.path.isfile(inline_sidechain):
+                inline_sidechain = None
             try:
                 await asyncio.to_thread(
                     master_audio_and_export,
                     input_video_path=raw_video, output_path=output_video_path,
                     bgm_path=bgm_path,
+                    sidechain_audio_path=inline_sidechain,
+                    intro_bgm_path=intro_bgm_path,
+                    intro_bgm_duration=actual_intro_bgm_duration,
                     ass_subtitle_path=output_srt_path if os.path.isfile(output_srt_path) else None,
                     use_gpu=req.use_gpu_encode, bgm_volume=req.bgm_volume,
                     watermark_text=req.watermark_text, color_grading=req.color_grading,
                     total_duration=video_total_duration,
                     bgm_volume_segments=bgm_volume_segments,
+                    use_audio_ducking=req.use_audio_ducking,
                 )
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)
+                if inline_sidechain and os.path.isfile(inline_sidechain):
+                    os.remove(inline_sidechain)
             except Exception as err:
                 logger.error(f"FFmpeg Mastering error: {err}", exc_info=True)
                 if os.path.isfile(raw_video):
@@ -1746,6 +1819,83 @@ async def delete_preset(preset_id: str):
     return {"message": "Đã xóa preset thành công."}
 
 
+MAX_SFX_BYTES = 10 * 1024 * 1024
+SFX_ALLOWED_EXTS = {".wav", ".mp3"}
+
+
+@app.get("/api/sfx-list")
+async def get_sfx_list():
+    """Danh sách SFX do người dùng tự nạp."""
+    custom_sfx = []
+    try:
+        names = os.listdir(CUSTOM_SFX_DIR)
+    except OSError:
+        names = []
+    for f in sorted(names):
+        if os.path.splitext(f)[1].lower() in SFX_ALLOWED_EXTS and f.startswith("custom_"):
+            # định dạng: custom_<hex>_<tên gốc>.<đuôi>
+            parts = f.split("_", 2)
+            label = parts[2] if len(parts) > 2 else f
+            custom_sfx.append({"value": f, "label": f"📁 {label}"})
+    return {"sfx_list": custom_sfx}
+
+
+@app.post("/api/upload-sfx")
+async def upload_sfx(file: UploadFile = File(...)):
+    """
+    Nhận một file tiếng động do người dùng tự chuẩn bị.
+
+    GHI VÀO CUSTOM_SFX_DIR (dưới DATA_DIR), KHÔNG phải SFX_DIR.
+    LỖI CŨ: ghi thẳng vào backend/assets/sfx/ — thư mục mà config.py ghi rõ là "tài
+    nguyên ĐI KÈM MÃ NGUỒN, chỉ đọc", và .gitignore có ngoại lệ `!backend/assets/sfx/*.wav`
+    nên MỌI file người dùng tải lên đều hiện trong `git status` và lọt vào commit. Nó cũng
+    phá vỡ điều kiện di dời kho dữ liệu sang ổ khác: file người dùng nằm lại ổ C.
+    """
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in SFX_ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng {ext or '(không rõ)'} không hỗ trợ. Chấp nhận: "
+                   + ", ".join(sorted(SFX_ALLOWED_EXTS)),
+        )
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="File rỗng.")
+    if len(file_bytes) > MAX_SFX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File nặng {len(file_bytes) / 1024 / 1024:.0f}MB, vượt giới hạn "
+                   f"{MAX_SFX_BYTES // 1024 // 1024}MB.",
+        )
+
+    safe_name = "".join(c for c in os.path.basename(file.filename or "") if c.isalnum() or c in "._-")
+    if not safe_name:
+        safe_name = f"sfx{ext}"
+    new_filename = f"custom_{uuid.uuid4().hex[:6]}_{safe_name}"
+    path = os.path.join(CUSTOM_SFX_DIR, new_filename)
+
+    tmp = path + ".part"
+    with open(tmp, "wb") as f:
+        f.write(file_bytes)
+
+    # Chỉ đổi tên khi ĐÃ CHẮC là audio thật. Một file .wav giả (đổi đuôi từ .txt) lọt qua
+    # được tới đây sẽ chỉ nổ lúc FFmpeg trộn — tức GIỮA một job render dài, đúng chỗ đắt
+    # nhất để phát hiện. Cùng tinh thần với chốt Pillow ở /api/.../upload-image.
+    try:
+        import soundfile as sf
+
+        info = await asyncio.to_thread(sf.info, tmp)
+        if info.frames <= 0:
+            raise ValueError("file không chứa mẫu âm thanh nào")
+    except Exception as e:
+        os.remove(tmp)
+        raise HTTPException(status_code=400, detail=f"File không phải audio hợp lệ: {e}")
+
+    os.replace(tmp, path)
+    return {"status": "ok", "filename": new_filename, "label": f"📁 {safe_name}"}
+
+
 @app.get("/api/preview/{type}/{id}")
 async def preview_media(type: str, id: str):
     """Phát thử nhạc nền (BGM) hoặc giọng đọc mẫu."""
@@ -1761,9 +1911,15 @@ async def preview_media(type: str, id: str):
         if os.path.isfile(voice_path):
             return FileResponse(voice_path)
     elif type == "sfx":
-        sfx_path = os.path.join(SFX_DIR, f"{safe_id}.wav")
-        if os.path.isfile(sfx_path):
-            return FileResponse(sfx_path)
+        # Tìm ở CẢ HAI kho: tiếng động đi kèm mã nguồn (SFX_DIR) và tiếng động người dùng
+        # tự nạp (CUSTOM_SFX_DIR, dưới DATA_DIR — xem /api/upload-sfx). Thiếu vế thứ hai
+        # thì nút nghe thử của mọi SFX tự nạp trả 404.
+        names = [safe_id] if safe_id.endswith(('.wav', '.mp3')) else [f"{safe_id}.wav", f"{safe_id}.mp3"]
+        for base in (SFX_DIR, CUSTOM_SFX_DIR):
+            for name in names:
+                sfx_path = os.path.join(base, name)
+                if os.path.isfile(sfx_path):
+                    return FileResponse(sfx_path)
     elif type == "hook_sfx":
         from services.video_service import HOOK_REEL_SOUNDS, DEFAULT_HOOK_REEL
         filename = HOOK_REEL_SOUNDS.get(safe_id, HOOK_REEL_SOUNDS.get(DEFAULT_HOOK_REEL, "reel_spin.wav"))

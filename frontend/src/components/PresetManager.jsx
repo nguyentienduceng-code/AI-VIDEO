@@ -30,6 +30,15 @@ export default function PresetManager() {
     useFrameChaining: s.useFrameChaining,
     useBeatSync: s.useBeatSync,
     hookEffect: s.hookEffect,
+    // Thiếu 6 dòng này thì payload lưu preset gửi lên `undefined` cho từng khoá, Pydantic
+    // lặng lẽ thay bằng giá trị mặc định — người dùng lưu preset xong nạp lại thấy Outro
+    // và nhạc mở màn biến mất, không có lỗi nào.
+    introBgm: s.introBgm,
+    introBgmDuration: s.introBgmDuration,
+    useAudioDucking: s.useAudioDucking,
+    outroEffect: s.outroEffect,
+    outroReelSfx: s.outroReelSfx,
+    outroSfxVolume: s.outroSfxVolume,
   })));
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
@@ -72,6 +81,8 @@ export default function PresetManager() {
         voice: ctx.voice,
         art_style: ctx.style,
         bgm_track: ctx.bgm === 'none' ? null : ctx.bgm,
+        intro_bgm: ctx.introBgm === 'none' ? null : ctx.introBgm,
+        intro_bgm_duration: ctx.introBgmDuration,
         target_duration: ctx.targetDuration,
         narration_tone: ctx.narrationTone,
         speech_rate: ctx.speechRate,
@@ -89,12 +100,16 @@ export default function PresetManager() {
         hook_sfx_volume: ctx.hookSfxVolume,
         use_sfx: ctx.useSfx,
         sfx_volume: 8,
+        use_audio_ducking: ctx.useAudioDucking,
         use_ken_burns: ctx.useKenBurns,
         hook_zoom_boost: ctx.hookZoomBoost,
         use_breathing: ctx.useBreathing,
         use_frame_chaining: ctx.useFrameChaining,
         use_beat_sync: ctx.useBeatSync,
-        hook_effect: ctx.hookEffect
+        hook_effect: ctx.hookEffect,
+        outro_effect: ctx.outroEffect,
+        outro_reel_sfx: ctx.outroReelSfx,
+        outro_sfx_volume: ctx.outroSfxVolume
       };
 
       const res = await fetch(`${API_BASE}/api/presets`, {
@@ -160,11 +175,31 @@ export default function PresetManager() {
             style={{ flex: 1 }}
           >
             <option value="">-- Chọn Preset lưu sẵn --</option>
-            {presets.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name} {p.is_default ? '(Mặc định)' : ''}
-              </option>
-            ))}
+            {(() => {
+              const groups = {};
+              presets.forEach(p => {
+                const niche = p.content_niche || 'Khác';
+                const nicheName = niche === 'book' ? '📚 Sách & Kể chuyện' : 
+                                  niche === 'finance' ? '💰 Tài chính & Kinh doanh' :
+                                  niche === 'history' ? '🏛️ Lịch sử & Khám phá' :
+                                  niche === 'psychology' ? '🧠 Tâm lý & Đời sống' :
+                                  niche === 'truecrime' ? '🔪 Vụ án & Kỳ bí' :
+                                  niche === 'travel' ? '🌍 Du lịch & Phong cảnh' : 
+                                  niche === 'Khác' ? '✨ Khác' : niche;
+                if (!groups[nicheName]) groups[nicheName] = [];
+                groups[nicheName].push(p);
+              });
+              
+              return Object.entries(groups).map(([groupName, items]) => (
+                <optgroup key={groupName} label={groupName}>
+                  {items.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name.replace(/^[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF]\s?/, '')} {p.is_default ? '(Mặc định)' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ));
+            })()}
           </select>
         </div>
 
