@@ -97,7 +97,7 @@ async def generate_character_reference(
         f"consistent identity for AI video reference"
     )
     paths = []
-    for i in range(num_variants):
+    for _i in range(num_variants):
         img_path = os.path.join(VIDEO_TMP_DIR, f"char_ref_{uuid.uuid4().hex[:8]}.png")
         await generate_image_with_fallback(
             image_prompt=prompt, 

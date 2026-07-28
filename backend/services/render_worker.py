@@ -139,8 +139,10 @@ def _worker_main(
     # Windows spawn process con MỚI TINH: stdout/stderr của nó không thừa hưởng cấu
     # hình UTF-8 của tiến trình cha. Không gọi lại ở đây thì mọi dòng log tiếng Việt
     # trong worker sẽ giết job khi output bị chuyển hướng. Xem services/log_setup.py.
+    # log_name riêng: RotatingFileHandler không an toàn đa tiến trình trên Windows
+    # (xoay vòng = đổi tên file, mà file đang bị tiến trình cha mở thì Windows cấm).
     from services.log_setup import setup_logging
-    setup_logging()
+    setup_logging(log_name="render_worker")
 
     try:
         write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")

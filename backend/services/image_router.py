@@ -40,7 +40,6 @@ def _create_artistic_gradient_image(output_path: str, aspect_ratio: str = "9:16"
 
 async def fetch_pexels_photo(query: str, output_path: str, aspect_ratio: str = "9:16", api_key: Optional[str] = None) -> str:
     """Tải ảnh HD thực tế từ Pexels API theo từ khóa kịch bản."""
-    import json
     import requests
     if not api_key:
         api_key = os.getenv("PEXELS_API_KEY")

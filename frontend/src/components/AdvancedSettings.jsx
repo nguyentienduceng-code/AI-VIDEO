@@ -2,7 +2,7 @@ import React from 'react';
 import { Play } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
-import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_REEL_SOUNDS, HOOK_SFX_OPTIONS } from '../constants';
+import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS } from '../constants';
 export default function AdvancedSettings() {
   const ctx = useAppStore(useShallow((s) => ({
     useVeo: s.useVeo, setUseVeo: s.setUseVeo,

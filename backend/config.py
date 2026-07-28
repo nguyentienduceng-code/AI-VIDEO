@@ -270,7 +270,7 @@ def write_env_value(key: str, value: str) -> None:
     if not replaced:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.append(f"# Thư mục lưu toàn bộ dữ liệu sinh ra (ảnh, video, cache).")
+        lines.append("# Thư mục lưu toàn bộ dữ liệu sinh ra (ảnh, video, cache).")
         lines.append(f"{key}={value}")
 
     tmp = ENV_FILE + ".tmp"

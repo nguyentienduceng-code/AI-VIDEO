@@ -3,6 +3,7 @@ backend/venv/
 backend/__pycache__/
 backend/.env
 backend/.pytest_cache/
+backend/logs/
 *.pyc
 
 # Assets & Generated Media

@@ -90,7 +90,9 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
             
             logger.warning(f"API lỗi (attempt {attempt+1}/{retries+1}). Retry sau {delay}s... Lỗi: {error_str[:100]}...")
             time.sleep(delay)
-    raise last_error
+    if last_error:
+        raise last_error
+    raise RuntimeError("_retry_sync: hết lượt thử nhưng không ghi nhận lỗi nào.")
 
 
 # ---------------------------------------------------------------------------
@@ -491,27 +493,6 @@ TONE_PERCENT_PALETTES = {
     ]
 }
 
-def resolve_blueprint(niche: str, tone: str, total_scenes: int) -> list[dict]:
-    bp = NICHE_PERCENT_BLUEPRINTS.get(niche) or TONE_PERCENT_PALETTES.get(tone) or TONE_PERCENT_PALETTES["viral"]
-    out = []
-    for i in range(total_scenes):
-        p = i / max(total_scenes - 1, 1)
-        # fallback band
-        band = bp[-1]
-        for b in bp:
-            if b[0] <= p < b[1]:
-                band = b
-                break
-        out.append({
-            "emotion": band[2],
-            "sfx": band[3],
-            "transition": band[4],
-            "speech_rate_modifier": band[5],
-            "visual_effect": band[6],
-        })
-    return out
-
-
 # ── BẢN VẼ % CHO NICHE VÀ TONE (Sprint 1) ──
 # Tuple: (start_pct, end_pct, emotion, sfx, transition, speech_rate, visual_effect)
 NICHE_PERCENT_BLUEPRINTS = {
@@ -708,13 +689,8 @@ async def generate_script(
     if tone_prompt:
         system_prompt += f"\n\n{tone_prompt}"
 
-    # ── Inject palette hiệu ứng: ưu tiên NICHE BLUEPRINT (chính xác vị trí cảnh),
-    # fallback palette theo tone nếu FE không truyền niche ──
-    if content_niche and content_niche in NICHE_BLUEPRINTS:
-        pass # Managed by python now
-    else:
-        effect_palette = TONE_EFFECT_PALETTES.get(narration_tone, TONE_EFFECT_PALETTES["viral"])
-        pass # Managed by python now
+    # Palette hiệu ứng (niche blueprint ưu tiên, fallback theo tone) được resolve_blueprint()
+    # tính toán sau khi có scenes — không cần xử lý gì thêm ở đây.
 
     # ── Thêm hướng dẫn về số lượng từ dựa trên thời lượng mục tiêu ──
     dur_cfg = DURATION_CONFIG.get(target_duration)
@@ -754,7 +730,7 @@ async def generate_script(
                 
                 # Cập nhật số cảnh cho lô hiện tại
                 batch_prompt = system_prompt.replace(f"CHÍNH XÁC {num_scenes} phân cảnh", f"CHÍNH XÁC {current_batch_size} phân cảnh")
-                batch_prompt = batch_prompt.replace(f"Mỗi phân cảnh tuyệt đối", f"Bạn đang tạo Lô {batch_idx//BATCH_SIZE + 1} (Cảnh {batch_idx+1} đến {batch_idx+current_batch_size}). Mỗi phân cảnh tuyệt đối")
+                batch_prompt = batch_prompt.replace("Mỗi phân cảnh tuyệt đối", f"Bạn đang tạo Lô {batch_idx//BATCH_SIZE + 1} (Cảnh {batch_idx+1} đến {batch_idx+current_batch_size}). Mỗi phân cảnh tuyệt đối")
                 
                 batch_content = f"Chủ đề video: {topic}\n"
                 if batch_idx > 0:

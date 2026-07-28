@@ -12,7 +12,11 @@ NÂNG CẤP V3.1 — Sentence-Level Prosody Engine (Robust):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import edge_tts
 from mutagen.mp3 import MP3
 
@@ -33,7 +37,6 @@ from config import CUSTOM_VOICES_FILE, SFX_DIR, VOICES_PREVIEW_DIR  # noqa: F401
 
 
 def _load_custom_voices() -> list:
-    import json
     if not os.path.exists(CUSTOM_VOICES_FILE):
         return []
     try:
@@ -44,7 +47,6 @@ def _load_custom_voices() -> list:
 
 
 def _save_custom_voices(voices: list):
-    import json
     with open(CUSTOM_VOICES_FILE, "w", encoding="utf-8") as f:
         json.dump(voices, f, ensure_ascii=False, indent=2)
 
@@ -310,12 +312,9 @@ def _concat_audio_files(files: list[str], output_path: str) -> bool:
     if not files:
         return False
     if len(files) == 1:
-        import shutil
         shutil.copy(files[0], output_path)
         return True
 
-    import tempfile
-    import subprocess
     list_path = None
     try:
         import imageio_ffmpeg
@@ -391,7 +390,6 @@ async def _synthesize_plain(
         audio = MP3(temp_path)
         duration_seconds = audio.info.length
 
-    import shutil
     shutil.move(temp_path, output_path)
 
     return duration_seconds, word_boundaries
@@ -559,13 +557,11 @@ async def _synthesize_gtts_fallback(text: str, output_path: str) -> tuple[float,
     """Fallback 3: gTTS (Google TTS)"""
     try:
         from gtts import gTTS
-        from mutagen.mp3 import MP3
         tts = gTTS(text, lang='vi')
         temp_path = output_path + ".gtts.tmp"
         tts.save(temp_path)
         audio = MP3(temp_path)
         duration = audio.info.length
-        import shutil
         shutil.move(temp_path, output_path)
         wbs = _estimate_word_boundaries(text, duration)
         return max(1.0, duration), wbs
@@ -790,10 +786,7 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
     - Time-Stretching: Xử lý rate modifier bằng FFmpeg atempo.
     """
     import soundfile as sf
-    import asyncio
-    import os
     import numpy as np
-    import re
     
     clean_text = _normalize_text(text)
     if not clean_text:
@@ -938,11 +931,10 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
                 atempo = max(0.5, min(2.0, 1.0 + (percent / 100.0)))
                 stretched_wav_path = wav_path.replace(".wav", "_stretched.wav")
                 try:
-                    import subprocess
                     import imageio_ffmpeg
                     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
                     cmd = [ffmpeg_exe, "-y", "-i", wav_path, "-filter:a", f"atempo={atempo}", stretched_wav_path]
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+                    await asyncio.to_thread(subprocess.run, cmd, check=True, capture_output=True, timeout=120)
                     os.replace(stretched_wav_path, wav_path)
                 except Exception as stretch_err:
                     logger.warning(f"[OmniVoice] Time-stretching failed: {stretch_err}")
@@ -952,7 +944,6 @@ async def _synthesize_omnivoice(text: str, output_path: str, instruct: str = "ma
         duration = info.duration
 
         if output_path != wav_path:
-            import shutil
             shutil.copy(wav_path, output_path)
         
         # V3.3: Forced Alignment cho word boundaries chính xác
@@ -1062,7 +1053,6 @@ def _concat_audio_with_pauses(
     cùng chuẩn trước khi concat, việc mà concatenate_audioclips không tự làm — lệch
     số kênh là nó ném lỗi giữa chừng.
     """
-    import subprocess
 
     import imageio_ffmpeg
 
@@ -1101,8 +1091,6 @@ async def _synthesize_with_breaks(
     text: str, output_path: str, warning_callback, **kwargs
 ) -> tuple[float, list]:
     """Đọc từng đoạn giữa các thẻ break rồi khâu lại kèm khoảng lặng."""
-    import shutil
-    import tempfile
 
     segments = split_by_breaks(text)
     if len(segments) <= 1:
@@ -1188,7 +1176,6 @@ async def synthesize_speech(
     if use_breathing and os.path.exists(output_path):
         breath_path = os.path.join(SFX_DIR, "breath.wav")
         if os.path.exists(breath_path):
-            import tempfile
             from moviepy.audio.io.AudioFileClip import AudioFileClip
             from moviepy.audio.AudioClip import concatenate_audioclips
             
@@ -1209,7 +1196,6 @@ async def synthesize_speech(
                     final_clip.close()
                 await asyncio.to_thread(_write)
                 
-                import shutil
                 shutil.move(temp_out, output_path)
                 
                 # Shift word boundaries
@@ -1273,7 +1259,6 @@ async def _synthesize_speech_internal(
         rate, pitch = _apply_emotion_to_rate_pitch(rate, pitch, emotion)
 
     # Retry logic Edge-TTS (dùng trực tiếp Neural TTS full-context để giữ trọn vẹn nhịp thở và diễn cảm tự nhiên)
-    import os
     last_error = None
     for attempt in range(3):
         try:

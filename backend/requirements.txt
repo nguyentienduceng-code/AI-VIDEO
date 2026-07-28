@@ -14,3 +14,6 @@ librosa>=0.10.2
 soundfile>=0.12.1
 numpy>=1.26.0
 stable-ts>=2.19.0
+
+# ── Dev / kiểm tra chất lượng mã (không cần cho runtime, nhưng start.bat có gọi) ──
+ruff>=0.14.0

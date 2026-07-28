@@ -485,7 +485,6 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             user_images = get_upload_paths(req.upload_session_id)
 
         from services import image_router
-        import subprocess
 
         # Trạng thái Veo cho toàn job: nếu lỗi quota/permission (không thể tự hết trong
         # phiên render) → tắt Veo cho các cảnh còn lại, tránh lãng phí thời gian retry,
@@ -704,7 +703,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             negative_prompt=req.negative_prompt, seed=video_seed,
                             art_style=req.art_style
                         )
-                    except Exception as img_err:
+                    except Exception:
                         _create_placeholder_image(final_img_path)
                     return final_img_path
 
@@ -982,13 +981,12 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 logger.error(f"FFmpeg Mastering error: {err}")
                 if os.path.isfile(raw_video):
                     try:
-                        import time
                         for _ in range(3):
                             try:
                                 os.replace(raw_video, output_video_path)
                                 break
                             except PermissionError:
-                                time.sleep(1)
+                                await asyncio.sleep(1)
                     except OSError:
                         pass
             await _update_job(

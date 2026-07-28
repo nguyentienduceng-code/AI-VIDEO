@@ -15,7 +15,6 @@ bạn đã tự ghi trong tài liệu - chuẩn bị sẵn cho việc scale mult
 
 import subprocess
 import logging
-import shutil
 
 logger = logging.getLogger(__name__)
 
