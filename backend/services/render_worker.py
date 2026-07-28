@@ -141,8 +141,13 @@ def _worker_main(
     # trong worker sẽ giết job khi output bị chuyển hướng. Xem services/log_setup.py.
     # log_name riêng: RotatingFileHandler không an toàn đa tiến trình trên Windows
     # (xoay vòng = đổi tên file, mà file đang bị tiến trình cha mở thì Windows cấm).
-    from services.log_setup import setup_logging
+    from services.log_setup import set_job_id, setup_logging
     setup_logging(log_name="render_worker")
+
+    # ContextVar KHÔNG vượt qua ranh giới tiến trình (spawn dựng interpreter mới),
+    # nên phải gắn lại job_id ở đây — nếu không, toàn bộ log của khâu render/mastering
+    # (khâu chạy lâu và hay chết nhất) sẽ nằm trơ không biết thuộc job nào.
+    set_job_id(job_id)
 
     try:
         write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")

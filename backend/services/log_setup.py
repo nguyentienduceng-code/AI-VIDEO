@@ -30,6 +30,13 @@ khi job render chết ngầm giữa chừng thì KHÔNG còn dấu vết nào đ
 2026-07-28 đã phải đi mò log PM2 cũ 17 ngày vì lý do này, và suýt kết luận sai.
 Từ nay mọi dòng log được ghi song song vào `backend/logs/*.log`, xoay vòng 10MB × 5.
 
+GẮN job_id VÀO TỪNG DÒNG
+------------------------
+Khi hai job render chạy chồng nhau, log của chúng trộn lẫn và không còn dựng lại
+được diễn biến của riêng job nào. `set_job_id()` gắn nhãn `[abc12345] ` vào mọi
+dòng sinh ra trong cùng context bất đồng bộ — kể cả dòng đến từ services/. Xem chú
+thích tại `_job_id_var` để biết vì sao dùng ContextVar thay cho LoggerAdapter.
+
 MỖI TIẾN TRÌNH MỘT FILE RIÊNG (quan trọng)
 ------------------------------------------
 RotatingFileHandler KHÔNG an toàn đa tiến trình trên Windows: lúc xoay vòng nó
@@ -41,12 +48,16 @@ QueueHandler + một tiến trình ghi log duy nhất.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import logging.handlers
 import os
 import sys
 
-_DEFAULT_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+# %(job_id)s do _JobIdFilter bơm vào — đã kèm sẵn dấu ngoặc và khoảng trắng, hoặc là
+# chuỗi rỗng khi không nằm trong job nào. Nhờ vậy dòng log ngoài job không bị thừa
+# khoảng trắng hay "[]" trống.
+_DEFAULT_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(job_id)s%(message)s"
 
 # backend/logs — suy từ vị trí file này (backend/services/log_setup.py → backend/).
 # CỐ Ý không import config để lấy đường dẫn: config.py đã import ngược module này
@@ -57,6 +68,69 @@ LOG_DIR = os.path.join(_BACKEND_DIR, "logs")
 _MAX_BYTES = 10 * 1024 * 1024  # 10MB mỗi file
 _BACKUP_COUNT = 5              # giữ 5 file cũ → trần ~60MB mỗi loại log
 _HANDLER_TAG = "_avm_log_name"  # đánh dấu handler của ta để gắn đúng một lần
+
+
+# ── Gắn job_id vào MỌI dòng log của một job render ──────────────────────────
+#
+# Dùng ContextVar chứ không dùng LoggerAdapter: adapter chỉ gắn nhãn cho những dòng
+# gọi qua chính đối tượng adapter đó, tức chỉ các dòng trong main.py. Nhưng phần lớn
+# log đáng giá lúc job chết lại đến từ services/ (tts_service, video_service,
+# image_router...) — chúng dùng logger riêng của module và sẽ KHÔNG có nhãn.
+#
+# ContextVar + Filter ở tầng handler thì mọi record đi qua handler đều được gắn nhãn,
+# bất kể module nào sinh ra, mà không phải sửa một dòng nào trong services/.
+#
+# Vì sao an toàn với nhiều job chạy song song: mỗi request FastAPI chạy trong một
+# asyncio.Task riêng, mà Task khi tạo ra sẽ COPY context hiện hành — set trong task
+# này không rò sang task khác. `asyncio.to_thread` cũng chuyển context sang thread
+# (nó dùng contextvars.copy_context), nên các bước chạy nền vẫn giữ đúng nhãn.
+#
+# Giới hạn: tiến trình con của render (multiprocessing spawn) KHÔNG thừa hưởng
+# ContextVar. Điều đó chấp nhận được vì worker đã ghi sang file log riêng.
+_job_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("avm_job_id", default="")
+
+
+def set_job_id(job_id: str | None) -> None:
+    """Gắn job_id cho mọi dòng log sinh ra sau đó trong CÙNG context bất đồng bộ."""
+    _job_id_var.set((job_id or "")[:8])
+
+
+def clear_job_id() -> None:
+    """Gỡ nhãn job_id khỏi context hiện hành."""
+    _job_id_var.set("")
+
+
+class _JobIdFilter(logging.Filter):
+    """Bơm thuộc tính `job_id` vào record. Luôn trả True — lọc để làm giàu, không loại bỏ."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        job_id = _job_id_var.get("")
+        record.job_id = f"[{job_id}] " if job_id else ""
+        return True
+
+
+class _SafeFormatter(logging.Formatter):
+    """Formatter chịu được record thiếu `job_id`.
+
+    Cần thiết vì handler do thư viện khác (uvicorn) gắn vào có thể không đi qua
+    _JobIdFilter; thiếu thuộc tính mà format string lại tham chiếu thì logging sẽ
+    ném KeyError ngay giữa lúc ghi log.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "job_id"):
+            record.job_id = ""
+        return super().format(record)
+
+
+def _install_job_id_filter(fmt: str) -> None:
+    """Gắn _JobIdFilter vào mọi handler của root logger (idempotent)."""
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, _JobIdFilter) for f in handler.filters):
+            handler.addFilter(_JobIdFilter())
+        # Handler của basicConfig dùng Formatter thường -> đổi sang bản chịu lỗi.
+        if handler.formatter and not isinstance(handler.formatter, _SafeFormatter):
+            handler.setFormatter(_SafeFormatter(fmt))
 
 
 def force_utf8_streams() -> None:
@@ -91,7 +165,8 @@ def _attach_file_handler(log_name: str, level: int, fmt: str) -> str | None:
             delay=True,         # chưa tạo file cho tới dòng log đầu tiên
         )
         handler.setLevel(level)
-        handler.setFormatter(logging.Formatter(fmt))
+        handler.setFormatter(_SafeFormatter(fmt))
+        handler.addFilter(_JobIdFilter())
         setattr(handler, _HANDLER_TAG, log_name)
         root.addHandler(handler)
         return path
@@ -122,3 +197,7 @@ def setup_logging(
         root.setLevel(level)
 
     _attach_file_handler(log_name, level, fmt)
+
+    # Sau cùng: mọi handler đang có trên root (console của basicConfig, handler do
+    # uvicorn gắn, và file handler vừa thêm) đều phải biết bơm job_id.
+    _install_job_id_filter(fmt)

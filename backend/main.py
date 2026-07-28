@@ -37,7 +37,7 @@ from typing import Dict, List, Optional
 # PHẢI chạy trước dòng log tiếng Việt đầu tiên: khi stdout bị chuyển hướng (chạy như
 # service, ghi ra file), Windows mở nó bằng cp1252/strict và mọi dấu tiếng Việt sẽ
 # ném UnicodeEncodeError thoát ra ngoài, giết cả job. Xem services/log_setup.py.
-from services.log_setup import setup_logging
+from services.log_setup import set_job_id, setup_logging
 
 setup_logging()
 
@@ -444,6 +444,11 @@ async def _update_job(job_id: str, **kwargs):
 # Pipeline chạy nền — đa chế độ
 # ---------------------------------------------------------------------------
 async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
+    # Gắn job_id vào MỌI dòng log sinh ra từ đây trở đi — kể cả log của services/
+    # (tts_service, video_service, image_router...). Không có nhãn này thì hai job
+    # chạy chồng nhau sẽ trộn log và không dựng lại được diễn biến của job nào.
+    set_job_id(job_id)
+
     job_dir_audio = os.path.join(AUDIO_DIR, job_id)
     job_dir_images = os.path.join(IMAGES_DIR, job_id)
     os.makedirs(job_dir_audio, exist_ok=True)
@@ -591,7 +596,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         if os.path.exists(wav_alt) and os.path.getsize(wav_alt) > 0:
                             return dur, wbs, wav_alt
                     except Exception as e:
-                        logger.error(f"TTS Error for scene {i+1}: {e}")
+                        logger.error(f"TTS Error for scene {i+1}: {e}", exc_info=True)
                 
                 # Cảnh không có chữ (VD: quote_card) hoặc lỗi sinh giọng đọc
                 base_duration = 3.0
@@ -831,7 +836,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     img_path = out_mp4
                 except Exception as kb_err:
                     # Giữ ảnh tĩnh: job vẫn chạy được (rơi về MoviePy, chậm) thay vì chết hẳn.
-                    logger.error(f"[Main] Cảnh {i+1}: đúc ảnh thành video thất bại ({kb_err}). Giữ ảnh tĩnh.")
+                    logger.error(
+                        f"[Main] Cảnh {i+1}: đúc ảnh thành video thất bại ({kb_err}). Giữ ảnh tĩnh.",
+                        exc_info=True,
+                    )
             elif is_video_asset:
                 # Clip stock/Veo: cắt đúng thời lượng cảnh (ưu tiên đoạn giữa), ping-pong nếu
                 # ngắn, ép về đúng khung + đồng chất màu. Lỗi thì giữ nguyên file gốc —
@@ -978,7 +986,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)
             except Exception as err:
-                logger.error(f"FFmpeg Mastering error: {err}")
+                logger.error(f"FFmpeg Mastering error: {err}", exc_info=True)
                 if os.path.isfile(raw_video):
                     try:
                         for _ in range(3):
@@ -1016,7 +1024,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     break
 
     except Exception as e:
-        logger.error(f"Exception in pipeline: {e}")
+        # exc_info=True: đây là lưới cuối của TOÀN BỘ pipeline. Chỉ log str(e) thì
+        # mất sạch traceback — đúng cái đã khiến sự cố 2026-07-11 phải mò 17 ngày log
+        # cũ mới tìm ra dòng gây lỗi. Có traceback là biết ngay module/dòng nào chết.
+        logger.error(f"Exception in pipeline: {e}", exc_info=True)
         await _update_job(job_id, status="error", error=str(e), message=f"Lỗi: {e}")
         # Giữ lại ảnh/audio đã sinh khi lỗi để có thể sinh lại từng cảnh / resume,
         # thay vì xoá sạch khiến lần sau phải chạy lại toàn bộ.
@@ -1821,7 +1832,7 @@ async def preview_scene_voice(req: ScenePreviewRequest):
             use_breathing=req.use_breathing,
         )
     except Exception as e:
-        logger.error(f"[Preview] Sinh giọng thất bại: {e}")
+        logger.error(f"[Preview] Sinh giọng thất bại: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Không sinh được giọng đọc: {e}")
 
     # Giọng ảo/OmniVoice có thể ghi ra .wav dù ta xin .mp3 — lấy đúng file đã ghi.
