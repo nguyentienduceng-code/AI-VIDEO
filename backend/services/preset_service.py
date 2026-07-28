@@ -230,6 +230,10 @@ for _p in DEFAULT_PRESETS:
     _p.setdefault("visual_source", "auto")
     _p.setdefault("use_single_pass_narration", False)
     _p.setdefault("hook_reel_sfx", "tick_wood")
+    # Thang % (100 = 100%), khớp PresetRequest.hook_sfx_volume — đổi sang hệ số chỉ diễn
+    # ra ở payload render. Đặt tường minh để chuyển sang preset dựng sẵn thì mức âm lượng
+    # Hook SFX cũng trở về chuẩn, thay vì giữ lại con số user vừa kéo cho preset trước.
+    _p.setdefault("hook_sfx_volume", 100)
 
 
 def load_presets() -> List[Dict[str, Any]]:

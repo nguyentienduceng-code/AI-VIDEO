@@ -52,6 +52,11 @@ module.exports = {
       script: "npm.cmd",
       args: "run dev -- --port 3001",
       cwd: path.join(ROOT, "frontend"),
+      // BẮT BUỘC trên Windows: PM2 chọn interpreter theo phần mở rộng của script, mà
+      // ".cmd" không có trong bảng đó → nó rơi về `node` và cố parse npm.cmd như file
+      // JavaScript, chết ngay lúc start. "none" = chạy thẳng như tiến trình hệ điều
+      // hành (giống AI-Backend gọi uvicorn.exe ở trên).
+      interpreter: "none",
       autorestart: true,
       watch: false,
       max_memory_restart: "1G",

@@ -214,7 +214,12 @@ class RenderVideoRequest(BaseModel):
     hook_effect: str = "word_by_word"
     hook_quote: Optional[str] = None
     hook_reel_sfx: str = "tick_wood"  # tiếng trục quay Máy Xèng — xem video_service.HOOK_REEL_SOUNDS
-    hook_sfx_volume: float = 1.0
+    # ĐƠN VỊ: HỆ SỐ nhân (1.0 = 100%), KHÔNG phải phần trăm — frontend đã chia 100 trước
+    # khi gửi (ScriptEditor.jsx). Khác đơn vị với PresetRequest.hook_sfx_volume (thang %),
+    # nên đừng bao giờ gán thẳng giá trị từ preset sang đây: chênh nhau đúng 100 lần.
+    # ge/le: chốt chặn ở tầng API để client quên chia 100 thì bị 422 ngay, thay vì lọt
+    # xuống video_service rồi dựa vào các min() rải rác trong hook engine đỡ hộ.
+    hook_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
     prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
     # Nguồn hình cho từng cảnh — thay cho heuristic dò chuỗi "photorealistic" trong prompt:
     #   auto        = theo lựa chọn user (prefer_stock_video / art_style thực sự là footage thật)
@@ -247,7 +252,10 @@ class PresetRequest(BaseModel):
     use_single_pass_narration: bool = False
     hook_effect: str = "word_by_word"
     hook_reel_sfx: str = "tick_wood"
-    hook_sfx_volume: float = 100
+    # ĐƠN VỊ: PHẦN TRĂM (100 = 100%) — preset lưu đúng con số hiện trên thanh trượt UI,
+    # giống bgm_volume/sfx_volume ngay trong model này. Đổi sang hệ số ở ranh giới gửi
+    # render (ScriptEditor.jsx chia 100), KHÔNG đổi ở đây.
+    hook_sfx_volume: float = Field(100, ge=0, le=200)
     use_sfx: bool = True
     sfx_volume: float = 8
     use_ken_burns: bool = True
@@ -258,6 +266,43 @@ class PresetRequest(BaseModel):
 
 VALID_MODES = {"storyteller", "photo_narration", "photo_slideshow", "script_video", "quiz_listicle", "manual"}
 VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
+
+
+# ── Cầu nối RenderVideoRequest → render_final_video ──────────────────────────
+# Field của request được chuyển THẲNG sang render_final_video, CÙNG TÊN, không biến đổi.
+#
+# LỖI CŨ (nguồn gốc của cả bug hook_sfx_volume): render_kwargs được gõ tay từng dòng
+# `x=req.x`. Thêm tuỳ chọn mới vào model + UI mà quên thêm đúng một dòng ở đây thì
+# render_final_video lặng lẽ dùng giá trị mặc định — không lỗi, không cảnh báo, và
+# triệu chứng ("kéo thanh trượt không thấy gì đổi") trông y hệt lỗi thuật toán, cực khó
+# lần ra. Khai báo tập hợp một lần rồi dựng dict từ nó thì thêm tuỳ chọn = thêm 1 dòng
+# tên vào đây, và tests/test_render_contract.py đối chiếu tập này với
+# video_service.RENDER_KWARG_KEYS nên quên là test đỏ ngay.
+RENDER_PASSTHROUGH_FIELDS = (
+    "hook_text",
+    "use_sfx",
+    "hook_effect",      # để render_final_video dựng hook carousel_quote
+    "hook_quote",
+    "hook_reel_sfx",
+    "hook_sfx_volume",  # HỆ SỐ (1.0 = 100%), frontend đã chia 100 trước khi gửi
+    "use_fast_assembly",
+    "use_gpu_encode",
+)
+
+
+def build_render_kwargs(req, aspect_ratio: str, mode: str, master_audio_path: str | None) -> dict:
+    """Dựng tham số cho render_final_video — DÙNG CHUNG cho cả đường worker lẫn đường
+    inline, để hai nhánh không thể trôi lệch nhau theo thời gian."""
+    kwargs = {field: getattr(req, field) for field in RENDER_PASSTHROUGH_FIELDS}
+    # Phần còn lại KHÔNG phải ánh xạ 1-1 nên vẫn viết tay:
+    kwargs.update(
+        aspect_ratio=aspect_ratio,
+        bgm_path=None,  # BGM được mix bởi FFmpeg ở bước master
+        mode=mode,
+        sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
+        master_audio_path=master_audio_path,  # chế độ đọc liền mạch (None nếu tắt)
+    )
+    return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -910,20 +955,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # ══════════════════════════════════════════════════════════
         from services.render_worker import spawn_render, read_status as read_render_status
 
-        render_kwargs = dict(
-            aspect_ratio=aspect_ratio,
-            bgm_path=None,  # BGM được mix bởi FFmpeg
-            mode=mode,
-            hook_text=req.hook_text,
-            use_sfx=req.use_sfx,
-            sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
-            hook_effect=req.hook_effect,   # để render_final_video dựng hook carousel_quote
-            hook_quote=req.hook_quote,
-            hook_reel_sfx=req.hook_reel_sfx,
-            use_fast_assembly=req.use_fast_assembly,
-            use_gpu_encode=req.use_gpu_encode,
-            master_audio_path=master_audio_path,  # chế độ đọc liền mạch (None nếu tắt)
-        )
+        render_kwargs = build_render_kwargs(req, aspect_ratio, mode, master_audio_path)
         # Tổng thời lượng cho thanh tiến trình FFmpeg vẽ ở bước master
         video_total_duration = max(
             (a["start_time"] + a["duration"]) for a in scene_assets
@@ -953,17 +985,12 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         if not spawned:
             # Nếu đạt giới hạn worker → fallback chạy inline (giữ backward-compatible)
             await _update_job(job_id, message="Hàng đợi render đầy. Đang render trực tiếp...")
+            # DÙNG LẠI chính render_kwargs của đường worker, không gõ lại danh sách tham
+            # số lần thứ hai: trước đây hai chỗ này là hai bản liệt kê tay song song, sửa
+            # một bên quên bên kia là video render inline ra khác video render qua worker.
             await asyncio.to_thread(
                 video_service.render_final_video,
-                scene_assets, raw_video,
-                aspect_ratio=aspect_ratio, bgm_path=None, mode=mode,
-                hook_text=req.hook_text, use_sfx=req.use_sfx,
-                sfx_volume=req.sfx_volume if req.sfx_volume is not None else 0.5,
-                hook_effect=req.hook_effect, hook_quote=req.hook_quote,
-                hook_reel_sfx=req.hook_reel_sfx,
-                use_fast_assembly=req.use_fast_assembly,
-                use_gpu_encode=req.use_gpu_encode,
-                master_audio_path=master_audio_path,
+                scene_assets, raw_video, **render_kwargs,
             )
             if mode != "photo_slideshow":
                 await asyncio.to_thread(

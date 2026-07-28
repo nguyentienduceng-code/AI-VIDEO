@@ -332,6 +332,11 @@ export const useAppStore = create((set, get) => {
     if (preset.use_single_pass_narration !== undefined) patch.useSinglePassNarration = preset.use_single_pass_narration;
     if (preset.use_sfx !== undefined) patch.useSfx = preset.use_sfx;
     if (preset.sfx_volume !== undefined) patch.sfxVolume = preset.sfx_volume;
+    // Preset lưu hook_sfx_volume theo thang % (đúng con số trên thanh trượt), nên gán
+    // thẳng vào state — KHÔNG nhân/chia 100 ở đây. Thiếu dòng này thì lưu preset xong
+    // nạp lại, riêng mức âm lượng Hook SFX âm thầm quay về mặc định 100 trong khi mọi
+    // thiết lập khác đều được khôi phục.
+    if (preset.hook_sfx_volume !== undefined) patch.hookSfxVolume = preset.hook_sfx_volume;
 
     // Nâng cao (Dành riêng cho preset đặc biệt như Import JSON)
     if (preset.use_ken_burns !== undefined) patch.useKenBurns = preset.use_ken_burns;

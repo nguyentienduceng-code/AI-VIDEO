@@ -508,10 +508,36 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
     keep = int(math.ceil(max(total_duration, 0.1) * sr))
     master = master[:keep]
 
-    # Chống vỡ tiếng (clipping) nếu tổng biên độ vượt 1.0
-    peak = float(np.max(np.abs(master))) if master.size else 0.0
-    if peak > 1.0:
-        master /= peak
+    # ── Chống vỡ tiếng (clipping) ──
+    # LỖI CŨ: `if peak > 1.0: master /= peak` — chia CẢ track cho đỉnh toàn cục. Nhưng
+    # master này chứa cả giọng đọc lẫn SFX, nên một đỉnh 2 giây đầu (vd user kéo Hook SFX
+    # lên 200%: tick.wav chồng lấn nhiều lớp → peak ~2.5) sẽ kéo tụt âm lượng giọng đọc
+    # của TOÀN BỘ video xuống 2.5 lần. Triệu chứng ngoài đời là "tự nhiên video bé tiếng"
+    # mà không liên quan gì tới đoạn đang nghe — gần như không thể lần ra nguyên nhân.
+    #
+    # Thay bằng limiter mềm: dưới ngưỡng THRESH giữ NGUYÊN XI (giọng đọc không bị đụng
+    # tới), chỉ phần vượt ngưỡng mới bị nén bằng tanh. tanh() < 1 với mọi đầu vào nên
+    # kết quả luôn nằm trong (-1, 1) → không thể clip, mà cũng không có chỗ nào bị "vặn
+    # nhỏ oan".
+    if master.size:
+        THRESH = 0.85          # dưới mức này: tuyến tính tuyệt đối
+        CEILING = 0.99         # trần thật (~-0.1 dBFS), KHÔNG phải 1.0: tanh() của số
+                               # lớn bị làm tròn thành đúng 1.0 trong float32, nên lấy
+                               # trần 1.0 thì đỉnh chạm sát 0 dBFS và encoder vẫn có thể
+                               # kêu rè. Chừa lại một chút biên an toàn.
+        HEADROOM = CEILING - THRESH
+        absm = np.abs(master)
+        over = absm > THRESH
+        if over.any():
+            excess = absm[over] - THRESH
+            master[over] = np.sign(master[over]) * (
+                THRESH + HEADROOM * np.tanh(excess / HEADROOM)
+            )
+            n_over = int(over.sum())
+            logger.info(
+                f"[AudioMix] Limiter mềm: nén {n_over} mẫu vượt {THRESH} "
+                f"(đỉnh gốc {float(absm.max()):.2f}) — giọng đọc giữ nguyên âm lượng."
+            )
 
     return AudioArrayClip(master, fps=sr)
 
@@ -531,6 +557,26 @@ def _all_placements(audio_placements, master_audio_path, total_duration):
 # ─────────────────────────────────────────────────────────────────────
 # Main render function
 # ─────────────────────────────────────────────────────────────────────
+# Mọi tuỳ chọn đi qua **kwargs của render_final_video — DANH SÁCH ĐẦY ĐỦ, phải khớp
+# đúng những `kwargs.get("...")` bên trong hàm.
+#
+# VÌ SAO CẦN: **kwargs im lặng ở CẢ HAI chiều. Thiếu một key thì hàm lặng lẽ dùng
+# default (đúng lỗi hook_sfx_volume: model có, frontend gửi, nhưng main.py quên nhét
+# vào render_kwargs → thanh trượt của user vô hiệu suốt nhiều bản render mà không một
+# dòng lỗi nào). Gõ sai tên một key thì cũng y như vậy, không ai hay. Danh sách này
+# cộng với cảnh báo bên dưới biến cả hai loại lỗi câm thành một dòng WARNING trong log,
+# và cho test hợp đồng ở tests/test_render_contract.py một nguồn để đối chiếu.
+RENDER_KWARG_KEYS = frozenset({
+    "hook_effect",
+    "hook_quote",
+    "hook_reel_sfx",
+    "hook_sfx_volume",
+    "hook_text",
+    "use_fast_assembly",
+    "use_gpu_encode",
+})
+
+
 def render_final_video(
     scene_assets: List[SceneAsset],
     output_path: str,
@@ -548,7 +594,19 @@ def render_final_video(
     Ghép toàn bộ các scene thành 1 video .mp4 hoàn chỉnh.
     Hỗ trợ đa aspect ratio, BGM mixing, và mode-specific rendering.
     Trả về output_path.
+
+    Các tuỳ chọn nhận qua **kwargs: xem RENDER_KWARG_KEYS ngay phía trên.
     """
+    # Key lạ = gõ sai tên hoặc caller gửi thừa. Chỉ CẢNH BÁO chứ không ném lỗi: đang ở
+    # giữa một job render dài, chết vì một tuỳ chọn phụ thì thiệt hơn nhiều so với việc
+    # render tiếp và để lại dấu vết trong log.
+    _unknown = set(kwargs) - RENDER_KWARG_KEYS
+    if _unknown:
+        logger.warning(
+            f"[Render] Bỏ qua tham số không được hỗ trợ: {sorted(_unknown)}. "
+            f"Gõ sai tên? Danh sách hợp lệ: {sorted(RENDER_KWARG_KEYS)}"
+        )
+
     video_width, video_height = ASPECT_RATIO_SIZES.get(aspect_ratio, (1080, 1920))
 
     # ── Mode-specific settings ──

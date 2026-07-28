@@ -82,6 +82,10 @@ export default function PresetManager() {
         visual_source: ctx.visualSource,
         use_single_pass_narration: ctx.useSinglePassNarration,
         hook_reel_sfx: ctx.hookReelSfx,
+        // Lưu nguyên con số trên thanh trượt (thang %, giống bgm_volume/sfx_volume).
+        // KHÔNG chia 100 ở đây: việc đổi sang hệ số chỉ xảy ra ở payload render
+        // (ScriptEditor.jsx). Xem chú thích đơn vị tại PresetRequest trong main.py.
+        hook_sfx_volume: ctx.hookSfxVolume,
         use_sfx: ctx.useSfx,
         sfx_volume: 8,
         use_ken_burns: ctx.useKenBurns,
