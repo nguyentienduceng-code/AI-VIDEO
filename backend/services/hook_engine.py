@@ -85,16 +85,11 @@ def build_carousel_hook(
     duration: float = 4.5,
 ) -> CompositeVideoClip:
     """
-    Clip mở màn với Slot Machine (trục quay) + Quote Reveal.
-    0.0s - 2.0s: BÌA SÁCH THẬT cuộn dọc như trục máy xèng (reel scroll), nền blurred-fill.
-    2.0s - 4.5s: Bìa dừng hẳn ở giữa (KHÔNG nảy), hiện Quote trên nền mờ.
+    Clip mở màn với hiệu ứng Cinematic Float-In (Thay thế Slot Machine cũ).
+    Bìa sách từ từ nổi lên và mờ dần rõ nét (Fade-in + Float up), tĩnh lặng và sang trọng.
     """
     w, h = video_width, video_height
-    slot_dur = SLOT_DURATION
-    reveal_dur = duration - slot_dur
 
-    # Import chung ở đầu hàm: cần cho cả bìa thật (dưới đây) lẫn strip ảnh giả (bên dưới),
-    # bất kể nhánh .mp4 hay ảnh tĩnh có chạy hay không.
     from PIL import Image, ImageOps
 
     # ── Bìa thật (fit vào tỷ lệ an toàn tùy theo màn dọc hay ngang) ──
@@ -104,136 +99,48 @@ def build_carousel_hook(
             with VideoFileClip(cover_image_path) as v:
                 cover = ImageClip(v.get_frame(0))
         else:
-            # ImageClip(path) đọc pixel thô, KHÔNG tự xoay theo cờ EXIF Orientation —
-            # ảnh dọc chụp bằng điện thoại (lưu mảng pixel ngang + tag "rotate 90") khiến
-            # cover.w/cover.h bị đọc ngược. (cw, ch) tính từ đây sai lệch kéo theo
-            # ImageOps.fit() ở strip máy xèng bên dưới cắt méo mọi bìa (thật lẫn giả).
-            # Phải tự exif_transpose trước khi giao cho ImageClip.
             cover_img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
             cover = ImageClip(np.array(cover_img))
 
         is_landscape = w > h
         if is_landscape:
-            # Ngang 16:9: bìa cao hơn (70% màn hình), chữ sẽ nằm phía dưới hoặc cạnh
             fit = min(w * 0.4 / cover.w, h * 0.7 / cover.h)
         else:
-            # Dọc 9:16: fit ~70% ngang, ~45% cao
             fit = min(w * 0.72 / cover.w, h * 0.46 / cover.h)
     except Exception as e:
         logger.warning(f"Hook cover error: {e}")
         cover = ColorClip((int(w * 0.6), int(h * 0.4)), color=(230, 230, 230))
         fit = 1.0
+        is_landscape = w > h
         
     cover_fit = cover.resized(fit)
     cw, ch = cover_fit.w, cover_fit.h
-    cx = int((w - cw) / 2)
     cy = int(h / 2 - ch / 2)
     if is_landscape:
-        cy = int(h * 0.1)  # Đẩy bìa lên cao một chút để nhường chỗ cho quote ở dưới
+        cy = int(h * 0.1)
 
-    # ── Phase 1: Slot Machine — Chuỗi ảnh thật cuộn dọc, dừng đúng giữa ──
-    bg1 = _blurred_fill_bg(cover_image_path, w, h, slot_dur, darken=0.35)
-    gap = ch + int(h * 0.04)
+    # ── Nền mờ ──
+    bg = _blurred_fill_bg(cover_image_path, w, h, duration, darken=0.4)
 
-    import os
-    import glob
-    import random
+    # ── Hiệu ứng Cinematic Float-In cho bìa sách ──
+    # Bìa sách mờ dần hiện ra và nổi nhẹ lên trên trong 1.5s đầu
+    def _float_y(t):
+        p = min(t / 1.5, 1.0)
+        ease = 1 - (1 - p) ** 3 # Ease-out cubic
+        return int(cy + 80 * (1 - ease))
 
-    from config import SLOT_COVERS_DIR
-    slot_covers_dir = SLOT_COVERS_DIR
-    fake_paths = []
-    if os.path.isdir(slot_covers_dir):
-        for ext in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"):
-            fake_paths.extend(glob.glob(os.path.join(slot_covers_dir, ext)))
-            
-    num_fakes = NUM_FAKES
-    if fake_paths:
-        selected_fakes = [random.choice(fake_paths) for _ in range(num_fakes)]
-    else:
-        selected_fakes = [cover_image_path] * num_fakes
+    cover_clip = (
+        cover_fit
+        .with_position(lambda t: ("center", _float_y(t)))
+        .with_duration(duration)
+        .with_effects([CrossFadeIn(1.2)])
+    )
 
-    # Tạo một bức ảnh dài (strip) ghép các ảnh lại
-    strip_h = int(gap * num_fakes + ch)
-    strip_img = Image.new('RGBA', (cw, strip_h), (0,0,0,0))
-    
-    # Load bìa thật
-    try:
-        if cover_image_path.endswith(".mp4"):
-            from moviepy.video.io.VideoFileClip import VideoFileClip
-            with VideoFileClip(cover_image_path) as v:
-                raw_real = Image.fromarray(v.get_frame(0))
-                real_img = ImageOps.fit(raw_real, (cw, ch), Image.Resampling.LANCZOS).convert("RGBA")
-        else:
-            raw_real = ImageOps.exif_transpose(Image.open(cover_image_path))
-            real_img = ImageOps.fit(raw_real, (cw, ch), Image.Resampling.LANCZOS).convert("RGBA")
-    except Exception as e:
-        logger.warning(f"Hook slot real_img error: {e}")
-        real_img = Image.new('RGBA', (cw, ch), (255,255,255,255))
-        
-    # ── TOẠ ĐỘ STRIP (đọc kỹ trước khi sửa) ──
-    # Strip trôi XUỐNG: y của nó chạy từ (cy - num_fakes*gap) đến cy.
-    # Ảnh nằm ở toạ độ local L sẽ hiện GIỮA màn hình khi strip_y + L == cy.
-    #   • t=0 → strip_y = cy - num_fakes*gap → ảnh ở L = num_fakes*gap nằm giữa.
-    #   • t=1 → strip_y = cy                 → ảnh ở L = 0 nằm giữa.
-    # Vậy ảnh dừng lại cuối cùng là ảnh ở ĐỈNH strip (L=0) ⇒ BÌA THẬT PHẢI Ở L=0,
-    # các bìa giả xếp bên dưới.
-    # LỖI CŨ: bìa thật bị đặt ở ĐÁY strip (L = num_fakes*gap) nên nó nằm giữa ngay từ t=0
-    # rồi trôi đi mất; máy xèng kết thúc trên một bìa GIẢ và Phase 2 cắt phựt sang bìa thật.
-    strip_img.paste(real_img, (0, 0))
-    for i, fp in enumerate(selected_fakes):
-        try:
-            raw_fk = ImageOps.exif_transpose(Image.open(fp))
-            fk_img = ImageOps.fit(raw_fk, (cw, ch), Image.Resampling.LANCZOS).convert("RGBA")
-        except Exception:
-            fk_img = real_img
-        strip_img.paste(fk_img, (0, int((i + 1) * gap)))
+    layers = [bg, cover_clip]
 
-    strip_clip = ImageClip(np.array(strip_img))
-
-    def _scroll(t):
-        p = min(t / slot_dur, 1.0)
-        # Ease-out BẬC 3, không phải bậc 2: bậc 2 tiến tới đích quá chậm, khung hình cuối
-        # cùng của pha quay vẫn còn lệch ~18px so với vị trí chốt → sang pha 2 ảnh nhảy
-        # một cái. Bậc 3 thì sai số dưới 0.1px, mắt không thấy.
-        # (Với slot_dur=2.0s @30fps: khung cuối p=0.983 → lệch còn ~0.04px.)
-        ease = 1 - (1 - p) ** 3
-        return ease * num_fakes * gap      # cuộn vừa vặn num_fakes khoảng gap
-
-    rc = strip_clip.with_position(lambda t: (cx, int(cy - num_fakes * gap + _scroll(t)))).with_duration(slot_dur)
-
-    slot = CompositeVideoClip([bg1, rc], size=(w, h)).with_duration(slot_dur)
-
-    # ── Phase 2: Reveal — bìa dừng giữa (thu nhẹ) + Quote, nền blurred-fill ──
-    # darken PHẢI trùng bg1: trước đây 0.35 vs 0.4 làm nền sáng vọt ~15% ngay tại
-    # đường nối 2 pha — thấy như một cú chớp sáng.
-    bg2 = _blurred_fill_bg(cover_image_path, w, h, reveal_dur, darken=0.35)
-
-    # ── Bìa đứng YÊN sau khi chốt (bỏ hẳn cú nảy zoom) ──
-    # Trước đây có hàm _settle() làm bìa phồng lên 5% rồi co lại theo nửa chu kỳ sin
-    # trong 0.35s. Người dùng thấy nó lắc nên đã bỏ.
-    #
-    # Bỏ LUÔN cả .resized(): hệ số giờ là hằng số 1.0, nhưng hễ truyền một HÀM vào
-    # resized() là MoviePy coi như biến thiên theo thời gian và resize lại cả tấm bìa
-    # ở MỌI khung hình — trả giá CPU cho một phép biến đổi không thay đổi gì. Dùng
-    # thẳng cover_fit vừa đúng ý đồ vừa nhanh hơn.
-    #
-    # Vẫn dùng CHÍNH cover_fit và cy của pha 1 (không tính lại từ ảnh gốc): nhờ vậy
-    # kích thước và toạ độ trùng khít pha 1 từng pixel, không "nhích" tại đường nối.
-    cover_reveal = cover_fit.with_position(("center", cy)).with_duration(reveal_dur)
-
-    # KHÔNG bịa quote mặc định nữa. Trước đây khi user để trống, hook luôn hiện câu
-    # "GIÁ TRỊ NẰM Ở SỰ LỰA CHỌN" — một câu chung chung không liên quan tới cuốn sách,
-    # LẠI nằm đúng vùng phụ đề của Cảnh 1 nên hai khối chữ đè lên nhau. Để trống thì
-    # hook chỉ còn bìa sách sạch sẽ, đúng ý đồ hơn.
-    layers2 = [bg2, cover_reveal]
+    # ── Trích dẫn (nếu có) ──
     if quote_text and quote_text.strip():
-        # Ngang 16:9: chữ nằm dưới bìa (cy + ch + khoảng trống) hoặc 85% chiều cao.
         text_y = int(cy + ch + 30) if is_landscape else int(h * 0.74)
-
-        # _safe_caption_clip thay vì TextClip trực tiếp: quote 2+ dòng bị cắt cụt dòng
-        # cuối nếu tự đo chiều cao thẳng từ MoviePy (đã verify bằng ảnh thật — không
-        # liên quan riêng gì tới carousel, xảy ra với mọi TextClip(method="caption")
-        # đa dòng trong file này).
         txt_clip = (
             _safe_caption_clip(
                 text=quote_text.strip(),
@@ -244,14 +151,13 @@ def build_carousel_hook(
                 stroke_width=4,
             )
             .with_position(("center", text_y))
-            .with_duration(reveal_dur)
-            .with_effects([CrossFadeIn(0.4)])
+            .with_start(0.8)
+            .with_duration(duration - 0.8)
+            .with_effects([CrossFadeIn(0.8)])
         )
-        layers2.append(txt_clip)
+        layers.append(txt_clip)
 
-    part2 = CompositeVideoClip(layers2, size=(w, h)).with_duration(reveal_dur)
-
-    return concatenate_videoclips([slot, part2])
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
 
 # ══════════════════════════════════════════════════════════════════════
 # HOOK A1: Blackout Question
