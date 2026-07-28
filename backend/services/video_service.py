@@ -584,6 +584,7 @@ def render_final_video(
     # cảnh 1 — sửa luôn điều kiện đó bên dưới để loại trừ MỌI hook do Hook Engine quản.
     hook_quote = kwargs.get("hook_quote", "")
     hook_text = kwargs.get("hook_text", "") or ""
+    hook_sfx_volume = kwargs.get("hook_sfx_volume", 1.0)
     if hook_type and hook_type != "none":
         try:
             from services.hook_engine import (
@@ -606,7 +607,7 @@ def render_final_video(
                     reel = os.path.join(sfx_dir, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL])
                 ding = os.path.join(sfx_dir, "ding.wav")
 
-                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                effective_volume = hook_sfx_volume
                 if os.path.isfile(reel):
                     audio_placements.append((reel, 0.0, min(1.0, effective_volume * 1.2), 0.0, HOOK_NARRATION_LEAD))
                 if os.path.isfile(ding):
@@ -622,7 +623,7 @@ def render_final_video(
                 # trắng không báo lỗi. Verify bằng cách chạy lại đúng dòng này độc lập.
                 reel_key = kwargs.get("hook_reel_sfx", "impact_boom")
                 impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "impact_boom.mp3"))
-                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                effective_volume = hook_sfx_volume
                 if os.path.isfile(impact_sfx):
                     # Tăng mạnh âm thanh impact_boom
                     audio_placements.append((impact_sfx, 0.0, min(2.0, effective_volume * 3.0), 0.0))
@@ -635,7 +636,7 @@ def render_final_video(
                 
                 reel_key = kwargs.get("hook_reel_sfx", "typewriter_fast")
                 typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "typewriter_fast.mp3"))
-                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                effective_volume = hook_sfx_volume
                 
                 if os.path.isfile(typewriter_sfx):
                     # Nâng nhẹ âm nền gõ lách cách
@@ -659,7 +660,7 @@ def render_final_video(
                 )
                 reel_key = kwargs.get("hook_reel_sfx", "cinematic_swell")
                 swell_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "cinematic_swell.mp3"))
-                effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                effective_volume = hook_sfx_volume
                 if os.path.isfile(swell_sfx):
                     audio_placements.append((swell_sfx, 0.0, min(1.0, effective_volume * 0.8), 0.0))
                 

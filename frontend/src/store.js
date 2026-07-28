@@ -58,6 +58,7 @@ const INITIAL_STATE = {
   visualSource: 'auto',
   useSinglePassNarration: false,
   hookReelSfx: 'tick_wood',
+  hookSfxVolume: 100,
 
   scenes: [],
   estimatedDurationS: 0,

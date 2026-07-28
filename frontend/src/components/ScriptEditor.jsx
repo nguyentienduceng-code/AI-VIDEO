@@ -100,6 +100,7 @@ export default function ScriptEditor() {
         visual_source: ctx.visualSource,
         use_single_pass_narration: ctx.useSinglePassNarration,
         hook_reel_sfx: ctx.hookReelSfx,
+        hook_sfx_volume: ctx.hookSfxVolume / 100,
       };
 
       const res = await fetch(`${API_BASE}/api/render-video`, {

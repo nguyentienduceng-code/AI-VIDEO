@@ -23,6 +23,7 @@ export default function AdvancedSettings() {
     speechRate: s.speechRate, setSpeechRate: s.setSpeechRate,
     speechPitch: s.speechPitch, setSpeechPitch: s.setSpeechPitch,
     sfxVolume: s.sfxVolume, setSfxVolume: s.setSfxVolume,
+    hookSfxVolume: s.hookSfxVolume, setHookSfxVolume: s.setHookSfxVolume,
     watermarkText: s.watermarkText, setWatermarkText: s.setWatermarkText,
     playPreview: s.playPreview,
   })));
@@ -141,24 +142,32 @@ export default function AdvancedSettings() {
               value={ctx.hookReelSfx}
               onChange={e => ctx.setHookReelSfx(e.target.value)}
               style={{ flex: 1 }}
-              disabled={ctx.hookEffect === 'none'}
-              title="Âm thanh phát cùng với hiệu ứng mở màn."
             >
-              {(HOOK_SFX_OPTIONS[ctx.hookEffect] || []).map(s => (
-                <option key={s.value} value={s.value}>{s.label}</option>
+              {(HOOK_SFX_OPTIONS[ctx.hookEffect] || []).map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: 90 }}>
+              <span style={{ fontSize: 10, color: 'gray' }}>Vol</span>
+              <input
+                type="range"
+                className="vol-slider"
+                min="0"
+                max="200"
+                value={ctx.hookSfxVolume}
+                onChange={e => ctx.setHookSfxVolume(Number(e.target.value))}
+                style={{ flex: 1 }}
+                title={`Âm lượng Hook SFX: ${ctx.hookSfxVolume}% (200% là cực đại)`}
+              />
+            </div>
             <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này" disabled={ctx.hookEffect === 'none'}>
               <Play size={18} />
             </button>
           </div>
         </div>
         <div className="input-group">
-          {/* LỖI CŨ: nhãn ghi "áp dụng cho Slot Machine" nhưng Slot Machine (carousel_quote)
-              không hề đọc field này — nó dùng riêng "TRÍCH DẪN HOOK BÌA SÁCH" bên dưới.
-              Backend cũng từng đọc nhầm field khác cho 2 hiệu ứng này (đã sửa), nên sửa
-              luôn nhãn ở đây cho khớp thực tế, tránh user điền đúng ô mà hook vẫn trống. */}
-          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (Áp dụng cho Màn Đen / Gõ Chữ)</label>
+          {/* Note: Title Hook is distinct from Quote. Using this field for Màn đen/Gõ chữ. */}
+          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (MÀN ĐEN / GÕ CHỮ)</label>
           <input
             type="text"
             className="form-input form-input-sm"
