@@ -140,6 +140,9 @@ HOOK_REEL_SOUNDS = {
     "typewriter_fast": "typewriter_fast.mp3",
     "cinematic_swell": "cinematic_swell.mp3",
     "ambient_mystic": "ambient_mystic.mp3",
+    "camera_shutter": "camera_shutter.mp3",
+    "digital_glitch": "digital_glitch.mp3",
+    "film_projector": "film_projector.mp3",
 }
 DEFAULT_HOOK_REEL = "tick_wood"
 SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)

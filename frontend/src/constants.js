@@ -141,13 +141,13 @@ export const HOOK_SFX_OPTIONS = {
     { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
   ],
   camera_shutter: [
-    { value: 'tick', label: '📸 Tách máy ảnh (Camera Shutter)' },
+    { value: 'camera_shutter', label: '📸 Tách máy ảnh (Camera Shutter)' },
   ],
   cyber_glitch: [
-    { value: 'whoosh', label: '⚡ Xẹt điện/Glitch (Digital Whoosh)' },
+    { value: 'digital_glitch', label: '⚡ Xẹt điện/Glitch (Digital Whoosh)' },
   ],
   vintage_film_burn: [
-    { value: 'suspense', label: '🎞️ Lạch cạch máy chiếu (Film Projector)' },
+    { value: 'film_projector', label: '🎞️ Lạch cạch máy chiếu (Film Projector)' },
   ],
   none: [],
 };
