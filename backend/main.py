@@ -214,6 +214,7 @@ class RenderVideoRequest(BaseModel):
     hook_effect: str = "word_by_word"
     hook_quote: Optional[str] = None
     hook_reel_sfx: str = "tick_wood"  # tiếng trục quay Máy Xèng — xem video_service.HOOK_REEL_SOUNDS
+    hook_sfx_volume: float = 1.0
     prefer_stock_video: bool = False  # Ép dùng video stock Pexels cho MỌI cảnh (video thật thay ảnh AI)
     # Nguồn hình cho từng cảnh — thay cho heuristic dò chuỗi "photorealistic" trong prompt:
     #   auto        = theo lựa chọn user (prefer_stock_video / art_style thực sự là footage thật)
@@ -246,6 +247,7 @@ class PresetRequest(BaseModel):
     use_single_pass_narration: bool = False
     hook_effect: str = "word_by_word"
     hook_reel_sfx: str = "tick_wood"
+    hook_sfx_volume: float = 100
     use_sfx: bool = True
     sfx_volume: float = 8
     use_ken_burns: bool = True
