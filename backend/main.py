@@ -1113,10 +1113,19 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             # DÙNG LẠI chính render_kwargs của đường worker, không gõ lại danh sách tham
             # số lần thứ hai: trước đây hai chỗ này là hai bản liệt kê tay song song, sửa
             # một bên quên bên kia là video render inline ra khác video render qua worker.
+            # Cảnh báo "đang chạy đường chậm" cũng phải tới được người dùng ở nhánh này.
+            # Gom vào list rồi đẩy SAU khi render xong, thay vì gọi _update_job ngay:
+            # callback chạy trong worker thread của to_thread, còn _update_job là coroutine
+            # của event loop — gọi thẳng từ thread khác là sai luồng.
+            fallback_notes: list[str] = []
             await asyncio.to_thread(
                 video_service.render_final_video,
-                scene_assets, raw_video, **render_kwargs,
+                scene_assets, raw_video,
+                on_fallback=fallback_notes.append,
+                **render_kwargs,
             )
+            for note in fallback_notes:
+                await _update_job(job_id, message=note)
             if mode != "photo_slideshow":
                 await asyncio.to_thread(
                     video_service.generate_ass_file, scene_assets, output_srt_path,

@@ -163,6 +163,12 @@ def _worker_main(
         from services.video_service import render_final_video
         render_kwargs = dict(render_kwargs)
         render_kwargs["progress_logger"] = _make_progress_logger(job_id, total_frames)
+        # Đẩy cảnh báo "đang chạy đường chậm" lên tận giao diện. Tiêm ở đây chứ không
+        # nhét vào render_kwargs từ main.py: closure không pickle được nên không qua nổi
+        # ranh giới tiến trình — cùng lý do với progress_logger ngay trên.
+        render_kwargs["on_fallback"] = lambda msg: write_status(
+            job_id, status="rendering", message=msg
+        )
         render_final_video(scene_assets, raw_video_path, **render_kwargs)
 
         write_status(job_id, progress=85, message="[Worker] Render RAW hoàn tất. Đang tạo phụ đề...")

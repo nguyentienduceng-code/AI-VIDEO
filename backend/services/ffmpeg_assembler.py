@@ -169,15 +169,34 @@ def assemble(
     cmd = [_ff(), "-y"]
     for a in scene_assets:
         cmd += ["-i", a["image_path"]]
+    # Index input cho FFmpeg: cảnh chiếm 0..n-1, rồi tới hook / outro / audio theo đúng
+    # thứ tự chúng được nối vào lệnh. BỘ ĐẾM CHẠY, không suy ra từ len(cmd).
+    #
+    # LỖI CŨ: `hook_idx = len(cmd) // 2`. Công thức đó ngầm giả định `cmd` bắt đầu bằng
+    # ĐÚNG MỘT phần tử trước các cặp "-i <path>", nhưng nó khởi tạo là [ffmpeg, "-y"] —
+    # hai phần tử. Kết quả lệch đúng +1 ở MỌI số cảnh, nên cả ba index đều trỏ vào input
+    # không tồn tại và FFmpeg chết ngay lúc phân tích tham số:
+    #     Invalid input file index: 2.
+    #     Failed to set value '2:a' for option 'map'
+    # Đường nhanh hỏng hoàn toàn ở mọi cấu hình có tiếng, job lặng lẽ rơi về MoviePy —
+    # 19 cảnh mất 30-45 phút thay vì 15-20 giây, mà vẫn báo "Hoàn tất!".
+    #
+    # Bộ đếm chạy thay vì biểu thức lồng kiểu `n + (1 if hook else 0)`: thêm input thứ tư
+    # sau này chỉ là chép thêm một khối, không phải tính lại số học của các khối trước —
+    # chính chỗ đó đã gãy khi outro_video được nối vào.
     hook_idx = outro_idx = audio_idx = None
+    next_idx = n
     if hook_video and os.path.isfile(hook_video):
-        hook_idx = len(cmd) // 2
+        hook_idx = next_idx
+        next_idx += 1
         cmd += ["-i", hook_video]
     if outro_video and os.path.isfile(outro_video):
-        outro_idx = len(cmd) // 2
+        outro_idx = next_idx
+        next_idx += 1
         cmd += ["-i", outro_video]
     if audio_path and os.path.isfile(audio_path):
-        audio_idx = len(cmd) // 2
+        audio_idx = next_idx
+        next_idx += 1
         cmd += ["-i", audio_path]
 
     fc: List[str] = []

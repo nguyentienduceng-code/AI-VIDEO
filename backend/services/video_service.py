@@ -663,6 +663,10 @@ def render_final_video(
     use_sfx: bool = True,
     sfx_volume: float = 0.5,
     progress_logger="bar",
+    # Được gọi khi đường nhanh (FFmpeg) hỏng và phải quay về MoviePy. Tiêm TẠI CHỖ ở
+    # tiến trình con giống progress_logger — hàm không pickle được nên không đi qua
+    # spawn_render được. None = không ai muốn nghe (vd test).
+    on_fallback=None,
     **kwargs
 ) -> str:
     """
@@ -1066,7 +1070,24 @@ def render_final_video(
                     outro_clip_overlay.close()
                 return output_path
         except Exception as fast_err:
-            logger.warning(f"[FastAssembly] Thất bại ({fast_err}). Quay về MoviePy.")
+            # ERROR + traceback, KHÔNG phải warning. Đây không phải nhánh dự phòng đã
+            # biết trước nguyên nhân (như Veo hết quota hay Pexels 403) — nó nghĩa là
+            # đường render mặc định đang HỎNG. Job vẫn ra video nên không ai để ý, chỉ
+            # là chậm gấp ~100 lần: 19 cảnh mất 30-45 phút thay vì 15-20 giây.
+            # Chính vì trước đây chỉ là một dòng warning mà lỗi lệch index input sống sót
+            # qua cả một bản bàn giao mà không ai phát hiện.
+            logger.error(
+                "[FastAssembly] Thất bại — đang quay về MoviePy (chậm hơn ~100 lần): %s",
+                fast_err, exc_info=True,
+            )
+            if on_fallback:
+                try:
+                    on_fallback(
+                        "⚠️ Đường render nhanh không dùng được, đang dựng bằng cách chậm — "
+                        "video sẽ lâu hơn nhiều bình thường. Xem backend/logs/render_worker.log."
+                    )
+                except Exception:
+                    pass  # báo được thì tốt, không báo được cũng không làm hỏng render
 
     # ── Đường chậm (MoviePy) — giữ nguyên làm lưới an toàn ──
     for i, asset in enumerate(scene_assets):

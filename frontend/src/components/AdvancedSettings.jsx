@@ -151,19 +151,10 @@ export default function AdvancedSettings() {
       </div>
 
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
-        <div className="input-group">
-          <label className="field-label">HIỆU ỨNG HOOK ĐẦU VIDEO</label>
-          <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
-            <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
-            <option value="blackout_question">⬛ Màn đen câu hỏi (A1 Blackout)</option>
-            <option value="typewriter_quote">⌨️ Gõ chữ (A2 Typewriter)</option>
-            <option value="breathing_vignette">🕯️ Thu phóng mờ (C3 Vignette)</option>
-            <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
-            <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
-            <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
-            <option value="none">🚫 Không dùng Hook</option>
-          </select>
-        </div>
+        
+        {/* --- SECTION: HÌNH ẢNH & THỊ GIÁC --- */}
+        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1 }}>HÌNH ẢNH & THỊ GIÁC</div>
+        
         <div className="input-group">
           <label className="field-label">NGUỒN HÌNH ẢNH</label>
           <select
@@ -177,6 +168,7 @@ export default function AdvancedSettings() {
             ))}
           </select>
         </div>
+        
         <div className="input-group">
           <label className="field-label">BỘ LỌC MÀU (COLOR GRADING)</label>
           <select className="form-select form-select-sm" value={ctx.colorGrading} onChange={e => ctx.setColorGrading(e.target.value)}>
@@ -185,6 +177,7 @@ export default function AdvancedSettings() {
             ))}
           </select>
         </div>
+        
         <div className="input-group">
           <label className="field-label">KIỂU PHỤ ĐỀ</label>
           <select className="form-select form-select-sm" value={ctx.subtitleStyle} onChange={e => ctx.setSubtitleStyle(e.target.value)}>
@@ -193,6 +186,98 @@ export default function AdvancedSettings() {
             ))}
           </select>
         </div>
+
+        <div className="input-group">
+          <label className="field-label">ĐÓNG DẤU (WATERMARK)</label>
+          <input 
+            type="text" 
+            className="form-input form-input-sm" 
+            value={ctx.watermarkText} 
+            onChange={e => ctx.setWatermarkText(e.target.value)} 
+            placeholder="VD: @username" 
+          />
+        </div>
+
+        {/* --- SECTION: GIỌNG ĐỌC & SFX CƠ BẢN --- */}
+        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>GIỌNG ĐỌC & SFX CƠ BẢN</div>
+
+        <div className="input-group">
+          <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS / OMNIVOICE)</label>
+          <select className="form-select form-select-sm" value={ctx.speechRate} onChange={e => ctx.setSpeechRate(e.target.value)}>
+            <option value="-20%">Rất chậm (-20%)</option>
+            <option value="-15%">Chậm thong thả (-15%)</option>
+            <option value="-10%">Chậm vừa (-10%)</option>
+            <option value="+0%">Bình thường (0%)</option>
+            <option value="+10%">Nhanh (+10%)</option>
+            <option value="+15%">Rất nhanh (+15%)</option>
+            <option value="+20%">Siêu dồn dập (+20%)</option>
+          </select>
+        </div>
+
+        <div className="input-group">
+          <label className="field-label">ĐỘ CAO GIỌNG (PITCH)</label>
+          <select className="form-select form-select-sm" value={ctx.speechPitch} onChange={e => ctx.setSpeechPitch(e.target.value)}>
+            <option value="+5Hz">Cao (+5Hz)</option>
+            <option value="+0Hz">Bình thường (0Hz)</option>
+            <option value="-5Hz">Trầm hơn (-5Hz)</option>
+            <option value="-10Hz">Rất trầm (-10Hz)</option>
+          </select>
+        </div>
+
+        <div className="input-group" style={{ gridColumn: '1 / -1' }}>
+          <label className="field-label">ÂM LƯỢNG SFX TỪNG CẢNH ({ctx.sfxVolume}%)</label>
+          <input 
+            type="range" 
+            min="0" 
+            max="100" 
+            step="5"
+            className="form-range" 
+            value={ctx.sfxVolume} 
+            onChange={e => ctx.setSfxVolume(Number(e.target.value))} 
+            disabled={!ctx.useSfx}
+          />
+        </div>
+
+        {/* --- SECTION: MỞ ĐẦU VIDEO (INTRO & HOOK) --- */}
+        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>MỞ ĐẦU VIDEO (INTRO & HOOK)</div>
+
+        <div className="input-group" style={{ gridColumn: '1 / -1' }}>
+          <label className="field-label">♬ NHẠC MỞ ĐẦU (INTRO BGM - Tùy chọn)</label>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+            <select className="form-select form-select-sm" value={ctx.introBgm} onChange={e => ctx.setIntroBgm(e.target.value)} style={{ flex: 1 }}>
+              <option value="none">Không dùng nhạc mở đầu riêng</option>
+              {BGMOptions}
+            </select>
+            {ctx.introBgm !== 'none' && (
+              <select className="form-select form-select-sm" value={ctx.introBgmDuration} onChange={e => ctx.setIntroBgmDuration(Number(e.target.value))} style={{ width: 120 }}>
+                <option value={0}>Hết cảnh 1</option>
+                <option value={3}>3 giây</option>
+                <option value={5}>5 giây</option>
+                <option value={10}>10 giây</option>
+              </select>
+            )}
+            {ctx.introBgm !== 'none' && (
+              <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.introBgm)} title="Nghe thử Intro BGM">
+                <Play size={18} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="input-group">
+          <label className="field-label">HIỆU ỨNG HOOK ĐẦU VIDEO</label>
+          <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
+            <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
+            <option value="blackout_question">⬛ Màn đen câu hỏi (A1 Blackout)</option>
+            <option value="typewriter_quote">⌨️ Gõ chữ (A2 Typewriter)</option>
+            <option value="breathing_vignette">🕯️ Thu phóng mờ (C3 Vignette)</option>
+            <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
+            <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
+            <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
+            <option value="none">🚫 Không dùng Hook</option>
+          </select>
+        </div>
+
         <div className="input-group" style={{ opacity: ctx.hookEffect !== 'none' ? 1 : 0.4, pointerEvents: ctx.hookEffect !== 'none' ? 'auto' : 'none' }}>
           <label className="field-label">ÂM THANH HIỆU ỨNG (HOOK SFX)</label>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
@@ -219,11 +304,37 @@ export default function AdvancedSettings() {
                 title={`Âm lượng Hook SFX: ${ctx.hookSfxVolume}% (200% là cực đại)`}
               />
             </div>
-            <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này" disabled={ctx.hookEffect === 'none'}>
+            <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.hookReelSfx)} title="Nghe thử âm thanh này" disabled={ctx.hookEffect === 'none' || !ctx.hookReelSfx}>
               <Play size={18} />
             </button>
           </div>
         </div>
+
+        <div className="input-group">
+          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (MÀN ĐEN / GÕ CHỮ)</label>
+          <input
+            type="text"
+            className="form-input form-input-sm"
+            value={ctx.hookText}
+            onChange={e => ctx.setHookText(e.target.value)}
+            placeholder="VD: BÍ MẬT ĐỘNG TRỜI VỀ ROCKEFELLER!..."
+          />
+        </div>
+
+        <div className="input-group">
+          <label className="field-label">TRÍCH DẪN HOOK BÌA SÁCH (Quote - Áp dụng Carousel)</label>
+          <input 
+            type="text" 
+            className="form-input form-input-sm" 
+            value={ctx.hookQuote} 
+            onChange={e => ctx.setHookQuote(e.target.value)} 
+            placeholder="VD: GIÁ TRỊ NẰM Ở SỰ LỰA CHỌN..." 
+          />
+        </div>
+
+        {/* --- SECTION: KẾT THÚC VIDEO (OUTRO) --- */}
+        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>KẾT THÚC VIDEO (OUTRO)</div>
+
         <div className="input-group">
           <label className="field-label">HIỆU ỨNG OUTRO KẾT THÚC</label>
           <select className="form-select form-select-sm" value={ctx.outroEffect} onChange={e => ctx.setOutroEffect(e.target.value)}>
@@ -237,6 +348,7 @@ export default function AdvancedSettings() {
             <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
           </select>
         </div>
+
         <div className="input-group" style={{ opacity: ctx.outroEffect !== 'none' ? 1 : 0.4, pointerEvents: ctx.outroEffect !== 'none' ? 'auto' : 'none' }}>
           <label className="field-label">ÂM THANH OUTRO (OUTRO SFX)</label>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', width: '100%' }}>
@@ -263,93 +375,10 @@ export default function AdvancedSettings() {
                 title={`Âm lượng Outro SFX: ${ctx.outroSfxVolume}%`}
               />
             </div>
+            <button className="btn-icon" onClick={() => ctx.playPreview('hook_sfx', ctx.outroReelSfx)} title="Nghe thử âm thanh này" disabled={ctx.outroEffect === 'none' || !ctx.outroReelSfx}>
+              <Play size={18} />
+            </button>
           </div>
-        </div>
-        <div className="input-group">
-          <label className="field-label">♬ NHẠC MỞ ĐẦU (INTRO BGM - Tùy chọn)</label>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-            <select className="form-select form-select-sm" value={ctx.introBgm} onChange={e => ctx.setIntroBgm(e.target.value)} style={{ flex: 1 }}>
-              <option value="none">Không dùng nhạc mở đầu riêng</option>
-              {BGMOptions}
-            </select>
-            {ctx.introBgm !== 'none' && (
-              <select className="form-select form-select-sm" value={ctx.introBgmDuration} onChange={e => ctx.setIntroBgmDuration(Number(e.target.value))} style={{ width: 120 }}>
-                <option value={0}>Hết cảnh 1</option>
-                <option value={3}>3 giây</option>
-                <option value={5}>5 giây</option>
-                <option value={10}>10 giây</option>
-              </select>
-            )}
-            {ctx.introBgm !== 'none' && (
-              <button className="btn-icon" onClick={() => ctx.playPreview('bgm', ctx.introBgm)} title="Nghe thử Intro BGM">
-                <Play size={18} />
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="input-group">
-          <label className="field-label">TIÊU ĐỀ HOOK CHỮ (MÀN ĐEN / GÕ CHỮ)</label>
-          <input
-            type="text"
-            className="form-input form-input-sm"
-            value={ctx.hookText}
-            onChange={e => ctx.setHookText(e.target.value)}
-            placeholder="VD: BÍ MẬT ĐỘNG TRỜI VỀ ROCKEFELLER!..."
-          />
-        </div>
-        <div className="input-group" style={{ gridColumn: '1 / -1' }}>
-          <label className="field-label">TRÍCH DẪN HOOK BÌA SÁCH (Quote - Áp dụng Carousel)</label>
-          <input 
-            type="text" 
-            className="form-input form-input-sm" 
-            value={ctx.hookQuote} 
-            onChange={e => ctx.setHookQuote(e.target.value)} 
-            placeholder="VD: GIÁ TRỊ NẰM Ở SỰ LỰA CHỌN..." 
-          />
-        </div>
-        <div className="input-group">
-          <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS / OMNIVOICE)</label>
-          <select className="form-select form-select-sm" value={ctx.speechRate} onChange={e => ctx.setSpeechRate(e.target.value)}>
-            <option value="-20%">Rất chậm (-20%)</option>
-            <option value="-15%">Chậm thong thả (-15%)</option>
-            <option value="-10%">Chậm vừa (-10%)</option>
-            <option value="+0%">Bình thường (0%)</option>
-            <option value="+10%">Nhanh (+10%)</option>
-            <option value="+15%">Rất nhanh (+15%)</option>
-            <option value="+20%">Siêu dồn dập (+20%)</option>
-          </select>
-        </div>
-        <div className="input-group">
-          <label className="field-label">ĐỘ CAO GIỌNG (PITCH)</label>
-          <select className="form-select form-select-sm" value={ctx.speechPitch} onChange={e => ctx.setSpeechPitch(e.target.value)}>
-            <option value="+5Hz">Cao (+5Hz)</option>
-            <option value="+0Hz">Bình thường (0Hz)</option>
-            <option value="-5Hz">Trầm hơn (-5Hz)</option>
-            <option value="-10Hz">Rất trầm (-10Hz)</option>
-          </select>
-        </div>
-        <div className="input-group">
-          <label className="field-label">ÂM LƯỢNG SFX ({ctx.sfxVolume}%)</label>
-          <input 
-            type="range" 
-            min="0" 
-            max="100" 
-            step="5"
-            className="form-range" 
-            value={ctx.sfxVolume} 
-            onChange={e => ctx.setSfxVolume(Number(e.target.value))} 
-            disabled={!ctx.useSfx}
-          />
-        </div>
-        <div className="input-group">
-          <label className="field-label">ĐÓNG DẤU (WATERMARK)</label>
-          <input 
-            type="text" 
-            className="form-input form-input-sm" 
-            value={ctx.watermarkText} 
-            onChange={e => ctx.setWatermarkText(e.target.value)} 
-            placeholder="VD: @username" 
-          />
         </div>
       </div>
     </div>
