@@ -261,23 +261,33 @@ def build_blackout_question_hook(
     video_width: int,
     video_height: int,
     duration: float = 1.5,
+    cover_image_path: str = "",
 ) -> CompositeVideoClip:
-    '''Nền đen tuyền, một dòng chữ trắng duy nhất.'''
-    bg = ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_duration(duration)
+    '''Nền mờ siêu tối (cinematic blackout) từ bìa sách, một dòng chữ sáng bật ra.'''
+    if cover_image_path:
+        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.15)
+    else:
+        bg = ColorClip(size=(video_width, video_height), color=(12, 12, 15)).with_duration(duration)
 
     text = (quote_text or "").strip()
     if not text:
         return bg
 
     try:
+        # Chữ màu trắng sáng, font to, không có viền đen thừa mứa trên nền tối
         txt = _safe_caption_clip(
-            text, int(video_width * 0.05), int(video_width * 0.8),
-            color="white", stroke_color="black", stroke_width=3,
+            text, int(video_width * 0.055), int(video_width * 0.85),
+            color="#FFFFFF"
         )
+        # Hiệu ứng Pop-in Scale: Phóng to từ nhỏ lên to
+        def pop_scale(t):
+            p = min(t / 0.2, 1.0)
+            return 0.5 + 0.5 * (1 - (1 - p)**3) # Ease-out cubic
+
         txt = (
             txt.with_position("center")
             .with_duration(duration)
-            .with_effects([CrossFadeIn(min(0.3, duration / 3))])
+            .resized(pop_scale)
         )
         return CompositeVideoClip([bg, txt], size=(video_width, video_height)).with_duration(duration)
     except Exception as e:
@@ -328,8 +338,13 @@ def build_typewriter_quote_hook(
         for i in range(1, steps + 1):
             word_count = max(1, round(n_words * i / steps))
             partial = " ".join(words[:word_count])
+            
+            # Thêm con trỏ nhấp nháy '|' (Blinking Cursor)
+            cursor = "|" if (i % 2 == 1) else ""
+            partial_with_cursor = partial + " " + cursor
+
             clips.append(
-                _safe_caption_clip(partial, font_size, box_w, box_h=canvas_h, **style).with_duration(step_dur)
+                _safe_caption_clip(partial_with_cursor, font_size, box_w, box_h=canvas_h, **style).with_duration(step_dur)
             )
         if hold_dur > 0:
             clips.append(_safe_caption_clip(text, font_size, box_w, box_h=canvas_h, **style).with_duration(hold_dur))

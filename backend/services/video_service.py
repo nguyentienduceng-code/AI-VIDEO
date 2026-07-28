@@ -18,14 +18,10 @@ from typing import List, Optional, TypedDict
 import datetime as dt
 
 from moviepy import (
-    AudioFileClip,
     VideoFileClip,
     ImageClip,
     CompositeVideoClip,
-    TextClip,
-    concatenate_videoclips,
 )
-from moviepy.video.fx import CrossFadeIn, CrossFadeOut
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +312,6 @@ def _build_scene_clip(
 ) -> CompositeVideoClip:
     """Ghép 1 ảnh + 1 audio + phụ đề burn-in thành 1 clip hoàn chỉnh."""
     duration = asset["duration"]
-    visual_effect = asset.get("visual_effect", "zoom_in")
 
     # ── Media clip (Video/Image) ──
     is_video = asset["image_path"].lower().endswith((".mp4", ".mov"))
@@ -457,7 +452,7 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100):
         max_dur = item[4] if len(item) > 4 else None
         try:
             arr = _read(path)
-        except Exception as e:
+        except Exception:
             # Fallback: đọc qua MoviePy nếu soundfile không xử lý được định dạng
             try:
                 from moviepy.audio.io.AudioFileClip import AudioFileClip
@@ -563,10 +558,6 @@ def render_final_video(
     subtitle_font_size = 58 if mode == "quiz_listicle" else 52
     subtitle_color = "#FFD700" if mode == "quiz_listicle" else "white"
 
-    # Slideshow mode: BGM volume cao hơn vì không có narration
-    if is_slideshow:
-        bgm_volume = 0.8
-
     clips = []
     audio_placements = []  # (path, start_time, volume, fadeout) — trộn bằng numpy sau vòng lặp
     speech_segments = []
@@ -623,7 +614,7 @@ def render_final_video(
             
             elif hook_type == "blackout_question":
                 hook_clip_overlay = build_blackout_question_hook(
-                    hook_text, video_width, video_height, resolve_hook_timing(hook_type, hook_text)["duration"]
+                    hook_text, video_width, video_height, resolve_hook_timing(hook_type, hook_text)["duration"], cover_img
                 )
                 # LỖI CŨ: `options` không tồn tại ở đâu trong hàm này (biến đúng là
                 # `kwargs`, dùng ở nhánh carousel_quote phía trên) — NameError 100% mỗi
@@ -636,14 +627,29 @@ def render_final_video(
                     audio_placements.append((impact_sfx, 0.0, min(1.0, effective_volume * 1.5), 0.0))
 
             elif hook_type == "typewriter_quote":
+                hook_dur = resolve_hook_timing(hook_type, hook_text)["duration"]
                 hook_clip_overlay = build_typewriter_quote_hook(
-                    hook_text, video_width, video_height, resolve_hook_timing(hook_type, hook_text)["duration"]
+                    hook_text, video_width, video_height, hook_dur
                 )
+                
                 reel_key = kwargs.get("hook_reel_sfx", "typewriter_fast")
                 typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(reel_key, "typewriter_fast.mp3"))
                 effective_volume = sfx_volume if sfx_volume > 0 else 0.5
+                
                 if os.path.isfile(typewriter_sfx):
-                    audio_placements.append((typewriter_sfx, 0.0, min(1.0, effective_volume), 0.0))
+                    # Giảm âm lượng bgm typewriter_fast xuống để nhường chỗ cho âm thanh phím gõ từng chữ
+                    audio_placements.append((typewriter_sfx, 0.0, min(1.0, effective_volume * 0.4), 0.0))
+                
+                # Thêm âm thanh gõ từng chữ (tick.wav) khớp với nhịp xuất hiện TextClip
+                tick_sfx = os.path.join(SFX_DIR, "tick.wav")
+                if os.path.isfile(tick_sfx):
+                    words = hook_text.strip().split()
+                    n_words = len(words)
+                    steps = max(1, min(n_words, 24))
+                    step_dur = (hook_dur * 0.85) / steps
+                    
+                    for i in range(steps):
+                        audio_placements.append((tick_sfx, i * step_dur, min(1.0, effective_volume * 1.2), 0.0))
 
             elif hook_type == "breathing_vignette":
                 hook_clip_overlay = build_breathing_vignette_hook(
@@ -665,7 +671,7 @@ def render_final_video(
             logger.error(f"Hook Engine Error ({hook_type}): {e}", exc_info=True)
             hook_clip_overlay = None
 
-    for i, asset in enumerate(scene_assets):
+    for _i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
         # KHÔNG mutate asset["start_time"] (gây cộng dồn nếu render lại + double-offset với
         # generate_ass_file). Chỉ dùng biến local; phụ đề tự cộng offset qua hook_effect.
@@ -964,7 +970,6 @@ def generate_ass_file(scene_assets: List[SceneAsset], output_path: str, mode: st
         else: # word_by_word
             # Generate cumulative lines for word-by-word pop-in
             words = hook_text.strip().upper().split()
-            cursor_s = 0.0
             word_dur = 0.25 # pop a new word every 0.25s
             
             # Since ASS requires manual positioning if we pop word by word, the easiest way 
