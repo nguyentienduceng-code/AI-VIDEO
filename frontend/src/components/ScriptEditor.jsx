@@ -570,45 +570,57 @@ export default function ScriptEditor() {
     <div className="editor-layout">
       <div className="editor-toolbar">
         <button className="btn-outline" onClick={() => ctx.setStep('config')}><RotateCcw size={14} /> Quay lại cài đặt</button>
-        <div className="editor-toolbar-info">
-          <PenLine size={14} /> {ctx.scenes.length} cảnh
-          {reusedCount !== null && (
-            <span style={{ marginLeft: 10 }} title="Cảnh đã có đủ giọng đọc + hình trong bộ nhớ đệm sẽ được tái dùng, render gần như tức thì.">
-              — 🟢 <strong>{reusedCount}</strong> cảnh tái dùng, 🔴 <strong>{ctx.scenes.length - reusedCount}</strong> cảnh tạo mới
-            </span>
-          )}
+        <div className="editor-toolbar-info" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+          <div style={{ whiteSpace: 'nowrap' }}>
+            <PenLine size={14} /> {ctx.scenes.length} cảnh
+            {reusedCount !== null && (
+              <span style={{ marginLeft: 10 }} title="Cảnh đã có đủ giọng đọc + hình trong bộ nhớ đệm sẽ được tái dùng, render gần như tức thì.">
+                — 🟢 <strong>{reusedCount}</strong> cảnh tái dùng, 🔴 <strong>{ctx.scenes.length - reusedCount}</strong> tạo mới
+              </span>
+            )}
+          </div>
+          
           {ctx.scenes.length > 0 && (
-            <span
-              style={{ marginLeft: 16, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}
-              title={
-                'Hook và Outro CỘNG THÊM vào tổng thời lượng, không lấy bớt từ lời thoại — '
-                + 'kịch bản được sinh ra mà không biết tới chúng. Muốn video đúng mốc mong '
-                + 'muốn thì chọn thời lượng kịch bản thấp hơn khoảng bằng tổng hook + outro.'
-              }
+            <div 
+              style={{ marginLeft: 24, flex: 1, maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 4 }}
+              title={'Hook và Outro CỘNG THÊM vào tổng thời lượng, không lấy bớt từ lời thoại.\nMuốn video đúng mốc mong muốn thì chọn thời lượng kịch bản thấp hơn khoảng bằng tổng hook + outro.'}
             >
-              ⏳ Video <strong>~{timeline.total.toFixed(1)}s</strong>
-              {(timeline.hookLead > 0 || timeline.outroDur > 0) && (
-                <span style={{ opacity: 0.75, marginLeft: 6 }}>
-                  = {timeline.hookLead > 0 && `${timeline.hookLead.toFixed(1)}s hook + `}
-                  {timeline.speech.toFixed(1)}s lời
-                  {timeline.outroDur > 0 && ` + ${timeline.outroDur.toFixed(1)}s outro`}
-                </span>
-              )}
-            </span>
-          )}
-          {ctx.scenes.length > 0 && ctx.introBgm && ctx.introBgm !== 'none' && (
-            <span
-              style={{ marginLeft: 8, padding: '2px 8px', background: 'var(--surface-hover)', borderRadius: 4, border: '1px solid var(--border)' }}
-              title={
-                'Khoảng thời gian nhạc mở màn chiếm, trước khi chuyển êm sang nhạc nền chính. '
-                + 'Chọn "hết Cảnh 1" thì mốc này tự tính từ timeline thật (đã gồm phần dời do hook).'
-              }
-            >
-              🎵 Nhạc mở màn phủ <strong>
-                {(ctx.introBgmDuration > 0 ? ctx.introBgmDuration : timeline.introBgmAuto).toFixed(1)}s
-              </strong>
-              {!(ctx.introBgmDuration > 0) && <span style={{ opacity: 0.75 }}> (hết Cảnh 1)</span>}
-            </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)' }}>
+                <span>⏳ Tổng: <strong>~{timeline.total.toFixed(1)}s</strong></span>
+                {ctx.introBgm && ctx.introBgm !== 'none' && (
+                  <span title="Khoảng thời gian nhạc mở màn chiếm, trước khi chuyển êm sang nhạc nền chính.">
+                    🎵 Intro phủ: <strong>{(ctx.introBgmDuration > 0 ? ctx.introBgmDuration : timeline.introBgmAuto).toFixed(1)}s</strong>
+                  </span>
+                )}
+              </div>
+              
+              <div style={{ position: 'relative', height: 8, background: 'var(--surface-hover)', borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
+                {timeline.hookLead > 0 && (
+                  <div style={{ height: '100%', width: `${(timeline.hookLead / timeline.total) * 100}%`, background: 'var(--amber)' }} />
+                )}
+                {timeline.speech > 0 && (
+                  <div style={{ height: '100%', width: `${(timeline.speech / timeline.total) * 100}%`, background: '#a855f7' }} />
+                )}
+                {timeline.outroDur > 0 && (
+                  <div style={{ height: '100%', width: `${(timeline.outroDur / timeline.total) * 100}%`, background: '#3b82f6' }} />
+                )}
+                
+                {/* Intro BGM Overlay (a thin green line at the bottom of the track) */}
+                {ctx.introBgm && ctx.introBgm !== 'none' && (
+                  <div style={{ 
+                    position: 'absolute', left: 0, bottom: 0, height: 2, 
+                    width: `${(Math.min(ctx.introBgmDuration > 0 ? ctx.introBgmDuration : timeline.introBgmAuto, timeline.total) / timeline.total) * 100}%`, 
+                    background: 'var(--green)' 
+                  }} />
+                )}
+              </div>
+              
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, opacity: 0.7 }}>
+                {timeline.hookLead > 0 && <span>Hook {timeline.hookLead.toFixed(1)}s</span>}
+                {timeline.speech > 0 && <span style={{ textAlign: timeline.hookLead > 0 ? 'center' : 'left', flex: 1 }}>Lời thoại {timeline.speech.toFixed(1)}s</span>}
+                {timeline.outroDur > 0 && <span>Outro {timeline.outroDur.toFixed(1)}s</span>}
+              </div>
+            </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
