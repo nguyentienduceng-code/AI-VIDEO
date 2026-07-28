@@ -136,13 +136,16 @@ HOOK_REEL_SOUNDS = {
     "tick_wood":     "reel_spin.wav",             # mặc định — tiếng gõ khớp từng bìa lướt qua
     "arcade_8bit":   "reel_spin_v1_arcade.wav",   # bản 8-bit cũ
     "money_counter": "reel_money_counter.wav",    # tiếng máy đếm tiền (user tự nạp)
-    "impact_boom":   "impact_boom.mp3",
-    "typewriter_fast": "typewriter_fast.mp3",
-    "cinematic_swell": "cinematic_swell.mp3",
-    "ambient_mystic": "ambient_mystic.mp3",
-    "camera_shutter": "camera_shutter.mp3",
-    "digital_glitch": "digital_glitch.mp3",
-    "film_projector": "film_projector.mp3",
+    "impact_boom":   "impact_boom.mp3",          # 3.1s — cú đánh ở 0-1s rồi tắt dần, đuôi tự nhiên
+    "typewriter_fast": "typewriter_fast.mp3",    # 8.1s — vòng lặp gõ, đã cắt theo độ dài chữ
+    # Ba tiếng dưới đây dùng bản .wav ĐÃ CẮT, không dùng .mp3 gốc. Bản gốc vẫn nằm cạnh
+    # làm master để cắt lại được (cắt từ .wav đã cắt thì mất chất lượng vĩnh viễn).
+    # Cắt bằng: python tools/fit_hook_sfx.py assets/sfx/<x>.mp3 --name <x> --duration <n> --out <x>.wav
+    "cinematic_swell": "cinematic_swell.wav",    # 6.0s → 4.0s: bỏ 2.2s im lặng đầu file
+    "ambient_mystic": "ambient_mystic.wav",      # 19.7s → 4.0s: vốn là NHẠC NỀN, không phải điểm nhấn
+    "camera_shutter": "camera_shutter.wav",      # 4.4s → 3.0s: giữ trọn cụm click, không cắt giữa chừng
+    "digital_glitch": "digital_glitch.mp3",      # 2.0s — vừa khít cửa sổ
+    "film_projector": "film_projector.mp3",      # 2.2s — vừa khít cửa sổ
 }
 DEFAULT_HOOK_REEL = "tick_wood"
 

@@ -80,6 +80,16 @@ def _loudest_window(x: np.ndarray, dur: float) -> np.ndarray:
 
 
 def main():
+    # Chạy trực tiếp bằng python.exe thì stdout là cp1252 và MỌI dòng in có dấu tiếng
+    # Việt sẽ ném UnicodeEncodeError — công cụ chết trước cả khi đụng tới file âm thanh.
+    # Xem services/log_setup.py.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        from services.log_setup import force_utf8_streams
+        force_utf8_streams()
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="File âm thanh tải về")
     ap.add_argument("--name", required=True, help="Mã ngắn, VD: money_counter")
@@ -91,6 +101,11 @@ def main():
                     help="NÉN THỜI GIAN cả file về đúng độ dài (giữ nguyên cao độ) thay vì "
                          "cắt lấy một đoạn. Dùng khi file có cấu trúc 'chạy rồi tự dừng' — "
                          "cắt đoạn giữa sẽ vứt mất chính cái kết đó.")
+    ap.add_argument("--out",
+                    help="Tên file ra trong assets/sfx/ (mặc định 'reel_<name>.wav'). "
+                         "Công cụ này ban đầu chỉ dùng cho tiếng trục quay Máy Xèng nên "
+                         "tiền tố 'reel_' bị gắn cứng; giờ nó nạp tiếng cho MỌI hiệu ứng "
+                         "nên tên phải đặt được. VD: --out ambient_mystic.wav")
     args = ap.parse_args()
 
     if not os.path.isfile(args.input):
@@ -130,7 +145,7 @@ def main():
     y = (y / peak * args.peak).astype(np.float32)
 
     os.makedirs(SFX_DIR, exist_ok=True)
-    out = os.path.join(SFX_DIR, f"reel_{args.name}.wav")
+    out = os.path.join(SFX_DIR, args.out or f"reel_{args.name}.wav")
     sf.write(out, y, SR)
     print(f"  Đã ghi: {out} — {len(y)/SR:.3f}s, đỉnh {np.max(np.abs(y)):.2f}")
     print(f"\n  Còn 2 bước: khai báo '{args.name}' trong HOOK_REEL_SOUNDS ở")
