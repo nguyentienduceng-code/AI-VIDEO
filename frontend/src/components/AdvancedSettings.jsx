@@ -1,8 +1,37 @@
-import React from 'react';
-import { Play } from 'lucide-react';
+import React, { useState } from 'react';
+import { Play, ChevronDown, ChevronRight } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
 import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS } from '../constants';
+
+const SectionHeader = ({ title, isOpen, onToggle }) => (
+  <div 
+    style={{ 
+      gridColumn: '1 / -1', 
+      background: 'rgba(255, 255, 255, 0.03)', 
+      border: '1px solid rgba(255, 255, 255, 0.05)',
+      borderRadius: '8px',
+      padding: '10px 14px', 
+      color: '#e2e8f0', 
+      fontSize: 12, 
+      fontWeight: 'bold', 
+      letterSpacing: 0.5, 
+      marginTop: 8, 
+      cursor: 'pointer', 
+      display: 'flex', 
+      alignItems: 'center',
+      transition: 'background 0.2s',
+      userSelect: 'none'
+    }}
+    onClick={onToggle}
+    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'}
+    onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)'}
+  >
+    {isOpen ? <ChevronDown size={16} style={{ marginRight: 8, color: '#a855f7' }} /> : <ChevronRight size={16} style={{ marginRight: 8, color: '#a855f7' }} />}
+    {title}
+  </div>
+);
+
 export default function AdvancedSettings() {
   const ctx = useAppStore(useShallow((s) => ({
     useVeo: s.useVeo, setUseVeo: s.setUseVeo,
@@ -33,10 +62,18 @@ export default function AdvancedSettings() {
     // đối chiếu selector với mọi khoá được đọc trong file này nên quên là test đỏ ngay.
     useAudioDucking: s.useAudioDucking, setUseAudioDucking: s.setUseAudioDucking,
     outroEffect: s.outroEffect, setOutroEffect: s.setOutroEffect,
+    outroText: s.outroText, setOutroText: s.setOutroText,
     outroReelSfx: s.outroReelSfx, setOutroReelSfx: s.setOutroReelSfx,
     outroSfxVolume: s.outroSfxVolume, setOutroSfxVolume: s.setOutroSfxVolume,
     playPreview: s.playPreview,
   })));
+
+  const [openImage, setOpenImage] = useState(true);
+  const [openVoice, setOpenVoice] = useState(true);
+  const [openHook, setOpenHook] = useState(true);
+  const [openOutro, setOpenOutro] = useState(true);
+
+
 
   const BGMOptions = (
     <>
@@ -153,8 +190,8 @@ export default function AdvancedSettings() {
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
         
         {/* --- SECTION: HÌNH ẢNH & THỊ GIÁC --- */}
-        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1 }}>HÌNH ẢNH & THỊ GIÁC</div>
-        
+        <SectionHeader title="HÌNH ẢNH & THỊ GIÁC" isOpen={openImage} onToggle={() => setOpenImage(!openImage)} />
+        {openImage && (<>
         <div className="input-group">
           <label className="field-label">NGUỒN HÌNH ẢNH</label>
           <select
@@ -198,9 +235,11 @@ export default function AdvancedSettings() {
           />
         </div>
 
-        {/* --- SECTION: GIỌNG ĐỌC & SFX CƠ BẢN --- */}
-        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>GIỌNG ĐỌC & SFX CƠ BẢN</div>
+        </>)}
 
+        {/* --- SECTION: GIỌNG ĐỌC & SFX CƠ BẢN --- */}
+        <SectionHeader title="GIỌNG ĐỌC & SFX CƠ BẢN" isOpen={openVoice} onToggle={() => setOpenVoice(!openVoice)} />
+        {openVoice && (<>
         <div className="input-group">
           <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS / OMNIVOICE)</label>
           <select className="form-select form-select-sm" value={ctx.speechRate} onChange={e => ctx.setSpeechRate(e.target.value)}>
@@ -238,9 +277,11 @@ export default function AdvancedSettings() {
           />
         </div>
 
-        {/* --- SECTION: MỞ ĐẦU VIDEO (INTRO & HOOK) --- */}
-        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>MỞ ĐẦU VIDEO (INTRO & HOOK)</div>
+        </>)}
 
+        {/* --- SECTION: MỞ ĐẦU VIDEO (INTRO & HOOK) --- */}
+        <SectionHeader title="MỞ ĐẦU VIDEO (INTRO & HOOK)" isOpen={openHook} onToggle={() => setOpenHook(!openHook)} />
+        {openHook && (<>
         <div className="input-group" style={{ gridColumn: '1 / -1' }}>
           <label className="field-label">♬ NHẠC MỞ ĐẦU (INTRO BGM - Tùy chọn)</label>
           <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
@@ -332,9 +373,11 @@ export default function AdvancedSettings() {
           />
         </div>
 
-        {/* --- SECTION: KẾT THÚC VIDEO (OUTRO) --- */}
-        <div style={{ gridColumn: '1 / -1', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 4, color: '#888', fontSize: 11, fontWeight: 'bold', letterSpacing: 1, marginTop: 8 }}>KẾT THÚC VIDEO (OUTRO)</div>
+        </>)}
 
+        {/* --- SECTION: KẾT THÚC VIDEO (OUTRO) --- */}
+        <SectionHeader title="KẾT THÚC VIDEO (OUTRO)" isOpen={openOutro} onToggle={() => setOpenOutro(!openOutro)} />
+        {openOutro && (<>
         <div className="input-group">
           <label className="field-label">HIỆU ỨNG OUTRO KẾT THÚC</label>
           <select className="form-select form-select-sm" value={ctx.outroEffect} onChange={e => ctx.setOutroEffect(e.target.value)}>
@@ -380,6 +423,17 @@ export default function AdvancedSettings() {
             </button>
           </div>
         </div>
+        <div className="input-group">
+          <label className="field-label">TIÊU ĐỀ/CHỮ OUTRO</label>
+          <input 
+            type="text" 
+            className="form-input form-input-sm" 
+            value={ctx.outroText || ""} 
+            onChange={e => ctx.setOutroText(e.target.value)} 
+            placeholder="Nhập câu kết..." 
+          />
+        </div>
+        </>)}
       </div>
     </div>
   );

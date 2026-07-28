@@ -251,6 +251,7 @@ class RenderVideoRequest(BaseModel):
     # xuống video_service rồi dựa vào các min() rải rác trong hook engine đỡ hộ.
     hook_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
     outro_effect: str = "none"
+    outro_text: Optional[str] = None
     outro_reel_sfx: str = "none"
     outro_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
     # Nhạc mở màn, chuyển sang bgm_track chính bằng crossfade. None/"" = không dùng.
@@ -306,6 +307,7 @@ class PresetRequest(BaseModel):
     intro_bgm: Optional[str] = None
     intro_bgm_duration: float = Field(0, ge=0, le=120)
     outro_effect: str = "none"
+    outro_text: Optional[str] = None
     outro_reel_sfx: str = "none"
     # ĐƠN VỊ: PHẦN TRĂM (100 = 100%) — giống hook_sfx_volume ngay trên, KHÁC với
     # RenderVideoRequest.outro_sfx_volume (hệ số). ScriptEditor.jsx chia 100 ở ranh giới
@@ -339,6 +341,7 @@ RENDER_PASSTHROUGH_FIELDS = (
     "hook_reel_sfx",
     "hook_sfx_volume",  # HỆ SỐ (1.0 = 100%), frontend đã chia 100 trước khi gửi
     "outro_effect",
+    "outro_text",
     "outro_reel_sfx",
     "outro_sfx_volume",
     "use_fast_assembly",
@@ -1065,7 +1068,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # (final_duration += outro_duration). Thiếu nó thì thanh tiến trình chạy hết 100%
         # rồi biến mất ở mấy giây cuối. Xem video_service.resolve_outro_timing().
         from services.video_service import resolve_outro_timing
-        outro_timing = resolve_outro_timing(req.outro_effect, req.hook_text)
+        # `or req.hook_text` PHẢI khớp từng chữ với cách video_service chọn nguồn chữ
+        # (`kwargs.get("outro_text") or hook_text`). Lệch nhau là hai nơi tính ra hai thời
+        # lượng outro khác nhau khi người dùng đặt chữ đuôi riêng — đúng loại lệch mà
+        # resolve_outro_timing() sinh ra để dập.
+        outro_timing = resolve_outro_timing(req.outro_effect, req.outro_text or req.hook_text)
         outro_duration = outro_timing["duration"] if outro_timing else 0.0
         video_total_duration = (max(
             (a["start_time"] + a["duration"]) for a in scene_assets

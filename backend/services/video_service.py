@@ -104,7 +104,7 @@ def resolve_hook_timing(hook_type: str, hook_quote: str) -> dict | None:
     # xong mới tới pha Quote) nên không cần tách 2 giá trị khác nhau.
     return {"duration": duration, "narration_lead": duration}
 
-def resolve_outro_timing(outro_type: str, hook_quote: str = "") -> dict | None:
+def resolve_outro_timing(outro_type: str, outro_text: str = "") -> dict | None:
     """
     Thời lượng phần đuôi video — NGUỒN CHÂN LÝ DUY NHẤT, đối xứng với resolve_hook_timing.
 
@@ -122,7 +122,7 @@ def resolve_outro_timing(outro_type: str, hook_quote: str = "") -> dict | None:
     # carousel_quote KHÔNG lấy theo HOOK_EFFECTS: clip máy xèng có độ dài cố định riêng.
     if outro_type == "carousel_quote":
         return {"duration": HOOK_CAROUSEL_DURATION}
-    base = resolve_hook_timing(outro_type, hook_quote)
+    base = resolve_hook_timing(outro_type, outro_text)
     if base is None:
         return None
     return {"duration": base["duration"]}
@@ -647,6 +647,7 @@ RENDER_KWARG_KEYS = frozenset({
     "outro_effect",
     "outro_reel_sfx",
     "outro_sfx_volume",
+    "outro_text",
     "use_fast_assembly",
     "use_gpu_encode",
 })
@@ -904,14 +905,23 @@ def render_final_video(
             outro_sfx_volume = kwargs.get("outro_sfx_volume", 1.0)
             outro_reel_key = kwargs.get("outro_reel_sfx", "none")
             
+            outro_text = kwargs.get("outro_text") or hook_text
+            
             # Cùng một hàm mà main.py dùng để cộng outro vào tổng thời lượng — hai nơi
             # không thể lệch nhau. KHÔNG tính lại tay ở đây.
-            outro_duration = (resolve_outro_timing(outro_type, hook_text) or {}).get("duration", 2.0)
+            outro_duration = (resolve_outro_timing(outro_type, outro_text) or {}).get("duration", 2.0)
 
             if outro_type == "carousel_quote":
-                outro_clip_overlay = build_carousel_hook(outro_cover_img, hook_quote, video_width, video_height, HOOK_CAROUSEL_DURATION)
+                outro_clip_overlay = build_carousel_hook(outro_cover_img, outro_text, video_width, video_height, HOOK_CAROUSEL_DURATION)
                 sfx_dir = SFX_DIR
-                reel_sfx = os.path.join(sfx_dir, HOOK_REEL_SOUNDS.get(outro_reel_key, "tick_wood.mp3"))
+                # Fallback tra NGƯỢC qua HOOK_REEL_SOUNDS, không gõ tay tên file: bản cũ
+                # ghi "tick_wood.mp3" — một file KHÔNG TỒN TẠI ("tick_wood" là tên KHOÁ,
+                # file thật của nó là reel_spin.wav. Vì có os.path.isfile() che nên khoá
+                # lạ chỉ dẫn tới im lặng không tiếng, không lỗi nào.
+                reel_sfx = os.path.join(
+                    sfx_dir,
+                    HOOK_REEL_SOUNDS.get(outro_reel_key, HOOK_REEL_SOUNDS[DEFAULT_HOOK_REEL]),
+                )
                 whoosh_sfx = os.path.join(sfx_dir, "whoosh.wav")
                 ding_sfx = os.path.join(sfx_dir, "ding.wav")
                 slot_dur = SLOT_DURATION
@@ -924,7 +934,7 @@ def render_final_video(
             
             elif outro_type == "blackout_question":
                 outro_clip_overlay = build_blackout_question_hook(
-                    hook_text, video_width, video_height, outro_duration, subtitle_font_size
+                    outro_text, video_width, video_height, outro_duration, subtitle_font_size
                 )
                 impact_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "impact_boom.mp3"))
                 if os.path.isfile(impact_sfx) and outro_reel_key != "none":
@@ -932,7 +942,7 @@ def render_final_video(
                     
             elif outro_type == "typewriter_quote":
                 outro_clip_overlay = build_typewriter_quote_hook(
-                    hook_text, video_width, video_height, outro_duration, outro_cover_img
+                    outro_text, video_width, video_height, outro_duration, outro_cover_img
                 )
                 typewriter_sfx = os.path.join(SFX_DIR, HOOK_REEL_SOUNDS.get(outro_reel_key, "typewriter_fast.mp3"))
                 if os.path.isfile(typewriter_sfx) and outro_reel_key != "none":

@@ -92,6 +92,7 @@ export default function ScriptEditor() {
     useAudioDucking: s.useAudioDucking,
     useBreathing: s.useBreathing, hookEffect: s.hookEffect, hookQuote: s.hookQuote, setHookQuote: s.setHookQuote,
     hookText: s.hookText, setHookText: s.setHookText,
+    outroText: s.outroText, setOutroText: s.setOutroText,
     preferStockVideo: s.preferStockVideo, visualSource: s.visualSource,
     useSinglePassNarration: s.useSinglePassNarration, hookReelSfx: s.hookReelSfx,
     // LỖI CŨ: payload render đọc ctx.hookSfxVolume nhưng dòng này thiếu nó → undefined
@@ -196,6 +197,7 @@ export default function ScriptEditor() {
         hook_reel_sfx: ctx.hookReelSfx,
         hook_sfx_volume: ctx.hookSfxVolume / 100,
         outro_effect: ctx.outroEffect,
+        outro_text: ctx.outroText,
         outro_reel_sfx: ctx.outroReelSfx,
         outro_sfx_volume: ctx.outroSfxVolume / 100,
       };

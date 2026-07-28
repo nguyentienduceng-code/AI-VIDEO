@@ -21,8 +21,13 @@ backend/assets/voices_preview/
 # Root test files & temporary assets
 *.mp3
 *.wav
-# NGOẠI LỆ: kho SFX của app phải được track (asset thủ công, mất là không sinh lại được)
+# NGOẠI LỆ: kho SFX của app phải được track (asset thủ công, mất là không sinh lại được).
+# PHẢI có CẢ .mp3, không chỉ .wav: HOOK_REEL_SOUNDS tham chiếu đúng bản .mp3
+# (impact_boom, typewriter_fast, cinematic_swell, ambient_mystic). Trước đây chỉ mở
+# ngoại lệ cho .wav nên 4 tiếng động đó không nằm trong git — clone repo sang máy khác
+# là chúng biến mất, và vì có os.path.isfile() che nên chỉ im lặng không kêu, không lỗi.
 !backend/assets/sfx/*.wav
+!backend/assets/sfx/*.mp3
 *.png
 *.jpg
 *.jpeg

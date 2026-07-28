@@ -48,6 +48,7 @@ const INITIAL_STATE = {
   watermarkText: '',
   hookText: '',
   hookQuote: '',
+  outroText: '',
   uploadSessionId: null,
   uploadedFiles: [],
   uploadLoading: false,
