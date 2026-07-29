@@ -247,6 +247,33 @@ def test_khong_con_he_so_go_tay_trong_nhanh_hieu_ung():
     assert not con, f"còn {len(con)} hệ số âm lượng gõ tay, phải dùng hook_sfx_level()"
 
 
+def test_outro_khong_truyen_nham_subtitle_font_size_lam_anh_bia():
+    """LỖI CŨ ĐÃ VÁ: nhánh outro_type == "blackout_question" truyền
+    `subtitle_font_size` (một số nguyên, VD 75) vào đúng vị trí tham số
+    `cover_image_path` của build_blackout_question_hook — số khác 0 luôn truthy nên
+    `if cover_image_path:` không lộ lỗi ở đó, mà nổ tận trong _blurred_fill_bg khi gọi
+    `cover_path.endswith(...)` trên một int. Exception bị nuốt gọn thành WARNING rồi âm
+    thầm rơi về nền đen phẳng — outro luôn mất ảnh bìa mờ phía sau, đo được bằng log
+    thật: "Blurred BG error: 'int' object has no attribute 'endswith'".
+
+    `subtitle_font_size` là tham số RIÊNG của phụ đề karaoke — không có lý do hợp lệ
+    nào để nó xuất hiện trong khối dựng clip outro (chỉ dùng outro_cover_img/outro_text/
+    outro_duration/video_width/video_height)."""
+    with open(_VIDEO_SERVICE, encoding="utf-8") as f:
+        code = "\n".join(
+            line for line in f.read().splitlines() if not line.strip().startswith("#")
+        )
+
+    start = code.index('outro_type = kwargs.get("outro_effect")')
+    end = code.index("if outro_clip_overlay:", start)
+    outro_block = code[start:end]
+
+    assert "subtitle_font_size" not in outro_block, (
+        "subtitle_font_size xuất hiện trong khối dựng clip outro — nghi ngờ bị truyền "
+        "nhầm vào vị trí cover_image_path của một hàm build_*_hook (đúng lỗi cũ đã vá)."
+    )
+
+
 if __name__ == "__main__":
     from services.log_setup import force_utf8_streams
     force_utf8_streams()

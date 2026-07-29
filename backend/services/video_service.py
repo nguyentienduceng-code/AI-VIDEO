@@ -1238,8 +1238,15 @@ def render_final_video(
                     ))
             
             elif outro_type == "blackout_question":
+                # LỖI CŨ: tham số thứ 5 là cover_image_path (ảnh nền mờ), nhưng chỗ này
+                # truyền nhầm subtitle_font_size (một số nguyên, VD 75) — bên trong hàm
+                # `if cover_image_path:` vẫn đúng (số khác 0 luôn truthy) nên KHÔNG lộ ra
+                # bằng exception ở ĐÂY, mà nổ tận trong _blurred_fill_bg khi gọi
+                # cover_path.endswith(...) trên một int, bị except ở đó nuốt gọn thành
+                # WARNING rồi âm thầm rơi về nền đen phẳng — outro luôn mất ảnh bìa mờ
+                # phía sau dù outro_cover_img (đã tính đúng ở trên) hoàn toàn hợp lệ.
                 outro_clip_overlay = build_blackout_question_hook(
-                    outro_text, video_width, video_height, outro_duration, subtitle_font_size
+                    outro_text, video_width, video_height, outro_duration, outro_cover_img
                 )
                 impact_sfx = resolve_effect_sfx(outro_type, outro_reel_key)
                 if impact_sfx:
