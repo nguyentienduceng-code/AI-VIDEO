@@ -1128,6 +1128,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             use_audio_ducking=req.use_audio_ducking,
             narration_tone=req.narration_tone or "viral",
             use_pattern_interrupt=req.use_pattern_interrupt,
+            # Cùng con số mà video_service dùng để dựng clip hook (hook_timing ở trên) —
+            # bước master cần biết hook dài bao nhiêu để Pattern Interrupt không chớp đè
+            # lên khung mở màn. Lệch nhau là cú chớp rơi vào giữa hook.
+            hook_duration=(hook_timing or {}).get("duration", 0.0),
         )
 
         spawned = spawn_render(
@@ -1190,6 +1194,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     use_audio_ducking=req.use_audio_ducking,
                     narration_tone=req.narration_tone or "viral",
                     use_pattern_interrupt=req.use_pattern_interrupt,
+                    hook_duration=(hook_timing or {}).get("duration", 0.0),
                 )
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)

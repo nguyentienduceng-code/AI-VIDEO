@@ -157,6 +157,7 @@ def master_audio_and_export(
     sidechain_audio_path: str | None = None,
     use_pattern_interrupt: bool = True,
     narration_tone: str = "viral",
+    hook_duration: float = 0.0,
 ) -> str:
     """
     Bước cuối: trộn BGM, master âm thanh, lọc màu, vignette, thanh tiến trình, phụ đề, encode.
@@ -308,9 +309,20 @@ def master_audio_and_export(
     # nền xám 128 lên 255 (bão hoà trắng hoàn toàn) — một "cú giật NHẸ" theo đúng mô tả
     # tính năng không thể là một khung hình trắng xoá; 0.2 cho độ sáng nhô lên rõ nhưng
     # không cháy sáng, cũng đỡ rủi ro với người nhạy ánh sáng nhấp nháy hơn một cú full-white.
+    # KHÔNG chớp trong lúc HOOK đang chạy, và không chớp ngay khung hình đầu tiên.
+    # Bản cũ dùng thẳng `mod(t,3.2)` nên cú chớp đầu tiên rơi đúng vào t=0. Đo trên video
+    # thật (66cf2bed, hook typewriter 3.02s): độ sáng vọt lên ở đúng t=0/3.2/6.4/9.6, và
+    # cú ở t=0 đè lên khung mở màn của hook — người dùng đọc nó là "lỗi nhấp nháy đầu
+    # video", không phải hiệu ứng. Về mặt mục đích cũng vô nghĩa: Pattern Interrupt sinh
+    # ra để KÉO LẠI sự chú ý đã rơi, mà ở giây đầu tiên thì chú ý đang cao nhất.
+    # Chu kỳ vì thế tính TỪ lúc hook kết thúc, và cú đầu tiên lùi thêm trọn một chu kỳ
+    # (hook_duration + 3.2) để không dính luôn vào điểm cắt sang Cảnh 1.
     if use_pattern_interrupt and narration_tone not in ("storytelling", "emotional"):
+        _pi_moc = max(0.0, float(hook_duration))
+        _pi_dau = _pi_moc + 3.2
         filter_complex.append(
-            f"{video_chain}eq=eval=frame:brightness='if(lt(mod(t,3.2),0.1), 0.2, 0)'[v_pi]"
+            f"{video_chain}eq=eval=frame:"
+            f"brightness='if(gte(t,{_pi_dau:.3f})*lt(mod(t-{_pi_moc:.3f},3.2),0.1), 0.2, 0)'[v_pi]"
         )
         video_chain = "[v_pi]"
 

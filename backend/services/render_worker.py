@@ -216,6 +216,8 @@ def _worker_main(
             bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
             use_pattern_interrupt=master_kwargs.get("use_pattern_interrupt", True),
             narration_tone=master_kwargs.get("narration_tone", "viral"),
+            # Để Pattern Interrupt không chớp đè lên hook — xem chú thích ở audio_mix_service.
+            hook_duration=master_kwargs.get("hook_duration", 0.0),
         )
 
         # Dọn file thô
