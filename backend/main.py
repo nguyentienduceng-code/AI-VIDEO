@@ -219,7 +219,6 @@ class RenderVideoRequest(BaseModel):
     bgm_volume: Optional[float] = 0.15
     negative_prompt: Optional[str] = ""
     use_veo: bool = False
-    use_animated_captions: bool = True
     cta_text: Optional[str] = None
     gemini_api_key: Optional[str] = None
     character_description: Optional[str] = None
@@ -229,6 +228,7 @@ class RenderVideoRequest(BaseModel):
     use_veo_ambient_audio: bool = True
     use_gpu_encode: bool = True
     hook_zoom_boost: bool = True
+    use_pattern_interrupt: bool = True
     use_fixed_seed: bool = False
     subtitle_style: str = "karaoke_bold"
     watermark_text: Optional[str] = None
@@ -240,6 +240,7 @@ class RenderVideoRequest(BaseModel):
     use_audio_ducking: bool = True
     color_grading: str = "warm_cinematic"
     topic: Optional[str] = None
+    narration_tone: Optional[str] = "viral"
     use_breathing: bool = False
     hook_effect: str = "word_by_word"
     hook_quote: Optional[str] = None
@@ -323,6 +324,7 @@ class PresetRequest(BaseModel):
     outro_sfx_volume: float = Field(100, ge=0, le=200)
     use_ken_burns: bool = True
     hook_zoom_boost: bool = True
+    use_pattern_interrupt: bool = True
     use_breathing: bool = False
     use_frame_chaining: bool = True
     use_beat_sync: bool = False
@@ -1110,6 +1112,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             hook_effect=req.hook_effect,
             bgm_volume_segments=bgm_volume_segments,
             use_audio_ducking=req.use_audio_ducking,
+            narration_tone=req.narration_tone or "viral",
+            use_pattern_interrupt=req.use_pattern_interrupt,
         )
 
         spawned = spawn_render(
@@ -1170,6 +1174,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     total_duration=video_total_duration,
                     bgm_volume_segments=bgm_volume_segments,
                     use_audio_ducking=req.use_audio_ducking,
+                    narration_tone=req.narration_tone or "viral",
+                    use_pattern_interrupt=req.use_pattern_interrupt,
                 )
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)
@@ -1611,14 +1617,38 @@ async def generate_script(req: GenerateScriptRequest):
             ]
             
         if isinstance(scenes, dict):
+            # ── AI Script Reviewer (B2) ──
+            try:
+                _w_lo, _w_hi = gemini_service.scene_word_budget(
+                    req.target_duration or "30s", req.num_scenes or 6
+                )
+                review_result = await gemini_service.review_script(
+                    scenes, word_budget_hi=_w_hi, api_key=req.gemini_api_key,
+                )
+                scenes["review"] = review_result
+            except Exception as review_err:
+                logger.warning(f"Script Review skipped: {review_err}")
             return scenes
         else:
-            return {"scenes": scenes, "sentiment": "happy"}
+            # ── AI Script Reviewer (B2) ──
+            response = {"scenes": scenes, "sentiment": "happy"}
+            try:
+                _w_lo, _w_hi = gemini_service.scene_word_budget(
+                    req.target_duration or "30s", req.num_scenes or 6
+                )
+                review_result = await gemini_service.review_script(
+                    response, word_budget_hi=_w_hi, api_key=req.gemini_api_key,
+                )
+                response["review"] = review_result
+            except Exception as review_err:
+                logger.warning(f"Script Review skipped: {review_err}")
+            return response
     except HTTPException:
         # Giữ nguyên status code gốc (400 thiếu topic/script...) thay vì bọc thành 500.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/render-video")
 async def render_video(req: RenderVideoRequest, background_tasks: BackgroundTasks):

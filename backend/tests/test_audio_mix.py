@@ -146,6 +146,62 @@ def test_khong_co_track_nao_thi_tra_ve_none():
     assert _mix_audio_tracks([], 3.0) is None
 
 
+# ── SCENE_SFX_GAIN: cân bằng âm lượng 13 SFX per-scene ───────────────────────
+def test_moi_scene_sfx_deu_tro_toi_file_co_that():
+    from config import SFX_DIR
+    from services.video_service import SCENE_SFX_GAIN
+
+    thieu = [
+        name for name in SCENE_SFX_GAIN
+        if not os.path.isfile(os.path.join(SFX_DIR, f"{name}.wav"))
+    ]
+    assert not thieu, f"SCENE_SFX_GAIN khai báo nhưng không có file: {thieu}"
+
+
+def test_scene_sfx_can_bang_am_luong():
+    """LỖI CŨ: 13 SFX per-scene (whoosh/pop/tick/ding/bell/shimmer/riser/bass_drop/
+    impact/suspense/heartbeat/laugh/swoosh_soft) đều nhân đúng một công thức phẳng —
+    đo bằng ffmpeg volumedetect thấy chênh 33.7 dB (shimmer.wav -42dB vs suspense.wav
+    -8.3dB), cùng thanh trượt âm lượng mà tiếng gần như câm, tiếng thì chói hẳn.
+
+    shimmer.wav là NGOẠI LỆ CÓ CHỦ Ý (xem chú thích SCENE_SFX_GAIN) — trần gain 3.5x
+    thay vì khuếch đại đúng 10x theo RMS, vì file gần như toàn im lặng với một cú lấp
+    lánh ngắn (max_volume chỉ -4.5dB): khuếch đại đúng theo RMS sẽ biến hiệu ứng tinh tế
+    này thành một tiếng chói ngay khung hình nó vang lên. Tách riêng để không bắt nhầm
+    lỗi khi so các SFX còn lại.
+    """
+    import sys as _s
+    _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    from fit_hook_sfx import _decode
+    from config import SFX_DIR
+    from services.video_service import SCENE_SFX_GAIN
+
+    levels = {}
+    for name, gain in SCENE_SFX_GAIN.items():
+        x = _decode(os.path.join(SFX_DIR, f"{name}.wav"))
+        rms = 20 * np.log10(float(np.sqrt(np.mean(x ** 2))) + 1e-12)
+        levels[name] = rms + 20 * np.log10(gain)
+
+    thuong = {k: v for k, v in levels.items() if k != "shimmer"}
+    spread = max(thuong.values()) - min(thuong.values())
+    # Trần 5dB, không phải 0: gain trong SCENE_SFX_GAIN tính từ `ffmpeg volumedetect`,
+    # còn RMS ở đây tính bằng numpy sau khi `_decode` giải mã lại 44.1kHz mono — hai
+    # đường đo cho số hơi khác nhau (đo thật: full 2.3dB), không phải sai số bằng 0.
+    # 5dB vẫn xa dưới trần 12dB mà test_hook_sfx.py chấp nhận cho nhóm hook/outro.
+    assert spread <= 5.0, (
+        f"chênh lệch âm lượng {spread:.1f} dB giữa các SFX thường (trừ shimmer): "
+        + ", ".join(f"{k}={v:.1f}dB" for k, v in sorted(thuong.items(), key=lambda kv: kv[1]))
+    )
+
+    # shimmer được PHÉP êm hơn phần còn lại (trần gain có chủ ý), nhưng phải nằm trong
+    # khoảng dự kiến — bắt lỗi nếu ai đó đổi file shimmer.wav sang bản khác mà quên
+    # tính lại gain, khiến nó lại rơi về gần-câm hoặc bất ngờ chói lên.
+    assert -35.0 <= levels["shimmer"] <= -25.0, (
+        f"shimmer lệch khỏi khoảng dự kiến (-35..-25 dB): {levels['shimmer']:.1f} dB — "
+        "có thể file đã đổi, cần tính lại gain trong SCENE_SFX_GAIN"
+    )
+
+
 if __name__ == "__main__":
     # Chạy trực tiếp bằng python.exe thì stdout là cp1252 và mọi dòng kết quả có dấu
     # tiếng Việt sẽ ném UnicodeEncodeError — xem services/log_setup.py.

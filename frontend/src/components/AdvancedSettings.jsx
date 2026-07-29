@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Play, ChevronDown, ChevronRight } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
-import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS } from '../constants';
+import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS, OUTRO_ONLY_EFFECTS } from '../constants';
 
 const SectionHeader = ({ title, isOpen, onToggle }) => (
   <div 
@@ -42,6 +42,7 @@ export default function AdvancedSettings() {
     useSinglePassNarration: s.useSinglePassNarration, setUseSinglePassNarration: s.setUseSinglePassNarration,
     useBreathing: s.useBreathing, setUseBreathing: s.setUseBreathing,
     hookZoomBoost: s.hookZoomBoost, setHookZoomBoost: s.setHookZoomBoost,
+    usePatternInterrupt: s.usePatternInterrupt, setUsePatternInterrupt: s.setUsePatternInterrupt,
     hookEffect: s.hookEffect, setHookEffect: s.setHookEffect,
     hookReelSfx: s.hookReelSfx, setHookReelSfx: s.setHookReelSfx,
     hookText: s.hookText, setHookText: s.setHookText,
@@ -154,6 +155,12 @@ export default function AdvancedSettings() {
           checked={ctx.useKenBurns} 
           onChange={ctx.setUseKenBurns} 
           tooltip="Tự động zoom/pan nhẹ trên ảnh tĩnh nếu không dùng Veo"
+        />
+        <ToggleRow 
+          label="⚡ Pattern Interrupt (Chống lướt)" 
+          checked={ctx.usePatternInterrupt} 
+          onChange={ctx.setUsePatternInterrupt} 
+          tooltip="Tạo các cú giật nhẹ (flash trắng ngắn hoặc zoom nhẹ) cứ mỗi 2.5-3.5s để giữ mắt người xem. Tự động vô hiệu ở tone Storytelling/Emotional để tránh phá hỏng không khí."
         />
         <ToggleRow
           label="Tiếng động phụ hoạ (SFX các cảnh)"
@@ -382,13 +389,20 @@ export default function AdvancedSettings() {
           <label className="field-label">HIỆU ỨNG OUTRO KẾT THÚC</label>
           <select className="form-select form-select-sm" value={ctx.outroEffect} onChange={e => ctx.setOutroEffect(e.target.value)}>
             <option value="none">🚫 Không dùng Outro</option>
-            <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
+            {/* carousel_quote CỐ Ý không có ở đây: chạy lại màn "Máy Xèng" quay bìa giả
+                hợp lý ở đầu video (tạo hồi hộp) nhưng vô nghĩa ở cuối (khán giả đã biết
+                đáp án từ đầu) — outro cần gây ấn tượng nhanh, không lặp lại một màn chờ
+                4.5 giây. Backend vẫn xử lý được giá trị này (preset/project cũ đã lưu),
+                chỉ ẩn khỏi lựa chọn mới. */}
             <option value="blackout_question">⬛ Màn đen (Blackout)</option>
             <option value="typewriter_quote">⌨️ Gõ chữ (Typewriter)</option>
             <option value="breathing_vignette">🕯️ Thu phóng mờ (Vignette)</option>
             <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
             <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
             <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
+            {OUTRO_ONLY_EFFECTS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
           </select>
         </div>
 

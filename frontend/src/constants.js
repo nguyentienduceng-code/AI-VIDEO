@@ -23,6 +23,10 @@ export const STYLES = [
   { value: '3D render, Pixar style, soft lighting, highly detailed', label: '3D Render' },
   { value: 'Cinematic, dramatic lighting, widescreen composition', label: 'Cinematic (Điện ảnh)' },
   { value: 'Watercolor painting, soft brush strokes, artistic', label: 'Watercolor (Màu nước)' },
+  { value: 'Oil painting, textured canvas brushstrokes, Renaissance style, chiaroscuro lighting', label: 'Sơn dầu Cổ điển (Nghệ thuật)' },
+  { value: 'Traditional Asian ink wash painting, Shan Shui watercolor, misty paper texture', label: 'Tranh Thủy mặc (Thơ ca)' },
+  { value: 'Architectural render, cinematic wide angle, dramatic twilight lighting, 8k detail', label: 'Kiến trúc Điện ảnh (Công trình)' },
+  { value: 'Architectural blueprint sketch, technical drawing lines, blue background', label: 'Bản vẽ Phác thảo (Blueprint)' },
   { value: 'Cyberpunk 2077 style, neon lights, futuristic city, sci-fi', label: 'Cyberpunk 2077 (Tương lai)' },
   { value: 'Dark Fantasy, gothic, moody lighting, mysterious, highly detailed', label: 'Dark Fantasy (Huyền bí)' },
   { value: 'Vintage 35mm film, grainy, retro aesthetic, warm nostalgic colors', label: 'Vintage Film (Phim cũ)' },
@@ -47,8 +51,11 @@ export const VOICES = [
 export const NICHE_OPTIONS = [
   { value: '', label: '— Tự do (theo tone) —' },
   { value: 'book', label: '📚 Review Sách/Phim' },
+  { value: 'art_masterpiece', label: '🎨 Tranh & Nghệ thuật' },
+  { value: 'poetry_literature', label: '📜 Thơ ca & Văn học' },
+  { value: 'architecture_wonders', label: '🏛️ Công trình & Kỳ quan' },
   { value: 'finance', label: '💰 Tài chính/Làm giàu' },
-  { value: 'history', label: '🏛️ Lịch sử/Bí ẩn' },
+  { value: 'history', label: '📜 Lịch sử/Bí ẩn' },
   { value: 'psychology', label: '🧠 Tâm lý/Self-help' },
   { value: 'truecrime', label: '🔪 True Crime/Vụ án' },
   { value: 'travel', label: '🌍 Du lịch/Khám phá' },
@@ -149,8 +156,21 @@ export const HOOK_SFX_OPTIONS = {
   vintage_film_burn: [
     { value: 'film_projector', label: '🎞️ Lạch cạch máy chiếu (Film Projector)' },
   ],
+  // Chỉ dùng cho Outro — xem OUTRO_ONLY_EFFECTS bên dưới và build_cta_card_hook (backend).
+  cta_card: [
+    { value: 'cta_chime', label: '🔔 Chuông reo (Chime)' },
+    { value: 'cta_pop', label: '🫧 Bụp vui tươi (Pop)' },
+  ],
   none: [],
 };
+
+// Hiệu ứng CHỈ dành cho Outro, không hiện trong dropdown Hook mở đầu — vì lý do
+// tương ứng với build_cta_card_hook (hook_engine.py): thẻ CTA (Thích/Theo dõi/Chia
+// sẻ) chỉ có ý nghĩa ở CUỐI video, đưa lên đầu clip sẽ vô nghĩa (chưa xem gì đã kêu
+// gọi theo dõi).
+export const OUTRO_ONLY_EFFECTS = [
+  { value: 'cta_card', label: '💚 Thẻ kêu gọi hành động (CTA Card)' },
+];
 
 
 // Nguồn hình cho từng cảnh — đồng bộ với backend main.VALID_VISUAL_SOURCES
