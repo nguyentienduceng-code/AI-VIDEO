@@ -182,6 +182,14 @@ HOOK_REEL_SOUNDS = {
     "cta_chime": "bell.wav",                     # 2.0s — tiếng chuông reo cho card CTA
     "cta_pop":   "pop.wav",                      # 1.97s — tiếng bụp vui tươi, thay thế
 }
+
+# Tiếng "ding" chốt cuối trục quay carousel_quote từng CỐ ĐỊNH "ding.wav" bất kể
+# reel_key người dùng chọn — chọn reel "arcade_8bit" (8-bit retro) vẫn nghe đúng tiếng
+# chuông ding "sang trọng" mặc định, lệch hẳn chất âm với tiếng quay 8-bit vừa nghe.
+# ding_v1_arcade.wav đã có sẵn trong kho (đo mean_volume -12.5dB, lệch ding.wav gốc
+# đúng 0.8dB — dùng chung hệ số cân bằng "_ding", không cần thêm khoá riêng).
+DING_VARIANTS = {"arcade_8bit": "ding_v1_arcade.wav"}
+DEFAULT_DING = "ding.wav"
 DEFAULT_HOOK_REEL = "tick_wood"
 
 # Hiệu ứng nào được phép dùng tiếng nào — PHẢI khớp HOOK_SFX_OPTIONS bên
@@ -967,7 +975,7 @@ def render_final_video(
                 # Audio cho carousel_quote
                 sfx_dir = SFX_DIR
                 reel = resolve_effect_sfx(hook_type, reel_key)
-                ding = os.path.join(sfx_dir, "ding.wav")
+                ding = os.path.join(sfx_dir, DING_VARIANTS.get(reel_key, DEFAULT_DING))
 
                 effective_volume = hook_sfx_volume
                 if reel:
@@ -1215,7 +1223,7 @@ def render_final_video(
                 # lạ chỉ dẫn tới im lặng không tiếng, không lỗi nào.
                 reel_sfx = resolve_effect_sfx(outro_type, outro_reel_key or DEFAULT_HOOK_REEL)
                 whoosh_sfx = os.path.join(sfx_dir, "whoosh.wav")
-                ding_sfx = os.path.join(sfx_dir, "ding.wav")
+                ding_sfx = os.path.join(sfx_dir, DING_VARIANTS.get(outro_reel_key, DEFAULT_DING))
                 slot_dur = SLOT_DURATION
                 # Mỗi tiếng chỉ được ngân tới hết cửa sổ outro (tính TỪ mốc nó bắt đầu),
                 # cộng đuôi vang. Không chặn thì chúng chạy hết độ dài file và bị cắt cụt

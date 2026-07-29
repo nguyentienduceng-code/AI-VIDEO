@@ -28,6 +28,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.video_service import (
+    DEFAULT_DING,
+    DING_VARIANTS,
     HOOK_EFFECT_SOUNDS,
     HOOK_EFFECTS,
     HOOK_REEL_SOUNDS,
@@ -245,6 +247,19 @@ def test_khong_con_he_so_go_tay_trong_nhanh_hieu_ung():
         )
     con = re.findall(r"min\([\d.]+,\s*(?:effective_volume|outro_sfx_volume)", code)
     assert not con, f"còn {len(con)} hệ số âm lượng gõ tay, phải dùng hook_sfx_level()"
+
+
+def test_ding_arcade_khac_ding_mac_dinh():
+    """LỖI CŨ: tiếng "ding" chốt trục quay carousel_quote CỐ ĐỊNH ding.wav bất kể
+    reel_key — chọn reel "arcade_8bit" (8-bit retro) vẫn nghe đúng tiếng chuông sang
+    trọng mặc định, lệch hẳn chất âm so với tiếng quay 8-bit vừa nghe trước đó."""
+    assert DING_VARIANTS.get("arcade_8bit") not in (None, DEFAULT_DING), (
+        "arcade_8bit phải có tiếng ding riêng, khác ding mặc định"
+    )
+    for reel_key, fname in DING_VARIANTS.items():
+        path = os.path.join(SFX_DIR, fname)
+        assert os.path.isfile(path), f"DING_VARIANTS[{reel_key!r}] trỏ tới file không tồn tại: {fname}"
+    assert os.path.isfile(os.path.join(SFX_DIR, DEFAULT_DING))
 
 
 def test_outro_khong_truyen_nham_subtitle_font_size_lam_anh_bia():
