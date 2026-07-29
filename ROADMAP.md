@@ -192,6 +192,10 @@ PYTHONPATH=<abs backend> PYTHONIOENCODING=utf-8 venv/Scripts/python.exe <script>
 | 51 | **Hiệu ứng đi kèm theo niche — AI tự chọn**: Scene.transition mở rộng 3→14 kiểu trong schema Gemini + `TONE_EFFECT_PALETTES` (transition/sfx/nhịp theo tone) inject vào prompt. E2E: storytelling ra page_flip/droplet/fade_black + SFX thưa đúng chất | `gemini_service.py` | 2026-07-25 |
 | 52 | Skill `scene-blueprints.md`: bản vẽ cảnh-theo-cảnh cho 6 niche (vai trò + emotion/sfx/transition/rate theo VỊ TRÍ) — cấu trúc content chuẩn khớp preset. Preset default bổ sung toggle tường minh (use_veo/frame_chaining/...) | `.agents/skills/content-cinematic/`, `preset_service.py` | 2026-07-25 |
 | 53 | **`content_niche` end-to-end**: `NICHE_BLUEPRINTS` backend (6 niche, bản vẽ VỊ TRÍ mini-twist ~45%/cao trào ~80% inject vào prompt, ưu tiên hơn tone palette) + selector "THỂ LOẠI NỘI DUNG" trong ConfigSection + preset tự set niche (preset tiện ích reset về ""). E2E finance: 8/8 cảnh có số, tick/bass_drop/zoom_punch đúng blueprint | `gemini_service.py`, `main.py`, `constants.js`, `AppContext.jsx`, `ConfigSection.jsx`, `SettingsPanel.jsx`, `preset_service.py` | 2026-07-25 |
+| 54 | **AI Script Reviewer (B2)**: Trả về đánh giá kịch bản tự động, UI review badge + check hook. | `gemini_service.py`, `main.py`, `ScriptEditor.jsx` | 2026-07-29 |
+| 55 | **A/B Hook Selector (B3)**: Chọn hook variant thay thế trực tiếp trên UI. | `ScriptEditor.jsx`, `store.js` | 2026-07-29 |
+| 56 | **Pattern Interrupt Engine (B4)**: Toggle vi-mô cắt nhịp (flash trắng ngắn) giữ chú ý. Tránh phá không khí ở tone Story/Emotional. | `audio_mix_service.py`, `video_service.py`, `AdvancedSettings.jsx`, `main.py` | 2026-07-29 |
+| 57 | **Dynamic BGM Volume Envelope (B5)**: Parse bgm_volume từ LLM và áp dụng tự động cho từng scene thông qua Ffmpeg expression. | `audio_mix_service.py`, `gemini_service.py`, `main.py` | 2026-07-29 |
 
 ---
 
