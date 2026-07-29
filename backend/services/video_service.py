@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 from typing import List, Optional, TypedDict
 import datetime as dt
@@ -321,6 +322,21 @@ SCENE_SFX_GAIN = {
     "heartbeat":   0.60,
     "laugh":       0.72,
 }
+
+# Gemini gán tên SFX theo NHỊP KỂ CHUYỆN (VD "sfx 'tick' khi liệt kê" — xem
+# TONE_EFFECT_PALETTES/NICHE_BLUEPRINTS ở gemini_service.py), nên nhiều cảnh liên
+# tiếp cùng nhịp rất hay trùng tên. Vì mỗi tên chỉ có ĐÚNG MỘT file .wav cố định,
+# video cắt nhanh (cảnh 2-4s) phát nguyên văn cùng một file lặp lại sát nhau nghe
+# như một nhịp trống đơn điệu, khó chịu. Dưới ngưỡng này (giây) thì bỏ lần lặp thứ
+# 2 trở đi của CÙNG một tên, chờ tên khác hoặc khoảng cách đủ xa mới phát lại.
+SCENE_SFX_REPEAT_MIN_GAP = 1.8
+
+# Biến tấu ngẫu nhiên nhỏ mỗi lần phát (cao độ + âm lượng) để những lần KHÔNG bị
+# chặn ở trên (tên khác nhau, hoặc đủ xa) cũng không nghe y hệt nhau — tai người
+# rất nhạy với âm thanh lặp lại tuyệt đối giống nhau, lệch vài % đã đủ phá cảm giác
+# máy móc mà không ảnh hưởng bảng cân bằng SCENE_SFX_GAIN ở trên.
+SCENE_SFX_PITCH_JITTER = 0.06   # ±6% cao độ (kéo theo ±6% độ dài — kiểu tăng/giảm tốc băng cối)
+SCENE_SFX_GAIN_JITTER = 0.08    # ±8% âm lượng (~±0.7dB)
 
 # QUAN TRỌNG: font PHẢI có glyph tiếng Việt đầy đủ, đặc biệt ư/Ư (U+01B0/01AF)
 # và ơ/Ơ (U+01A1/01A0).
@@ -633,10 +649,13 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100, return_array:
     dùng khi cần GHI RA FILE (track sidechain chỉ-giọng), khỏi phải render ngược clip
     về mảng một lần nữa. Xem write_voice_sidechain().
 
-    Mỗi phần tử: (path, start_time, volume, fadeout) hoặc (path, start, volume, fadeout, max_dur).
+    Mỗi phần tử: (path, start_time, volume, fadeout), hoặc thêm max_dur (phần tử thứ 5),
+    hoặc thêm cả pitch_ratio (phần tử thứ 6).
     `max_dur` (tuỳ chọn) CẮT CỨNG độ dài đoạn đó — dùng cho SFX mà người dùng tự nạp vào,
     để một file dài (VD tiếng máy đếm tiền 5 giây tải trên mạng) không thể tràn sang phần
     lời dẫn. Đây là chốt chặn ở tầng trộn, không phụ thuộc file nguồn dài bao nhiêu.
+    `pitch_ratio` (tuỳ chọn, mặc định 1.0) biến tấu cao độ/tốc độ kiểu băng cối — dùng cho
+    SFX per-scene để cùng 1 file không nghe y hệt nhau ở mỗi lần phát (SCENE_SFX_PITCH_JITTER).
 
     LÝ DO KHÔNG dùng CompositeAudioClip: MoviePy 2.1.2 có bug — frame_function dùng
     `if (part is not False)` mà `part` là mảng numpy khi ghi audio theo chunk, khiến nó gọi
@@ -663,9 +682,11 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100, return_array:
     used = False
 
     for item in placements:
-        # Chấp nhận cả tuple 4 phần tử (cũ) lẫn 5 phần tử có max_dur
+        # Chấp nhận tuple 4 phần tử (cũ), 5 phần tử có max_dur, hoặc 6 phần tử có
+        # thêm pitch_ratio (biến tấu cao độ per-scene SFX, xem SCENE_SFX_PITCH_JITTER).
         path, start, volume, fadeout = item[:4]
         max_dur = item[4] if len(item) > 4 else None
+        pitch_ratio = item[5] if len(item) > 5 else 1.0
         try:
             arr = _read(path)
         except Exception:
@@ -688,6 +709,18 @@ def _mix_audio_tracks(placements, total_duration, sr: int = 44100, return_array:
             arr = np.repeat(arr, 2, axis=1)
         elif arr.shape[1] > 2:
             arr = arr[:, :2]
+
+        # Biến tấu cao độ kiểu tăng/giảm tốc băng cối: resample từ sr*pitch_ratio
+        # về sr khiến buffer NGẮN/DÀI đi tương ứng — ratio>1 vừa cao giọng vừa nhanh
+        # hơn (đã đo bằng FFT trên tín hiệu sin thuần: ratio=1.06 -> +60Hz đúng ~6%).
+        # Chỉ áp khi lệch đáng kể để khỏi tốn resample cho mọi track giọng đọc/BGM
+        # (pitch_ratio mặc định 1.0 ở mọi placement khác ngoài SFX per-scene).
+        if abs(pitch_ratio - 1.0) > 1e-3 and len(arr) > 4:
+            import librosa as _librosa
+            arr = np.ascontiguousarray(
+                _librosa.resample(arr.T, orig_sr=sr * pitch_ratio, target_sr=sr).T,
+                dtype=np.float32,
+            )
 
         # Cắt cứng theo max_dur + gọt mềm 40ms cuối để chỗ cắt không kêu "pắc"
         if max_dur and max_dur > 0:
@@ -1084,6 +1117,11 @@ def render_final_video(
                 except Exception:
                     pass
 
+    # Theo dõi lần phát SFX per-scene GẦN NHẤT (tên + mốc thời gian) để chặn lặp
+    # quá sát — xem SCENE_SFX_REPEAT_MIN_GAP ở nơi khai báo.
+    _prev_scene_sfx_name = None
+    _prev_scene_sfx_start = None
+
     for _i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
         # KHÔNG mutate asset["start_time"] (gây cộng dồn nếu render lại + double-offset với
@@ -1111,17 +1149,31 @@ def render_final_video(
         # theo yêu cầu của user (không bật SFX thì tắt sạch tiếng xoẹt chuyển cảnh).
         sfx_name = asset.get("sfx", "")
         if sfx_name and use_sfx:
+            # Chặn lặp quá sát: Gemini hay gán CÙNG một tên cho nhiều cảnh liên tiếp
+            # cùng nhịp kể chuyện (VD 'tick' cho chuỗi cảnh liệt kê) — phát nguyên văn
+            # cùng 1 file cách nhau vài giây nghe như một nhịp trống đơn điệu.
+            gap = (start_time - _prev_scene_sfx_start) if _prev_scene_sfx_start is not None else None
+            is_repeat_too_soon = (
+                sfx_name == _prev_scene_sfx_name
+                and gap is not None
+                and gap < SCENE_SFX_REPEAT_MIN_GAP
+            )
+            _prev_scene_sfx_name = sfx_name
+            _prev_scene_sfx_start = start_time
+
             sfx_path = os.path.join(SFX_DIR, f"{sfx_name}.wav")
-            if os.path.isfile(sfx_path):
+            if not is_repeat_too_soon and os.path.isfile(sfx_path):
                 # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc, kết hợp vol riêng của cảnh.
                 # SCENE_SFX_GAIN cân bằng độ to GỐC giữa các file (xem chú thích ở khai báo) — SFX
                 # tự người dùng tải lên (không có trong bảng) dùng mặc định 1.0, không có gì để
                 # cân bằng theo vì chưa từng đo được RMS của chúng.
                 scene_vol_ratio = asset.get("sfxVolume", 100) / 100.0
+                gain = sfx_volume * SFX_MIX_GAIN * scene_vol_ratio * SCENE_SFX_GAIN.get(sfx_name, 1.0)
+                # Biến tấu nhỏ mỗi lần phát — xem SCENE_SFX_PITCH_JITTER/GAIN_JITTER.
+                gain *= random.uniform(1.0 - SCENE_SFX_GAIN_JITTER, 1.0 + SCENE_SFX_GAIN_JITTER)
+                pitch_ratio = random.uniform(1.0 - SCENE_SFX_PITCH_JITTER, 1.0 + SCENE_SFX_PITCH_JITTER)
                 audio_placements.append((
-                    sfx_path, start_time,
-                    sfx_volume * SFX_MIX_GAIN * scene_vol_ratio * SCENE_SFX_GAIN.get(sfx_name, 1.0),
-                    0.0,
+                    sfx_path, start_time, gain, 0.0, None, pitch_ratio,
                 ))
 
         final_duration = max(final_duration, start_time + dur)
