@@ -259,12 +259,8 @@ def assemble(
         
     # Pad cuối video nếu outro làm tăng thời lượng
     # Do outro overlay lên, nếu outro nằm ngoài thời lượng hiện tại của video, ta cần pad thêm
-    if outro_idx is not None and outro_duration > 0:
-        # Ở video_service.py chúng ta sẽ tự tính final_duration đã bao gồm outro hay chưa.
-        # Nhưng an toàn nhất là pad cuối video một khoảng thời lượng bằng outro_duration
-        # để chắc chắn có nền đen cho outro nếu video chưa đủ dài.
-        fc.append(f"{chain_lbl}tpad=stop_duration={outro_duration:.3f}:stop_mode=clone[vpad2]")
-        chain_lbl = "[vpad2]"
+    # KHÔNG pad đuôi cho outro nữa: outro được NỐI TIẾP bằng concat ở bước 4, nên phần
+    # pad này chỉ tạo ra một đoạn đứng hình thừa nằm giữa cảnh cuối và outro.
 
     # ── 4. Lớp phủ hook và outro ──
     if hook_idx is not None:
@@ -273,24 +269,26 @@ def assemble(
         chain_lbl = "[vout1]"
         
     if outro_idx is not None:
-        # DỜI clip outro tới đúng mốc nó phải xuất hiện, không chỉ bật/tắt bằng `enable`.
+        # NỐI TIẾP outro vào cuối, KHÔNG chồng lớp.
         #
-        # LỖI CŨ: `setpts=PTS-STARTPTS` đặt clip về mốc 0, nên nó chạy hết 2 giây của mình
-        # ngay lúc video mới bắt đầu; tới khi `enable='gte(t,27.8)'` bật lên thì clip đã
-        # kết thúc từ lâu và FFmpeg giữ nguyên KHUNG CUỐI (eof_action=repeat mặc định).
-        # Khán giả thấy một khung hình đứng im, không phải hiệu ứng — với MỌI loại outro.
-        # typewriter_quote không hiện nổi một chữ vì chữ chạy xong từ giây thứ 2.
+        # LỖI CŨ, hai đời đều sai:
+        #   1. `setpts=PTS-STARTPTS` + `overlay=enable='gte(t,27.8)'` — clip outro chạy
+        #      hết 2 giây của mình ngay lúc video mới bắt đầu, tới khi `enable` bật lên
+        #      thì nó đã kết thúc và FFmpeg giữ khung cuối (eof_action=repeat). Khán giả
+        #      thấy một khung đứng im với MỌI loại outro; typewriter không hiện nổi một chữ.
+        #   2. Dời clip bằng `setpts=...+offset/TB` hay `tpad=start_duration` rồi vẫn
+        #      overlay: đo được là overlay hoặc không áp gì (YAVG giữ nguyên bằng cảnh
+        #      gốc ở mọi mốc), hoặc làm video bị cắt cụt ngay tại mốc outro.
         #
-        # Hook KHÔNG dính lỗi này vì `enable='lt(t, hook_duration)'` vốn khớp sẵn với clip
-        # bắt đầu tại 0.
-        #
-        # Đã đo bằng overlay sáng-dần-đều: bản cũ cho 250/250 tại hai mốc đầu-cuối cửa sổ
-        # (đóng băng), bản này cho 25/229 (chạy đúng).
+        # Overlay là công cụ sai cho việc này. Outro là một THẺ KẾT TOÀN KHUNG (nền bìa
+        # đã làm mờ, che kín 100% khung hình) — nó nối tiếp sau cảnh cuối chứ không phủ
+        # lên cái gì. concat vừa đúng bản chất vừa bỏ được cả tpad lẫn `enable`.
+        # Đường MoviePy vẫn dùng CompositeVideoClip vì ở đó lớp phủ hoạt động đúng.
         fc.append(
-            f"[{outro_idx}:v]fps={fps},format=yuv420p,"
-            f"setpts=PTS-STARTPTS+{outro_start:.3f}/TB[outrov]"
+            f"[{outro_idx}:v]fps={fps},format=yuv420p,scale={width}:{height},"
+            f"setsar=1,setpts=PTS-STARTPTS[outrov]"
         )
-        fc.append(f"{chain_lbl}[outrov]overlay=0:0:enable='gte(t,{outro_start:.3f})'[vout2]")
+        fc.append(f"{chain_lbl}[outrov]concat=n=2:v=1:a=0[vout2]")
         chain_lbl = "[vout2]"
         
     if hook_idx is None and outro_idx is None:
