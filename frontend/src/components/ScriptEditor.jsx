@@ -258,6 +258,10 @@ export default function ScriptEditor() {
       voice: ctx.voice || '', rate: ctx.speechRate || '+0%',
       hook_effect: ctx.hookEffect || '', hook_text: ctx.hookText || '',
       outro_effect: ctx.outroEffect || '', outro_text: ctx.outroText || '',
+      // Nguồn chữ DỰ PHÒNG của outro khi user không gõ tay (resolve_outro_text ở backend).
+      // Thiếu nó ở đây thì con số thời lượng UI hiện ra lệch với video thật, vì 2 hiệu
+      // ứng outro có thời lượng động theo độ dài chữ.
+      cta_text: ctx.ctaText || '',
     });
     fetch(`${API_BASE}/api/timing-profile?${params}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -273,7 +277,7 @@ export default function ScriptEditor() {
       })
       .catch(() => { /* backend chưa chạy: dùng FALLBACK_WPS, không làm phiền user */ });
     return () => { cancelled = true; };
-  }, [ctx.voice, ctx.speechRate, ctx.hookEffect, ctx.hookText, ctx.outroEffect, ctx.outroText]);
+  }, [ctx.voice, ctx.speechRate, ctx.hookEffect, ctx.hookText, ctx.outroEffect, ctx.outroText, ctx.ctaText]);
 
   const sceneSeconds = useMemo(
     () => ctx.scenes.map((s) => estimateSceneSeconds(s, timing.wps)),

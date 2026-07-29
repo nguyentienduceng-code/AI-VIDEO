@@ -356,6 +356,10 @@ RENDER_PASSTHROUGH_FIELDS = (
     "hook_sfx_volume",  # HỆ SỐ (1.0 = 100%), frontend đã chia 100 trước khi gửi
     "outro_effect",
     "outro_text",
+    # CTA do Gemini sinh — nguồn chữ DỰ PHÒNG cho outro khi user không gõ tay, xem
+    # video_service.resolve_outro_text(). Trước đây là field chết: model có, frontend
+    # gửi, không nơi nào đọc.
+    "cta_text",
     "outro_reel_sfx",
     "outro_sfx_volume",
     "use_fast_assembly",
@@ -1085,12 +1089,14 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # PHẢI cộng cả outro: video_service làm video dài thêm đúng bằng chừng đó
         # (final_duration += outro_duration). Thiếu nó thì thanh tiến trình chạy hết 100%
         # rồi biến mất ở mấy giây cuối. Xem video_service.resolve_outro_timing().
-        from services.video_service import resolve_outro_timing
-        # `or req.hook_text` PHẢI khớp từng chữ với cách video_service chọn nguồn chữ
-        # (`kwargs.get("outro_text") or hook_text`). Lệch nhau là hai nơi tính ra hai thời
-        # lượng outro khác nhau khi người dùng đặt chữ đuôi riêng — đúng loại lệch mà
-        # resolve_outro_timing() sinh ra để dập.
-        outro_timing = resolve_outro_timing(req.outro_effect, req.outro_text or req.hook_text)
+        from services.video_service import resolve_outro_text, resolve_outro_timing
+        # Nguồn chữ outro đi qua ĐÚNG MỘT hàm dùng chung với video_service và
+        # /api/timing-profile — trước đây phép chọn này được gõ lại ở cả ba nơi và chỉ
+        # được giữ khớp bằng một dòng comment dặn "PHẢI khớp từng chữ".
+        outro_timing = resolve_outro_timing(
+            req.outro_effect,
+            resolve_outro_text(req.outro_text, req.cta_text, req.hook_text),
+        )
         outro_duration = outro_timing["duration"] if outro_timing else 0.0
         video_total_duration = (max(
             (a["start_time"] + a["duration"]) for a in scene_assets
@@ -1747,6 +1753,7 @@ async def timing_profile(
     hook_text: str = "",
     outro_effect: str = "",
     outro_text: str = "",
+    cta_text: str = "",
 ):
     """Tốc độ đọc (từ/giây) + thời lượng hook/outro mà backend sẽ dùng khi render.
 
@@ -1764,7 +1771,11 @@ async def timing_profile(
     bị dời 2.35s vì pha Quote cố ý phủ lên đầu Cảnh 1.
     """
     from services import duration_model
-    from services.video_service import resolve_hook_timing, resolve_outro_timing
+    from services.video_service import (
+        resolve_hook_timing,
+        resolve_outro_text,
+        resolve_outro_timing,
+    )
 
     out = duration_model.profile_summary(voice or None, rate)
 
@@ -1775,7 +1786,11 @@ async def timing_profile(
         "narration_lead": round(ht["narration_lead"], 2),
     } if ht else None
 
-    ot = resolve_outro_timing(outro_effect, outro_text or hook_text) if outro_effect else None
+    # Cùng hàm chọn nguồn chữ mà pipeline render dùng thật — con số UI hiện ra không được
+    # phép lệch với video xuất ra, và 2 hiệu ứng outro có thời lượng ĐỘNG theo độ dài chữ.
+    ot = resolve_outro_timing(
+        outro_effect, resolve_outro_text(outro_text, cta_text, hook_text)
+    ) if outro_effect else None
     out["outro"] = {
         "effect": outro_effect,
         "duration": round(ot["duration"], 2),

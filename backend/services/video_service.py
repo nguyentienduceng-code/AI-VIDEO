@@ -128,6 +128,36 @@ def resolve_hook_timing(hook_type: str, hook_quote: str, is_outro: bool = False)
     # xong mới tới pha Quote) nên không cần tách 2 giá trị khác nhau.
     return {"duration": duration, "narration_lead": duration}
 
+
+def resolve_outro_text(outro_text: str = "", cta_text: str = "", hook_text: str = "") -> str:
+    """
+    Chữ hiển thị ở phần đuôi video — NGUỒN CHÂN LÝ DUY NHẤT, đối xứng với
+    resolve_outro_timing().
+
+    Thứ tự ưu tiên: user gõ tay > CTA do Gemini sinh > câu hook mở đầu.
+
+    VÌ SAO PHẢI CÓ HÀM RIÊNG: cùng một phép chọn này trước đây được gõ lại BA lần ở ba
+    nơi (`main.py` lúc tính tổng thời lượng, `video_service` lúc dựng clip outro, và
+    endpoint `/api/timing-profile` để UI hiện trước con số). Chính comment cũ ở main.py
+    đã phải dặn "PHẢI khớp từng chữ với cách video_service chọn nguồn chữ" — tức là
+    đang dựa vào việc người sửa nhớ sửa đủ ba chỗ. Với 2 hiệu ứng outro có thời lượng
+    ĐỘNG theo độ dài chữ (blackout_question/typewriter_quote), lệch nguồn chữ là lệch
+    luôn thời lượng: UI hiện một đằng, video ra một nẻo.
+
+    VÌ SAO cta_text ĐỨNG TRƯỚC hook_text: `cta_text` là câu kêu gọi hành động Gemini
+    sinh riêng cho đuôi video (xem prompt ở gemini_service.py). Trước đây nó là FIELD
+    CHẾT — có trong model, frontend gửi lên, nhưng không nơi nào đọc — nên outro rơi
+    thẳng về `hook_text`, tức đem CÂU MỞ ĐẦU ra làm lời chốt. Người xem đã nghe câu đó
+    ở giây đầu tiên rồi.
+
+    Trả "" khi cả ba đều rỗng; `build_cta_card_hook` tự ẩn dòng chữ khi không có gì.
+    """
+    for ung_vien in (outro_text, cta_text, hook_text):
+        if ung_vien and str(ung_vien).strip():
+            return str(ung_vien).strip()
+    return ""
+
+
 def resolve_outro_timing(outro_type: str, outro_text: str = "") -> dict | None:
     """
     Thời lượng phần đuôi video — NGUỒN CHÂN LÝ DUY NHẤT, đối xứng với resolve_hook_timing.
@@ -961,6 +991,7 @@ RENDER_KWARG_KEYS = frozenset({
     "outro_reel_sfx",
     "outro_sfx_volume",
     "outro_text",
+    "cta_text",
     "use_fast_assembly",
     "use_gpu_encode",
 })
@@ -1289,7 +1320,12 @@ def render_final_video(
             outro_sfx_volume = kwargs.get("outro_sfx_volume", 1.0)
             outro_reel_key = kwargs.get("outro_reel_sfx", "none")
             
-            outro_text = kwargs.get("outro_text") or hook_text
+            # Ưu tiên user gõ tay > CTA Gemini sinh > câu hook. KHÔNG tự viết lại phép
+            # chọn này ở đây: main.py và /api/timing-profile phải ra CÙNG một chuỗi, nếu
+            # không thì 2 hiệu ứng outro có thời lượng động sẽ tính ra 2 con số khác nhau.
+            outro_text = resolve_outro_text(
+                kwargs.get("outro_text"), kwargs.get("cta_text"), hook_text
+            )
             
             # Cùng một hàm mà main.py dùng để cộng outro vào tổng thời lượng — hai nơi
             # không thể lệch nhau. KHÔNG tính lại tay ở đây.
