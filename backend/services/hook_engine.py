@@ -469,6 +469,48 @@ def build_cyber_glitch_hook(
 # ══════════════════════════════════════════════════════════════════════
 # HOOK C6: Vintage Film Burn (Cháy phim)
 # ══════════════════════════════════════════════════════════════════════
+def build_fallback_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float,
+) -> CompositeVideoClip:
+    """
+    Lớp phủ TỐI GIẢN dùng khi một builder hiệu ứng ném lỗi: chỉ ảnh bìa, hơi zoom.
+
+    VÌ SAO CẦN: main.py dời toàn bộ timeline theo resolve_hook_timing() TRƯỚC khi render,
+    dựa trên hiệu ứng người dùng chọn chứ không dựa trên việc builder có dựng nổi hay
+    không. Nên khi một builder chết, cảnh 1 vẫn bắt đầu muộn đúng chừng ấy giây mà KHÔNG
+    CÓ GÌ lấp vào — khán giả nhận một khoảng đen câm ngay đầu video. Đã xảy ra thật với
+    vintage_film_burn: 2.5 giây đen (19/255) và im lặng (−124 dB).
+
+    Hàm này không cứu được hiệu ứng, nhưng biến "đen câm" thành "một khung hình tĩnh" —
+    xấu hơn ý đồ, còn hơn là mất trắng khoảnh khắc giữ chân người xem.
+    """
+    from PIL import Image, ImageOps
+
+    try:
+        if str(cover_image_path).lower().endswith((".mp4", ".mov")):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base = ImageClip(np.array(filled)).with_duration(duration)
+    except Exception as e:
+        # Không còn gì để cứu — ít nhất cho một nền xám thay vì đen tuyền.
+        logger.warning("[Hook] Lớp phủ dự phòng cũng không đọc được ảnh bìa: %s", e)
+        base = ColorClip(size=(video_width, video_height), color=(24, 24, 28)).with_duration(duration)
+
+    zoomed = (
+        base.resized(lambda t: 1.04 - 0.02 * (t / max(duration, 1e-6)))
+        .with_position("center")
+        .with_duration(duration)
+    )
+    return CompositeVideoClip([zoomed], size=(video_width, video_height)).with_duration(duration)
+
+
 def build_vintage_film_burn_hook(
     cover_image_path: str,
     video_width: int,
@@ -495,16 +537,40 @@ def build_vintage_film_burn_hook(
     # Zoom chậm ra
     zoomed = base_clip.resized(lambda t: 1.05 - 0.02 * (t / duration)).with_position("center").with_duration(duration)
 
-    # Vệt cháy phim: ColorClip cam, opacity lên xuống theo thời gian
-    burn = ColorClip(size=(video_width, video_height), color=(255, 100, 30)).with_duration(duration)
-    
-    def burn_opacity(t):
-        if t < 0.3: return 0.6 * (t / 0.3)
-        if t < 0.6: return 0.6
-        if t < 1.0: return 0.6 * (1 - (t - 0.6)/0.4)
-        return 0.0
+    # ── Vệt cháy phim: dải sáng cam quét NGANG màn hình ──────────────────────
+    #
+    # LỖI CŨ, hai tầng:
+    #
+    # 1. `burn.with_opacity(burn_opacity)` truyền một HÀM vào chỗ MoviePy 2.x chỉ nhận
+    #    số. Nó ném `unsupported operand type(s) for *: 'function' and 'float'`, exception
+    #    thoát ra tận video_service và hook bị bỏ hẳn. Nhưng main.py ĐÃ dời timeline theo
+    #    resolve_hook_timing() từ trước, nên khán giả nhận 2.5 GIÂY MÀN HÌNH ĐEN CÂM
+    #    (đo trên bản render thật: độ sáng 19/255, âm thanh −124 dB) — đúng khoảnh khắc
+    #    quan trọng nhất để giữ chân người xem. Đã xảy ra ở 5 job từ 28/07.
+    #    Opacity biến thiên theo thời gian trong MoviePy 2.x phải đi qua MASK CLIP.
+    #
+    # 2. Kể cả khi chạy được, ColorClip phủ TOÀN khung chỉ làm cả màn hình ngả cam —
+    #    không phải "vệt sáng lướt ngang" như đặc tả. Nay là một dải gaussian quét từ
+    #    ngoài mép trái sang ngoài mép phải, giống tia sáng rọi qua phim nhựa.
+    from moviepy.video.VideoClip import VideoClip
 
-    burn = burn.with_opacity(burn_opacity)
+    BURN_PEAK = 0.55          # độ đậm tối đa của vệt
+    BURN_WIDTH = 0.11         # bề rộng dải, theo tỉ lệ bề ngang khung
+    _xs = np.linspace(0.0, 1.0, video_width, dtype=np.float32)
+
+    def _burn_mask_frame(t: float) -> np.ndarray:
+        prog = min(max(t / max(duration, 1e-6), 0.0), 1.0)
+        centre = -0.25 + 1.5 * prog                     # xuất phát và kết thúc ngoài khung
+        band = np.exp(-((_xs - centre) ** 2) / (2.0 * BURN_WIDTH ** 2))
+        # Tắt dần ở cuối để vệt không bị cắt cụt lúc hook kết thúc.
+        fade = 1.0 if prog < 0.8 else (1.0 - (prog - 0.8) / 0.2)
+        return np.tile(band * (BURN_PEAK * fade), (video_height, 1)).astype(np.float32)
+
+    burn = (
+        ColorClip(size=(video_width, video_height), color=(255, 120, 40))
+        .with_duration(duration)
+        .with_mask(VideoClip(_burn_mask_frame, is_mask=True).with_duration(duration))
+    )
 
     return CompositeVideoClip([zoomed, burn], size=(video_width, video_height)).with_duration(duration)
 

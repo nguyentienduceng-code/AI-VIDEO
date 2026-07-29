@@ -188,6 +188,65 @@ def test_moi_tieng_hieu_ung_deu_duoc_dat_tran():
     assert not thieu, "tiếng hiệu ứng không có trần độ dài:\n  " + "\n  ".join(thieu)
 
 
+
+# ── Cân bằng âm lượng ────────────────────────────────────────────────────────
+def test_moi_tieng_deu_co_he_so_can_bang():
+    """Thiếu hệ số = tiếng đó phát ở mức thô của file, lệch hẳn so với phần còn lại."""
+    from services.video_service import HOOK_SFX_GAIN
+
+    thieu = sorted(set(HOOK_REEL_SOUNDS) - set(HOOK_SFX_GAIN))
+    assert not thieu, f"chưa có hệ số cân bằng cho: {thieu}"
+
+
+def test_am_luong_can_bang_khong_con_lech_qua_muc():
+    """LỖI CŨ: file gốc lệch 27.7 dB RMS, cộng thêm hệ số gõ tay mỗi nhánh một kiểu
+    (×3.0 cho impact, ×0.13 hiệu dụng cho arcade...) → đỉnh sau khi nhân trải từ 0.25
+    tới 2.56, tiếng to nhất gấp 10 LẦN tiếng nhỏ nhất."""
+    import numpy as np
+    import sys as _s
+    _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    from fit_hook_sfx import _decode
+    from services.video_service import HOOK_SFX_GAIN
+
+    levels = {}
+    for k, f in HOOK_REEL_SOUNDS.items():
+        x = _decode(os.path.join(SFX_DIR, f))
+        rms = 20 * np.log10(float(np.sqrt(np.mean(x ** 2))) + 1e-12)
+        levels[k] = rms + 20 * np.log10(HOOK_SFX_GAIN[k])
+
+    spread = max(levels.values()) - min(levels.values())
+    assert spread <= 12.0, (
+        f"chênh lệch âm lượng {spread:.1f} dB, quá lớn: "
+        + ", ".join(f"{k}={v:.0f}dB" for k, v in sorted(levels.items(), key=lambda kv: kv[1]))
+    )
+
+
+def test_thanh_truot_nguoi_dung_khong_the_lam_sfx_lan_giong():
+    from services.video_service import hook_sfx_level, HOOK_SFX_CEILING
+
+    for k in HOOK_REEL_SOUNDS:
+        assert hook_sfx_level(k, 2.0) <= HOOK_SFX_CEILING + 1e-9
+
+
+def test_tieng_phu_tro_khong_muon_he_so_cua_tieng_khac():
+    """ding/tick/whoosh là file CỐ ĐỊNH. Nếu chúng lấy hệ số theo lựa chọn của người
+    dùng thì chọn arcade_8bit (hệ số 0.13) sẽ làm tắt ngóm chúng."""
+    from services.video_service import HOOK_SFX_GAIN
+
+    for k in ("_ding", "_tick", "_whoosh"):
+        assert k in HOOK_SFX_GAIN, f"thiếu hệ số riêng cho tiếng phụ trợ {k}"
+
+
+def test_khong_con_he_so_go_tay_trong_nhanh_hieu_ung():
+    """Mỗi nhánh nhân một hằng số riêng chính là cách 20 dB chênh lệch len vào."""
+    with open(_VIDEO_SERVICE, encoding="utf-8") as f:
+        code = "\n".join(
+            line for line in f.read().splitlines() if not line.strip().startswith("#")
+        )
+    con = re.findall(r"min\([\d.]+,\s*(?:effective_volume|outro_sfx_volume)", code)
+    assert not con, f"còn {len(con)} hệ số âm lượng gõ tay, phải dùng hook_sfx_level()"
+
+
 if __name__ == "__main__":
     from services.log_setup import force_utf8_streams
     force_utf8_streams()

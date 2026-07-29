@@ -273,7 +273,23 @@ def assemble(
         chain_lbl = "[vout1]"
         
     if outro_idx is not None:
-        fc.append(f"[{outro_idx}:v]fps={fps},format=yuv420p,setpts=PTS-STARTPTS[outrov]")
+        # DỜI clip outro tới đúng mốc nó phải xuất hiện, không chỉ bật/tắt bằng `enable`.
+        #
+        # LỖI CŨ: `setpts=PTS-STARTPTS` đặt clip về mốc 0, nên nó chạy hết 2 giây của mình
+        # ngay lúc video mới bắt đầu; tới khi `enable='gte(t,27.8)'` bật lên thì clip đã
+        # kết thúc từ lâu và FFmpeg giữ nguyên KHUNG CUỐI (eof_action=repeat mặc định).
+        # Khán giả thấy một khung hình đứng im, không phải hiệu ứng — với MỌI loại outro.
+        # typewriter_quote không hiện nổi một chữ vì chữ chạy xong từ giây thứ 2.
+        #
+        # Hook KHÔNG dính lỗi này vì `enable='lt(t, hook_duration)'` vốn khớp sẵn với clip
+        # bắt đầu tại 0.
+        #
+        # Đã đo bằng overlay sáng-dần-đều: bản cũ cho 250/250 tại hai mốc đầu-cuối cửa sổ
+        # (đóng băng), bản này cho 25/229 (chạy đúng).
+        fc.append(
+            f"[{outro_idx}:v]fps={fps},format=yuv420p,"
+            f"setpts=PTS-STARTPTS+{outro_start:.3f}/TB[outrov]"
+        )
         fc.append(f"{chain_lbl}[outrov]overlay=0:0:enable='gte(t,{outro_start:.3f})'[vout2]")
         chain_lbl = "[vout2]"
         
@@ -307,9 +323,15 @@ def assemble(
         return cmd + enc + tail
 
     gpu = use_gpu and _has_nvenc()
-    logger.info(f"[FFmpegAssembler] {n} cảnh, lead-in {lead_in:.2f}s, "
-          f"hook={'có' if hook_idx is not None else 'không'}, "
-          f"encoder={'NVENC' if gpu else 'libx264'}")
+    # Báo CẢ outro, không chỉ hook: đường nhanh từng ghép outro sai (clip chạy hết ở
+    # đầu video rồi đứng hình) mà dòng log này không hề nhắc tới nó, nên không có cách
+    # nào biết outro có tới được FFmpeg hay không ngoài việc mở video ra xem.
+    logger.info(
+        f"[FFmpegAssembler] {n} cảnh, lead-in {lead_in:.2f}s, "
+        f"hook={'có' if hook_idx is not None else 'không'}, "
+        f"outro={f'có @{outro_start:.2f}s dài {outro_duration:.2f}s' if outro_idx is not None else 'không'}, "
+        f"encoder={'NVENC' if gpu else 'libx264'}"
+    )
     try:
         r = subprocess.run(_build(gpu), capture_output=True, text=True,
                            timeout=timeout, errors="replace")
