@@ -251,7 +251,11 @@ class RenderVideoRequest(BaseModel):
     # ge/le: chốt chặn ở tầng API để client quên chia 100 thì bị 422 ngay, thay vì lọt
     # xuống video_service rồi dựa vào các min() rải rác trong hook engine đỡ hộ.
     hook_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
-    outro_effect: str = "none"
+    # "none" từng là mặc định — khiến toàn bộ 7 hiệu ứng outro (kể cả cta_card, thiết
+    # kế riêng cho outro) không bao giờ xuất hiện trừ khi user tự vào đổi. cta_card
+    # ngắn (2.4s), tự ẩn dòng CTA nếu outro_text rỗng (build_cta_card_hook), an toàn
+    # làm mặc định cho mọi video.
+    outro_effect: str = "cta_card"
     outro_text: Optional[str] = None
     outro_reel_sfx: str = "none"
     outro_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
@@ -310,7 +314,7 @@ class PresetRequest(BaseModel):
     # "preset gọi tên khác" — đúng loại lệch âm thầm sinh ra bug gán nhầm field.
     intro_bgm_track: Optional[str] = None
     intro_bgm_duration: float = Field(0, ge=0, le=120)
-    outro_effect: str = "none"
+    outro_effect: str = "cta_card"
     # KHÔNG có outro_text ở đây, có chủ ý. Preset lưu KIỂU DÁNG, không lưu NỘI DUNG:
     # hook_text, hook_quote, topic, watermark_text, cta_text, negative_prompt,
     # character_description đều vắng mặt vì cùng lý do — đó là chữ nghĩa riêng của từng
@@ -1041,6 +1045,10 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 "subtitle_text": s.get("subtitle_text", ""),
                 # Vi chỉnh nhạc nền riêng cảnh này (0-1). None = theo mức chung.
                 "bgm_volume": s.get("bgm_volume"),
+                # True = ảnh gốc VỐN LÀ video (stock/Veo), không phải ảnh tĩnh đúc Ken
+                # Burns. ffmpeg_assembler dùng để né transition "bóp méo" (squeezeh/
+                # squeezev) giữa 2 cảnh quay người/vật thật — xem chú thích ở đó.
+                "is_stock_video": is_video_asset,
             })
 
         # ── Nhạc nền theo từng cảnh ──

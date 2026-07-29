@@ -65,7 +65,7 @@ const INITIAL_STATE = {
   useSinglePassNarration: false,
   hookReelSfx: 'tick_wood',
   hookSfxVolume: 100,
-  outroEffect: 'none',
+  outroEffect: 'cta_card',
   outroReelSfx: 'none',
   outroSfxVolume: 100,
 

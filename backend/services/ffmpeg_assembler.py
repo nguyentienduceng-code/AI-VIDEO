@@ -51,6 +51,13 @@ TRANSITION_TO_XFADE = {
 }
 DEFAULT_XFADE = "fade"
 
+# squeezeh/squeezev bóp TOÀN BỘ khung hình đang biến mất vào một dải hẹp ở giữa —
+# trên ảnh phẳng (bìa sách, quote card) trông ổn, nhưng trên video quay người/vật thật
+# thì mặt và thân người bị ép dẹt biến dạng trong ~1 nhịp crossfade, trông như lỗi
+# hình chứ không giống "lật trang". Đo thật bằng cách tách khung hình ở đúng cửa sổ
+# chuyển cảnh (11.8s-12.1s của 1 video thật): 2 cảnh quay người bị ép thành dải méo mó.
+_DISTORTING_XFADE = {"squeezeh", "squeezev"}
+
 HIGHLIGHT_FONT = "C:/Windows/Fonts/seguibl.ttf"   # Arial Black thiếu glyph ư/ơ
 HIGHLIGHT_DURATION = 1.2
 HIGHLIGHT_FADE = 0.2
@@ -247,6 +254,10 @@ def assemble(
             trans = TRANSITION_TO_XFADE.get(
                 scene_assets[k].get("transition", "crossfade"), DEFAULT_XFADE
             )
+            if trans in _DISTORTING_XFADE and (
+                scene_assets[k].get("is_stock_video") or scene_assets[k + 1].get("is_stock_video")
+            ):
+                trans = DEFAULT_XFADE
             offset = float(scene_assets[k + 1].get("start_time", 0.0)) - base_start
             out = f"[x{k}]" if k < n - 2 else "[vcat]"
             fc.append(
