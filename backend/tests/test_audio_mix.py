@@ -158,6 +158,27 @@ def test_moi_scene_sfx_deu_tro_toi_file_co_that():
     assert not thieu, f"SCENE_SFX_GAIN khai báo nhưng không có file: {thieu}"
 
 
+def test_scene_sfx_khop_giao_dien():
+    """SCENE_SFX_GAIN (backend) phải khớp SFX_OPTIONS (frontend) — lệch nhau thì
+    người dùng chọn được 1 tiếng mà backend không có hệ số cân bằng (im lặng dùng mặc
+    định 1.0, không ai báo), hoặc thêm tiếng mới ở backend mà quên thêm vào dropdown."""
+    import re
+    from services.video_service import SCENE_SFX_GAIN
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    constants_js = os.path.join(root, "frontend", "src", "constants.js")
+    with open(constants_js, encoding="utf-8") as f:
+        js = f.read()
+
+    block = re.search(r"SFX_OPTIONS\s*=\s*\[(.*?)\n\];", js, re.S)
+    assert block, "không tìm thấy SFX_OPTIONS trong constants.js"
+    js_keys = set(re.findall(r"value:\s*'([a-z0-9_]*)'", block.group(1))) - {""}
+
+    assert js_keys == set(SCENE_SFX_GAIN), (
+        f"backend {sorted(SCENE_SFX_GAIN)} != giao diện {sorted(js_keys)}"
+    )
+
+
 def test_scene_sfx_can_bang_am_luong():
     """LỖI CŨ: 13 SFX per-scene (whoosh/pop/tick/ding/bell/shimmer/riser/bass_drop/
     impact/suspense/heartbeat/laugh/swoosh_soft) đều nhân đúng một công thức phẳng —

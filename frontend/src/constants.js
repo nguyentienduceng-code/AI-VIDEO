@@ -124,6 +124,7 @@ export const SFX_OPTIONS = [
   { value: 'suspense', label: '😱 Hồi hộp (Suspense)' },
   { value: 'heartbeat', label: '🫀 Nhịp tim (Heartbeat)' },
   { value: 'laugh', label: '😂 Cười (Laugh)' },
+  { value: 'breath', label: '😮‍💨 Hơi thở (Breath)' },
 ];
 
 // Tiếng trục quay Hook Máy Xèng — đồng bộ với backend video_service.HOOK_REEL_SOUNDS.

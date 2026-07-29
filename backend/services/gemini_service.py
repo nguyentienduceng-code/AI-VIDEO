@@ -354,7 +354,8 @@ TONE_EFFECT_PALETTES = {
     "storytelling": (
         "PALETTE HIỆU ỨNG (kể chuyện): transition chủ đạo 'crossfade' và 'fade_black' (chuyển đoạn), "
         "'page_flip' khi sang chương/bước ngoặt mới (hợp review sách), 'droplet' cho khoảnh khắc cảm xúc/kết. "
-        "sfx: ĐỂ TRỐNG hầu hết cảnh; chỉ 'riser' hoặc 'suspense' ở đúng 1-2 điểm cao trào, 'shimmer' ở khoảnh khắc nhận ra. "
+        "sfx: ĐỂ TRỐNG hầu hết cảnh; chỉ 'riser' hoặc 'suspense' ở đúng 1-2 điểm cao trào, 'shimmer' ở khoảnh khắc nhận ra, "
+        "'breath' (hơi thở nhẹ) ngay TRƯỚC câu lắng đọng/ngừng lại để tạo khoảng lặng. "
         "speech_rate_modifier: mở '+5%', thân '0%' hoặc '-5%', cao trào '-3%' (chậm để nhấn)."
     ),
     "educational": (
@@ -366,7 +367,8 @@ TONE_EFFECT_PALETTES = {
     "emotional": (
         "PALETTE HIỆU ỨNG (cảm xúc/tâm lý): transition 'crossfade' chậm rãi chủ đạo, 'droplet' ở khoảnh khắc chạm, "
         "'fade_black' khi lắng đọng. TRÁNH whip_pan/zoom_punch (phá cảm xúc). "
-        "sfx: gần như KHÔNG dùng; tối đa 'shimmer' 1 lần ở insight, 'heartbeat' nếu hồi hộp nội tâm. "
+        "sfx: gần như KHÔNG dùng; tối đa 'shimmer' 1 lần ở insight, 'heartbeat' nếu hồi hộp nội tâm, "
+        "'breath' ngay trước câu tự vấn/lặng đọng cuối cùng. "
         "speech_rate_modifier: toàn bài '-5%', câu đắt nhất '-8%'."
     ),
     "humorous": (

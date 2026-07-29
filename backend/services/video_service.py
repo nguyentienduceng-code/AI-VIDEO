@@ -329,6 +329,7 @@ SCENE_SFX_GAIN = {
     "suspense":    0.21,
     "heartbeat":   0.60,
     "laugh":       0.72,
+    "breath":      1.61,   # đo mean -26.2dB, max -9.6dB — không sát trần như shimmer, dùng thẳng gain RMS
 }
 
 # Gemini gán tên SFX theo NHỊP KỂ CHUYỆN (VD "sfx 'tick' khi liệt kê" — xem
