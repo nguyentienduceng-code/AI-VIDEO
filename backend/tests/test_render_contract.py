@@ -227,6 +227,97 @@ def test_moi_field_req_doc_deu_ton_tai_trong_model():
     )
 
 
+# ── Hợp đồng thứ HAI: master_kwargs → master_audio_and_export ────────────────────
+# Đây là một ĐƯỜNG DỮ LIỆU HOÀN TOÀN KHÁC với render_kwargs ở trên, và cho tới giờ chưa
+# có test nào bao phủ. Nó đã sinh ra đúng một loại bug BA lần:
+#   - narration_tone + use_pattern_interrupt: có trong model và passthrough nhưng không
+#     được nhét vào master_kwargs → khoá an toàn "tắt Pattern Interrupt ở tone trầm"
+#     chưa bao giờ chạy thật, và toggle của user bị bỏ qua hoàn toàn;
+#   - hook_duration: render_worker đọc nhưng main.py quên set → cú chớp Pattern Interrupt
+#     rơi vào giữa hook.
+# Mọi lần đều im lặng tuyệt đối: master_kwargs.get(...) chỉ trả về giá trị mặc định.
+
+_RE_MASTER_GET = re.compile(r'master_kwargs\.get\(\s*["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']')
+
+
+def _nguon(mod_path: str) -> str:
+    with open(mod_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _khoa_master_kwargs_trong_main() -> set:
+    """Các khoá của literal `master_kwargs = dict(...)` trong main.py."""
+    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"))
+    i = src.index("master_kwargs = dict(")
+    j = src.index("\n        )", i)
+    return set(re.findall(r"^\s{12}([a-zA-Z_][a-zA-Z0-9_]*)\s*=", src[i:j], re.M))
+
+
+# Khoá render_worker đọc với giá trị mặc định mà main.py CỐ Ý không set: chúng không phải
+# lựa chọn của người dùng (không có trong RenderVideoRequest, không có ô nào trên UI), chỉ
+# là hằng số nội bộ của bước master. Thêm tên vào đây là một QUYẾT ĐỊNH có ý thức — đó
+# chính là điều test này muốn ép.
+_MASTER_MAC_DINH_CO_Y = {"add_vignette", "progress_bar"}
+
+
+def test_render_worker_khong_doc_khoa_master_kwargs_khong_ai_set():
+    """Mọi `master_kwargs.get("X")` trong render_worker phải có X trong dict ở main.py.
+
+    Ngoại lệ duy nhất là _MASTER_MAC_DINH_CO_Y. Nếu một khoá vừa nằm trong ngoại lệ vừa
+    là field của RenderVideoRequest thì đó KHÔNG còn là hằng số nội bộ nữa mà là lựa chọn
+    của user đang bị nuốt — bắt luôn ở đây.
+    """
+    from services import render_worker
+
+    doc = set(_RE_MASTER_GET.findall(inspect.getsource(render_worker)))
+    set_o_main = _khoa_master_kwargs_trong_main()
+
+    thieu = sorted(doc - set_o_main - _MASTER_MAC_DINH_CO_Y)
+    assert not thieu, (
+        f"render_worker đọc master_kwargs[{', '.join(thieu)}] nhưng main.py không bao giờ "
+        "set — giá trị luôn rơi về mặc định, không một dòng lỗi nào. Nếu đó là hằng số "
+        "nội bộ có chủ ý, thêm tên vào _MASTER_MAC_DINH_CO_Y."
+    )
+
+    lua_chon_bi_nuot = sorted(
+        (_MASTER_MAC_DINH_CO_Y - set_o_main) & set(RenderVideoRequest.model_fields)
+    )
+    assert not lua_chon_bi_nuot, (
+        f"{lua_chon_bi_nuot} vừa là field người dùng đặt được, vừa nằm trong danh sách "
+        "'mặc định có chủ ý' — lựa chọn của user đang bị nuốt im lặng."
+    )
+
+
+def test_hai_duong_master_truyen_cung_bo_tham_so_hieu_ung():
+    """Đường worker và nhánh inline phải truyền CÙNG các tham số hiệu ứng.
+
+    Hai nhánh này gọi cùng một hàm nhưng dựng tham số ở hai chỗ tách rời; lệch nhau
+    nghĩa là bật/tắt FastAssembly lại ra hai video khác nhau.
+    """
+    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"))
+    i = src.index("master_audio_and_export,")
+    inline = src[i:src.index("\n                )", i)]
+
+    o_main = _khoa_master_kwargs_trong_main()
+    for ten in ("narration_tone", "use_pattern_interrupt", "hook_duration",
+                "bgm_volume_segments", "use_audio_ducking"):
+        assert ten in o_main, f"master_kwargs (đường worker) thiếu {ten}"
+        assert f"{ten}=" in inline, f"nhánh inline gọi master_audio_and_export thiếu {ten}"
+
+
+def test_master_audio_and_export_nhan_moi_khoa_duoc_truyen():
+    """Gõ sai tên khoá ở main.py thì hàm đích không có tham số đó → TypeError giữa job."""
+    from services.audio_mix_service import master_audio_and_export
+
+    nhan = set(inspect.signature(master_audio_and_export).parameters)
+    # Khoá chỉ dành cho render_worker (nó tự dịch sang tham số khác), không phải cho hàm đích.
+    _CHI_WORKER = {"subtitle_style", "hook_effect", "use_gpu", "progress_bar", "add_vignette"}
+    la = sorted(_khoa_master_kwargs_trong_main() - nhan - _CHI_WORKER)
+    assert not la, (
+        f"master_kwargs chứa khoá mà master_audio_and_export không nhận: {la}"
+    )
+
+
 if __name__ == "__main__":
     # Chạy trực tiếp bằng python.exe thì stdout là cp1252 và mọi dòng kết quả có dấu
     # tiếng Việt sẽ ném UnicodeEncodeError — xem services/log_setup.py.

@@ -46,11 +46,11 @@ def _gray_input() -> str:
     return path
 
 
-def _render_and_measure(narration_tone: str) -> list[tuple[float, float]]:
+def _render_and_measure(narration_tone: str, hook_duration: float = 0.0) -> list[tuple[float, float]]:
     """Chạy master_audio_and_export thật, trả về [(pts_time, YAVG), ...] của output."""
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     input_path = _gray_input()
-    out_path = input_path + f".{narration_tone}.out.mp4"
+    out_path = input_path + f".{narration_tone}.{hook_duration:.2f}.out.mp4"
     master_audio_and_export(
         input_video_path=input_path,
         output_path=out_path,
@@ -61,6 +61,7 @@ def _render_and_measure(narration_tone: str) -> list[tuple[float, float]]:
         use_pattern_interrupt=True,
         narration_tone=narration_tone,
         total_duration=_DURATION,
+        hook_duration=hook_duration,
     )
     try:
         r = subprocess.run(
@@ -105,12 +106,15 @@ def test_pattern_interrupt_khong_chay_trang_xoa_toan_video():
 
 
 def test_pattern_interrupt_giat_dung_chu_ky_va_khong_bao_hoa():
-    """Đo đúng ĐẶC TÍNH của hiệu ứng: giật sáng ngắn quanh mốc 0s/3.2s/6.4s, mức nền
-    còn lại giữ nguyên gần bằng màu gốc — không phải "lâu lâu sáng random" hay
-    "luôn sáng suốt video"."""
+    """Đo đúng ĐẶC TÍNH của hiệu ứng: giật sáng ngắn quanh mốc 3.2s/6.4s, mức nền còn
+    lại giữ nguyên gần bằng màu gốc — không phải "lâu lâu sáng random" hay "luôn sáng
+    suốt video".
+
+    KHÔNG còn cú chớp ở t=0: xem test_pattern_interrupt_khong_chop_ngay_khung_dau.
+    """
     data = _render_and_measure("viral")
 
-    flash_windows = [(0.0, 0.15), (3.2, 3.35), (6.4, 6.55)]
+    flash_windows = [(3.2, 3.35), (6.4, 6.55)]
     for start, end in flash_windows:
         trong_cua_so = [y for t, y in data if start <= t < end]
         assert trong_cua_so and max(trong_cua_so) > 150, (
@@ -127,6 +131,48 @@ def test_pattern_interrupt_giat_dung_chu_ky_va_khong_bao_hoa():
     assert max(ngoai_cua_so) < 150, (
         f"Khung ngoài cửa sổ flash vẫn sáng bất thường: max={max(ngoai_cua_so)} — "
         "nghi cửa sổ flash bị rộng ra cả video."
+    )
+
+
+def test_pattern_interrupt_khong_chop_ngay_khung_dau():
+    """Khung hình ĐẦU TIÊN của video không được chớp sáng.
+
+    Bản cũ dùng thẳng `mod(t,3.2)` nên cú chớp đầu rơi đúng vào t=0. Đo trên video thật
+    (66cf2bed): độ sáng vọt lên ở đúng t=0/3.2/6.4/9.6 và cú ở t=0 đè lên khung mở màn —
+    user đọc nó là "lỗi nhấp nháy đầu video", không phải hiệu ứng. Về mục đích cũng vô
+    nghĩa: Pattern Interrupt sinh ra để KÉO LẠI sự chú ý đã rơi, mà ở giây đầu tiên thì
+    chú ý đang cao nhất.
+    """
+    data = _render_and_measure("viral")
+    dau = [y for t, y in data if t < 0.3]
+    assert dau, "Không đọc được khung nào ở đầu video."
+    assert max(dau) < 150, (
+        f"Vẫn chớp sáng ở khung đầu: max={max(dau)} trong 0.3s đầu — "
+        "chu kỳ chớp lại đang tính từ t=0."
+    )
+
+
+def test_pattern_interrupt_khong_chop_de_len_hook():
+    """Có hook thì chu kỳ chớp phải tính TỪ LÚC HOOK KẾT THÚC.
+
+    Đây là bug "khai báo nhưng không nối dây" kinh điển của dự án: nếu hook_duration
+    không tới được master_audio_and_export, nó rơi về 0.0 và cú chớp lại rơi vào giữa
+    hook — không một dòng lỗi nào.
+    """
+    HOOK = 2.0
+    data = _render_and_measure("viral", hook_duration=HOOK)
+
+    trong_hook = [y for t, y in data if t < HOOK + 0.1]
+    assert trong_hook, "Không đọc được khung nào trong khoảng hook."
+    assert max(trong_hook) < 150, (
+        f"Chớp sáng rơi vào giữa hook (0-{HOOK}s): max={max(trong_hook)} — "
+        "hook_duration không tới được bước master."
+    )
+
+    # Cú chớp đầu tiên lùi trọn một chu kỳ sau hook để không dính điểm cắt sang Cảnh 1.
+    dau_tien = [y for t, y in data if HOOK + 3.2 <= t < HOOK + 3.35]
+    assert dau_tien and max(dau_tien) > 150, (
+        f"Không thấy chớp ở {HOOK + 3.2:.2f}s — chu kỳ sau hook đã hỏng."
     )
 
 
