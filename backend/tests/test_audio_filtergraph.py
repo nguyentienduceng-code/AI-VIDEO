@@ -154,6 +154,32 @@ def test_ducking_khong_co_track_rieng_thi_tach_doi():
     assert "asplit=2" in fg and "sidechaincompress" in fg
 
 
+def test_release_du_dai_de_khong_phong_trong_khoang_lang_giua_canh():
+    """LỖI CŨ: release=350ms gần đúng bằng khoảng lặng 0.45s cố định mà TTS chèn giữa
+    MỌI cặp cảnh — nhạc nền kịp "phồng" gần hết biên độ trong đúng khoảng lặng đó rồi bị
+    đè xuống ngay khi câu sau bắt đầu, lặp lại y hệt ở TẤT CẢ điểm chuyển cảnh trong cả
+    video (đo trên video thật 12 cảnh: cả 11 điểm nối đều lặng đúng 0.45s). Đo bằng cách
+    render thật với release=350 vs 650: 650 cho mức BGM trong khoảng lặng thấp hơn rõ rệt
+    (3-4dB) — chốt lại yêu cầu release phải VƯỢT khoảng lặng 0.45s để không hồi kịp trong
+    đúng cửa sổ đó, nhưng không quá 1000ms (nhạc không kịp nổi lên ở khoảng nghỉ dài, nghe
+    như tắt hẳn suốt đoạn thoại — lỗi NGƯỢC đã gặp trước khi hạ xuống 350ms)."""
+    import re
+
+    d = _tmpdir()
+    fg = _fg(_build_cmd(
+        bgm_path=_audio_file(d, "main.mp3"),
+        sidechain_audio_path=_audio_file(d, "voice.wav"),
+        use_audio_ducking=True,
+    ))
+    m = re.search(r"sidechaincompress=[^\[]*?release=(\d+)", fg)
+    assert m, "không tìm thấy release= trong sidechaincompress"
+    release_ms = int(m.group(1))
+    assert 450 < release_ms <= 1000, (
+        f"release={release_ms}ms — phải > 450ms (khoảng lặng cố định giữa cảnh) để không "
+        f"hồi kịp trong đúng cửa sổ đó, và <= 1000ms để không tắt nhạc suốt đoạn thoại"
+    )
+
+
 def test_tat_ducking_thi_khong_co_sidechain():
     d = _tmpdir()
     fg = _fg(_build_cmd(

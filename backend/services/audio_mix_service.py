@@ -255,11 +255,18 @@ def master_audio_and_export(
                 # thành thường trực chứ không theo nhịp nói.
                 # attack 20ms thay cho 5ms: 5ms bập vào quá nhanh, nghe rõ tiếng "chụp"
                 # ở đầu mỗi câu.
-                # release 350ms thay cho 1000ms: 1 giây thì nhạc không kịp nổi lên trong
-                # các khoảng nghỉ giữa câu, nghe như nhạc bị tắt hẳn suốt đoạn thoại.
+                # release: 1000ms quá chậm (nhạc không kịp nổi lên trong khoảng nghỉ giữa
+                # câu, nghe như tắt hẳn suốt đoạn thoại) nhưng 350ms lại gần đúng bằng
+                # khoảng lặng 0.45s cố định giữa MỌI cặp cảnh (TTS tự chèn) — nhạc nền kịp
+                # "phồng" gần hết biên độ trong đúng khoảng lặng đó rồi bị đè xuống ngay khi
+                # câu sau bắt đầu, lặp lại y hệt ở TẤT CẢ điểm chuyển cảnh trong cả video,
+                # nghe như một tiếng "phập phồng" phát đều đặn. Đo trên video thật (12 cảnh,
+                # cả 11 điểm nối đều lặng đúng 0.45s): 650ms vẫn đủ nhanh để nhạc nổi lên
+                # trong khoảng nghỉ DÀI thật sự (giữa đoạn/paragraph), nhưng không kịp hồi
+                # hết trong 0.45s ngắn nên độ "phồng" ở mỗi điểm nối giảm hẳn.
                 filter_complex.append(
                     f"[bgm_eq]{ducking_key}sidechaincompress="
-                    "threshold=0.03:ratio=6:attack=20:release=350[bgm_ducked]"
+                    "threshold=0.03:ratio=6:attack=20:release=650[bgm_ducked]"
                 )
                 # normalize=0: xem lý do ở khối crossfade phía trên. Ở đây nó giữ đúng
                 # TỈ LỆ giọng/nhạc mà người dùng đã chỉnh, thay vì bóp cả hai còn một nửa.
