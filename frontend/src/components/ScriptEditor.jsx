@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2, Code, Upload, X, Pause, Music, Headphones, Square, Settings } from 'lucide-react';
+import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2, Code, Upload, X, Pause, Music, Headphones, Square, Settings, CheckCircle, Zap } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
 import { API_BASE, MODE_MAP, TRANSITIONS, SFX_OPTIONS, DURATION_OPTIONS } from '../constants';
@@ -84,9 +84,9 @@ export default function ScriptEditor() {
     targetDuration: s.targetDuration,
     uploadSessionId: s.uploadSessionId,
     negativePrompt: s.negativePrompt, apiKey: s.apiKey, useVeo: s.useVeo, ctaText: s.ctaText, setCtaText: s.setCtaText,
-    useAnimatedCaptions: s.useAnimatedCaptions, characterDescription: s.characterDescription,
+    characterDescription: s.characterDescription,
     useFrameChaining: s.useFrameChaining, useKenBurns: s.useKenBurns, useBeatSync: s.useBeatSync,
-    useVeoAmbientAudio: s.useVeoAmbientAudio, useGpuEncode: s.useGpuEncode, hookZoomBoost: s.hookZoomBoost,
+    useVeoAmbientAudio: s.useVeoAmbientAudio, useGpuEncode: s.useGpuEncode, hookZoomBoost: s.hookZoomBoost, usePatternInterrupt: s.usePatternInterrupt,
     useSfx: s.useSfx, sfxVolume: s.sfxVolume, subtitleStyle: s.subtitleStyle, colorGrading: s.colorGrading,
     watermarkText: s.watermarkText, coverImageSessionId: s.coverImageSessionId, coverImagePosition: s.coverImagePosition,
     useAudioDucking: s.useAudioDucking,
@@ -104,6 +104,14 @@ export default function ScriptEditor() {
     subscribeToJob: s.subscribeToJob, stopAllAudio: s.stopAllAudio,
     estimatedDurationS: s.estimatedDurationS, setEstimatedDurationS: s.setEstimatedDurationS,
     scriptNotice: s.scriptNotice, setScriptNotice: s.setScriptNotice,
+    // LỖI CŨ CÙNG LOẠI VỚI hookSfxVolume Ở TRÊN: JSX bên dưới đọc ctx.hookVariants
+    // (B3), ctx.scriptReview (B2) và ctx.narrationTone nhưng cả 3 đều THIẾU ở đây —
+    // 2 khối UI (huy hiệu điểm chất lượng + A/B Hook Selector) không bao giờ hiện ra
+    // vì luôn nhận `undefined`, và tệ hơn: narration_tone gửi lên payload render cũng
+    // luôn `undefined` (bị JSON.stringify() lược bỏ), khiến khoá an toàn "tắt Pattern
+    // Interrupt ở tone Storytelling/Emotional" (B4) không bao giờ nhận đúng tone người
+    // dùng đã chọn — Pattern Interrupt chớp sáng ở MỌI video bất kể tone.
+    hookVariants: s.hookVariants, scriptReview: s.scriptReview, narrationTone: s.narrationTone,
   })));
 
   // Trạng thái bộ nhớ đệm từng cảnh: null = chưa biết, [] = mảng theo chỉ số cảnh.
@@ -178,12 +186,12 @@ export default function ScriptEditor() {
         bgm_track: ctx.bgm === 'none' ? null : ctx.bgm, upload_session_id: ctx.uploadSessionId || undefined,
         speech_rate: ctx.speechRate, speech_pitch: ctx.speechPitch, bgm_volume: ctx.bgmVolume / 100,
         negative_prompt: ctx.negativePrompt || undefined, gemini_api_key: ctx.apiKey || undefined,
-        use_veo: ctx.useVeo, cta_text: ctx.ctaText || undefined, use_animated_captions: ctx.useAnimatedCaptions,
+        use_veo: ctx.useVeo, cta_text: ctx.ctaText || undefined,
         character_description: ctx.characterDescription || undefined, use_frame_chaining: ctx.useFrameChaining,
         use_ken_burns: ctx.useKenBurns, use_beat_sync: ctx.useBeatSync, use_veo_ambient_audio: ctx.useVeoAmbientAudio,
-        use_gpu_encode: ctx.useGpuEncode, hook_zoom_boost: ctx.hookZoomBoost,
+        use_gpu_encode: ctx.useGpuEncode, hook_zoom_boost: ctx.hookZoomBoost, use_pattern_interrupt: ctx.usePatternInterrupt,
         use_sfx: ctx.useSfx, sfx_volume: ctx.sfxVolume / 100,
-        use_audio_ducking: ctx.useAudioDucking,
+        use_audio_ducking: ctx.useAudioDucking, narration_tone: ctx.narrationTone,
         subtitle_style: ctx.subtitleStyle, color_grading: ctx.colorGrading, watermark_text: ctx.watermarkText || undefined,
         cover_image_session_id: ctx.coverImageSessionId || undefined,
         cover_image_position: ctx.coverImagePosition,
@@ -646,6 +654,66 @@ export default function ScriptEditor() {
           </button>
         </div>
       )}
+
+      {/* ── AI Script Review Badge (B2) ── */}
+      {ctx.scriptReview && (
+        <div className="panel-box" style={{ marginBottom: 16, padding: '12px 16px', borderLeft: `4px solid ${ctx.scriptReview.passed ? 'var(--green)' : 'var(--red)'}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: ctx.scriptReview.review_notes?.length ? 8 : 0 }}>
+            <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <CheckCircle size={16} color={ctx.scriptReview.passed ? 'var(--green)' : 'var(--red)'} />
+              AI Script Review: Điểm {ctx.scriptReview.quality_score}/100
+            </div>
+            {!ctx.scriptReview.passed && (
+              <span style={{ fontSize: 12, color: 'var(--red)', fontWeight: 600 }}>Cần chỉnh sửa</span>
+            )}
+          </div>
+          {ctx.scriptReview.review_notes && ctx.scriptReview.review_notes.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {ctx.scriptReview.review_notes.map((note, i) => (
+                <li key={i} style={{ color: note.severity === 'error' ? 'var(--red)' : note.severity === 'warning' ? 'var(--amber)' : 'var(--text-secondary)' }}>
+                  <strong>Cảnh {note.scene_index}:</strong> {note.message}. <em style={{ opacity: 0.8 }}>{note.suggestion}</em>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* ── A/B Hook Selector (B3) ── */}
+      {ctx.hookVariants && ctx.hookVariants.length > 0 && (
+        <div className="panel-box" style={{ marginBottom: 16, padding: '12px 16px' }}>
+          <div style={{ fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Zap size={16} color="var(--amber)" /> A/B Hook Selector — Chọn câu mở đầu thu hút nhất
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {ctx.hookVariants.map((variant, i) => {
+              const isSelected = ctx.hookText === variant || ctx.hookQuote === variant;
+              return (
+                <div
+                  key={i}
+                  // LỖI CŨ (cùng loại đã gặp ở backend: build_blackout_question_hook/
+                  // build_typewriter_quote_hook từng nhận nhầm hook_quote thay vì
+                  // hook_text): mỗi hiệu ứng Hook đọc MỘT trường chữ khác nhau —
+                  // carousel_quote (mặc định của app) đọc `hook_quote`, 6 hiệu ứng còn
+                  // lại đọc `hook_text`. Chỉ gọi setHookText thì với hiệu ứng mặc định,
+                  // bấm chọn biến thể không đổi gì trên video render ra cả. Set cả hai
+                  // để bấm 1 lần luôn đúng bất kể đang chọn hiệu ứng hook nào.
+                  onClick={() => { ctx.setHookText(variant); ctx.setHookQuote(variant); }}
+                  style={{
+                    flex: '1 1 30%', minWidth: 200, padding: 10, borderRadius: 6, cursor: 'pointer',
+                    background: isSelected ? 'rgba(245, 158, 11, 0.1)' : 'var(--bg-primary)',
+                    border: `1px solid ${isSelected ? 'var(--amber)' : 'var(--border)'}`,
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: 13, color: isSelected ? 'var(--amber)' : 'var(--text-primary)', lineHeight: 1.4 }}>"{variant}"</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
 
       {(durationBudget.isOver || durationBudget.isUnder || durationBudget.tooLongScenes > 0) && (
         <div className="warning-box" style={{ marginBottom: 16 }}>

@@ -27,7 +27,6 @@ const INITIAL_STATE = {
   showApiKey: false,
 
   useVeo: false,
-  useAnimatedCaptions: true,
   ctaText: '',
   speechRate: '+0%',
   speechPitch: '+0Hz',
@@ -40,6 +39,7 @@ const INITIAL_STATE = {
   useVeoAmbientAudio: true,
   useGpuEncode: true,
   hookZoomBoost: true,
+  usePatternInterrupt: true,
   useSfx: true,
   sfxVolume: 8,
   subtitleStyle: 'karaoke_bold',
@@ -47,6 +47,8 @@ const INITIAL_STATE = {
   useAudioDucking: true,
   watermarkText: '',
   hookText: '',
+  hookVariants: [],     // A/B Hook variants trả về từ AI (B3)
+  scriptReview: null,   // Script Review kết quả (B2): { quality_score, review_notes, passed }
   hookQuote: '',
   outroText: '',
   uploadSessionId: null,

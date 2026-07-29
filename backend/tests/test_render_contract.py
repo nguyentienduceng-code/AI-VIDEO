@@ -135,7 +135,7 @@ _TRUONG_NOI_DUNG = {
 # Trường chỉ có ý nghĩa lúc render, không phải lựa chọn thẩm mỹ để lưu lại.
 _TRUONG_CHI_RENDER = {
     "aspect_ratio", "cover_image_position", "use_veo", "use_veo_ambient_audio",
-    "use_fixed_seed", "use_gpu_encode", "use_fast_assembly", "use_animated_captions",
+    "use_fixed_seed", "use_gpu_encode", "use_fast_assembly",
 }
 
 # Preset có quyền đặt tên riêng cho những thứ KHÔNG phải ánh xạ 1-1 sang render.

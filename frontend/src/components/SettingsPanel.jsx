@@ -35,6 +35,10 @@ export default function SettingsPanel() {
     setBgm: s.setBgm,
     hookText: s.hookText,
     setHookText: s.setHookText,
+    hookVariants: s.hookVariants,
+    setHookVariants: s.setHookVariants,
+    scriptReview: s.scriptReview,
+    setScriptReview: s.setScriptReview,
     ctaText: s.ctaText,
     setCtaText: s.setCtaText,
   })));
@@ -100,6 +104,18 @@ export default function SettingsPanel() {
       // Auto-điền tiêu đề Hook giật gân do AI sinh (trước đây bị vứt bỏ) nếu user chưa tự nhập
       if (data.hook_text && !ctx.hookText?.trim()) {
         ctx.setHookText(data.hook_text);
+      }
+      // Lưu hook_variants cho A/B Hook Selector (B3)
+      if (data.hook_variants && data.hook_variants.length > 0) {
+        ctx.setHookVariants(data.hook_variants);
+      } else {
+        ctx.setHookVariants([]);
+      }
+      // Lưu kết quả Script Review (B2)
+      if (data.review) {
+        ctx.setScriptReview(data.review);
+      } else {
+        ctx.setScriptReview(null);
       }
       // Tương tự với CTA: mode Script → Video giờ đọc được dòng "CTA:" trong kịch bản dán vào
       if (data.cta_text && !ctx.ctaText?.trim()) {

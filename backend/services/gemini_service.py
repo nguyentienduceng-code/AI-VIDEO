@@ -108,6 +108,7 @@ class LLMScene(BaseModel):
     source_quote: Optional[str] = Field(default=None, description="Nguyên văn trích dẫn từ tài liệu gốc, dùng để đối chiếu chống bịa nội dung.")
     source_ref: Optional[str] = Field(default=None, description="Vị trí chứa đoạn trích trong tài liệu (VD: Chương 1, trang 27).")
     subtitle_text: Optional[str] = Field(default=None, description="Chữ hiển thị trên màn hình nếu khác với text đọc voice (đặc biệt hữu ích cho quote_card).")
+    bgm_volume: Optional[float] = Field(default=None, description="Âm lượng nhạc nền tại cảnh này (VD: 0.0 tắt nhạc, 1.0 bình thường, 1.5 bùng nổ). Để None nếu không cần đổi.")
 
 class Scene(LLMScene):
     sfx: str = ""
@@ -117,6 +118,7 @@ class Scene(LLMScene):
     transition: str = "crossfade"
     visual_source: str = "auto"
     pause_after_ms: int = 0
+    bgm_volume: Optional[float] = None
 
 class LLMScriptResponse(BaseModel):
     sentiment: str = Field(default="happy", description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic).")
@@ -179,6 +181,30 @@ ART_STYLES = {
         "color_grading": "soft pastels, muted tones",
         "composition": "centered, symmetrical, ample negative space",
         "mood": "calm, professional, trustworthy"
+    },
+    "oil_painting_classic": {
+        "keywords": "oil painting, textured canvas brushstrokes, Renaissance style, chiaroscuro lighting, Da Vinci aesthetic, museum quality",
+        "color_grading": "warm amber tones, rich dark shadows, classic museum lighting",
+        "composition": "artistic framing, classical portrait or landscape",
+        "mood": "mysterious, artistic, timeless"
+    },
+    "ink_wash_oriental": {
+        "keywords": "traditional Asian ink wash painting, Shan Shui watercolor, misty paper texture, rice paper",
+        "color_grading": "monochrome ink tones, subtle watercolor wash, soft gold accent",
+        "composition": "ample negative space, minimalist asian landscape",
+        "mood": "poetic, serene, spiritual, ancient"
+    },
+    "architectural_cinematic": {
+        "keywords": "architectural render, cinematic wide angle, dramatic lighting, 8k detail, epic scale",
+        "color_grading": "twilight blue and golden lights, high contrast metallic and stone texture",
+        "composition": "low angle monumental view, dramatic perspective lines",
+        "mood": "awe-inspiring, majestic, engineering marvel"
+    },
+    "blueprint_sketch": {
+        "keywords": "architectural blueprint sketch, technical drawing lines, white ink on deep blue paper, isometric wireframe",
+        "color_grading": "cyan and cobalt blue, crisp white technical lines",
+        "composition": "technical diagram, architectural section elevation",
+        "mood": "analytical, precise, historical engineering"
     }
 }
 
@@ -404,6 +430,33 @@ NICHE_BLUEPRINTS = {
         "+ chi tiết GIÁC QUAN mùi/vị/âm thanh (sfx 'shimmer', crossfade, rate '-3%'). "
         "Kết = chốt + rủ đi/tag bạn (sfx 'ding', 'fade_black')."
     ),
+    "art_masterpiece": (
+        "NICHE: TRANH & TÁC PHẨM NGHỆ THUẬT KINH ĐIỂN.\n"
+        "BẢN VẼ: Cảnh 1 = zoom cận cảnh chi tiết ẩn/bí ẩn nhất của bức tranh (sfx 'riser', 'zoom_through', rate '+5%'). "
+        "Kế = bối cảnh ra đời & tâm kịch họa sĩ (calm, crossfade). "
+        "Giữa = giải mã kỹ thuật vẽ, ánh sáng chiaroscuro hoặc ẩn dụ (sfx 'shimmer' khi có phát hiện đắt giá). "
+        "~70% = MINI-TWIST bí ẩn ít ai biết về tác phẩm (sfx 'suspense', 'page_flip'). "
+        "~85% = CAO TRÀO giá trị thời đại & triết lý sống (sfx 'impact', 'zoom_punch', rate '-5%'). "
+        "Kết = dư âm chiêm nghiệm + câu hỏi mở bình luận ('droplet', 'fade_black')."
+    ),
+    "poetry_literature": (
+        "NICHE: THƠ CA & VĂN HỌC NGHỆ THUẬT.\n"
+        "BẮT BUỘC nhịp đọc chậm rãi (-8% đến -12%), ngắt nghỉ sâu lắng giữa các vần thơ.\n"
+        "BẢN VẼ: Cảnh 1 = 2-4 câu thơ đắt giá nhất hiển thị quote mờ nghệ thuật (sfx 'shimmer', 'crossfade', rate '-10%'). "
+        "Kế = gợi mở hoàn cảnh sáng tác & hồn thơ (calm, crossfade). "
+        "Giữa = bình giải từng hình tượng thơ, nét vẽ ngôn từ (crossfade chậm). "
+        "~75% = ĐIỂM CHẠM CẢM XÚC lớn nhất của bài thơ (sfx 'droplet', rate '-12%'). "
+        "Kết = dư âm thi ca + lời nhắn chiêm nghiệm cuộc sống (closing, 'fade_black')."
+    ),
+    "architecture_wonders": (
+        "NICHE: CÔNG TRÌNH & KỲ QUAN KIẾN TRÚC.\n"
+        "BẢN VẼ: Cảnh 1 = con số kỷ lục hoặc mật mã kỹ thuật kỳ lạ (VD: '2.3 triệu khối đá không 1 giọt vữa...') (sfx 'riser', 'whip_pan', rate '+10%'). "
+        "Kế = bối cảnh lịch sử & tham vọng triều đại ('slide_left'). "
+        "Giữa = kỳ tích kỹ thuật, vật liệu độc đáo, kết cấu chịu lực (sfx 'tick' khi liệt kê số liệu). "
+        "~70% = NGUY CƠ/THÁCH THỨC suýt làm sụp đổ công trình (sfx 'suspense', 'zoom_punch'). "
+        "~85% = CAO TRÀO sự trường tồn qua hàng thế kỷ (sfx 'bass_drop', 'fade_white', rate '-5%'). "
+        "Kết = di sản thế giới + kêu gọi ghé thăm/bình luận ('ding', 'fade_black')."
+    ),
 }
 
 
@@ -487,7 +540,32 @@ NICHE_PERCENT_BLUEPRINTS = {
         (0.40, 0.60, "excited",  "pop",      "zoom_through","0%", "zoom_in"),
         (0.60, 0.80, "calm",     "shimmer",  "crossfade",  "-3%", "none"),
         (0.80, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
-    ]
+    ],
+    # ── 3 niche bổ sung (trước đây thiếu bản vẽ %, fallback về tone chung) ──
+    "art_masterpiece": [
+        (0.00, 0.10, "hook",     "riser",    "zoom_through","+5%", "zoom_in"),   # zoom cận chi tiết bí ẩn
+        (0.10, 0.25, "calm",     "",         "crossfade",   "0%", "none"),       # bối cảnh họa sĩ
+        (0.25, 0.50, "calm",     "",         "crossfade",   "0%", "none"),       # giải mã kỹ thuật
+        (0.50, 0.65, "calm",     "shimmer",  "crossfade",   "0%", "none"),       # phát hiện đắt giá
+        (0.65, 0.75, "suspense", "suspense", "page_flip",   "-3%", "zoom_in"),   # mini-twist bí ẩn
+        (0.75, 0.88, "dramatic", "impact",   "zoom_punch",  "-5%", "zoom_in"),   # cao trào giá trị
+        (0.88, 1.01, "closing",  "",         "droplet",     "-5%", "none"),       # dư âm chiêm nghiệm
+    ],
+    "poetry_literature": [
+        (0.00, 0.12, "hook",     "shimmer",  "crossfade",   "-10%", "zoom_in"),  # câu thơ đắt giá
+        (0.12, 0.30, "calm",     "",         "crossfade",   "-8%", "none"),      # hoàn cảnh sáng tác
+        (0.30, 0.60, "calm",     "",         "crossfade",   "-8%", "none"),      # bình giải hình tượng
+        (0.60, 0.80, "dramatic", "droplet",  "droplet",     "-12%", "zoom_in"),  # điểm chạm cảm xúc
+        (0.80, 1.01, "closing",  "",         "fade_black",  "-10%", "none"),     # dư âm thi ca
+    ],
+    "architecture_wonders": [
+        (0.00, 0.12, "hook",     "riser",    "whip_pan",    "+10%", "zoom_in"),  # con số kỷ lục
+        (0.12, 0.25, "calm",     "",         "slide_left",  "0%", "none"),       # bối cảnh lịch sử
+        (0.25, 0.50, "calm",     "tick",     "crossfade",   "0%", "none"),       # kỹ thuật xây dựng
+        (0.50, 0.70, "suspense", "suspense", "zoom_punch",  "-3%", "zoom_in"),   # thách thức sụp đổ
+        (0.70, 0.85, "dramatic", "bass_drop","fade_white",  "-5%", "zoom_in"),   # cao trào trường tồn
+        (0.85, 1.01, "closing",  "ding",     "fade_black",  "0%", "none"),       # di sản thế giới
+    ],
 }
 
 TONE_PERCENT_PALETTES = {
@@ -523,91 +601,6 @@ TONE_PERCENT_PALETTES = {
     ]
 }
 
-# ── BẢN VẼ % CHO NICHE VÀ TONE (Sprint 1) ──
-# Tuple: (start_pct, end_pct, emotion, sfx, transition, speech_rate, visual_effect)
-NICHE_PERCENT_BLUEPRINTS = {
-    "book": [
-        (0.00, 0.06, "hook",     "",         "fade_black", "+5%", "zoom_in"),
-        (0.06, 0.20, "calm",     "",         "crossfade",  "0%", "none"),
-        (0.20, 0.42, "calm",     "",         "page_flip",  "0%", "none"),
-        (0.42, 0.50, "suspense", "suspense", "fade_black", "-3%", "zoom_in"),   # mini-twist
-        (0.50, 0.75, "dramatic", "",         "crossfade",  "0%", "none"),
-        (0.75, 0.83, "dramatic", "riser",    "zoom_punch", "-3%", "zoom_in"),   # cao trào
-        (0.83, 0.92, "calm",     "shimmer",  "droplet",    "-5%", "none"),   # dư âm
-        (0.92, 1.01, "closing",  "ding",     "fade_black", "-5%", "none"),
-    ],
-    "finance": [
-        (0.00, 0.15, "hook",     "riser",    "whip_pan",   "+15%", "zoom_in"),
-        (0.15, 0.30, "dramatic", "",         "slide_left", "+5%", "none"),
-        (0.30, 0.50, "calm",     "tick",     "slide_right","0%", "none"),
-        (0.50, 0.70, "excited",  "bass_drop","zoom_punch", "-3%", "zoom_in"),
-        (0.70, 0.90, "dramatic", "impact",   "fade_white", "0%", "none"),
-        (0.90, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
-    ],
-    "history": [
-        (0.00, 0.10, "hook",     "suspense", "fade_black", "+5%", "zoom_in"),
-        (0.10, 0.25, "calm",     "",         "crossfade",  "0%", "none"),
-        (0.25, 0.65, "suspense", "heartbeat","crossfade",  "-3%", "none"),
-        (0.65, 0.75, "dramatic", "suspense", "wipe_down",  "-3%", "none"),
-        (0.75, 0.85, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
-        (0.85, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
-    ],
-    "psychology": [
-        (0.00, 0.15, "hook",     "",         "crossfade",  "0%", "zoom_in"),
-        (0.15, 0.30, "calm",     "",         "crossfade",  "-5%", "none"),
-        (0.30, 0.70, "calm",     "",         "crossfade",  "-5%", "none"),
-        (0.70, 0.85, "dramatic", "shimmer",  "droplet",    "-8%", "zoom_in"),
-        (0.85, 1.01, "closing",  "",         "fade_black", "-8%", "none"),
-    ],
-    "truecrime": [
-        (0.00, 0.15, "hook",     "heartbeat","fade_black", "+5%", "zoom_in"),
-        (0.15, 0.35, "suspense", "",         "crossfade",  "0%", "none"),
-        (0.35, 0.65, "suspense", "suspense", "fade_black", "0%", "none"),
-        (0.65, 0.80, "dramatic", "bass_drop","whip_pan",   "+5%", "zoom_in"),
-        (0.80, 0.90, "dramatic", "impact",   "zoom_punch", "-3%", "zoom_in"),
-        (0.90, 1.01, "closing",  "",         "droplet",    "-5%", "none"),
-    ],
-    "travel": [
-        (0.00, 0.20, "hook",     "swoosh_soft","slide_up", "+10%", "zoom_in"),
-        (0.20, 0.40, "excited",  "",         "wipe_right", "0%", "none"),
-        (0.40, 0.60, "excited",  "pop",      "zoom_through","0%", "zoom_in"),
-        (0.60, 0.80, "calm",     "shimmer",  "crossfade",  "-3%", "none"),
-        (0.80, 1.01, "closing",  "ding",     "fade_black", "+5%", "none"),
-    ]
-}
-
-TONE_PERCENT_PALETTES = {
-    "viral": [
-        (0.0, 0.2, "hook", "riser", "whip_pan", "+15%", "zoom_in"),
-        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
-        (0.7, 0.9, "excited", "bass_drop", "zoom_punch", "+10%", "zoom_in"),
-        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
-    ],
-    "storytelling": [
-        (0.0, 0.2, "hook", "", "fade_black", "+5%", "zoom_in"),
-        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
-        (0.8, 0.9, "dramatic", "suspense", "droplet", "-3%", "zoom_in"),
-        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
-    ],
-    "educational": [
-        (0.0, 0.2, "hook", "tick", "slide_left", "+10%", "zoom_in"),
-        (0.2, 0.8, "calm", "", "crossfade", "0%", "none"),
-        (0.8, 0.9, "dramatic", "bass_drop", "zoom_punch", "-3%", "zoom_in"),
-        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
-    ],
-    "emotional": [
-        (0.0, 0.2, "hook", "", "crossfade", "-5%", "zoom_in"),
-        (0.2, 0.8, "calm", "", "crossfade", "-5%", "none"),
-        (0.8, 0.9, "dramatic", "shimmer", "droplet", "-8%", "zoom_in"),
-        (0.9, 1.01, "closing", "", "fade_black", "-5%", "none")
-    ],
-    "humorous": [
-        (0.0, 0.2, "hook", "pop", "slide_up", "0%", "zoom_in"),
-        (0.2, 0.7, "calm", "", "crossfade", "0%", "none"),
-        (0.7, 0.9, "excited", "laugh", "whip_pan", "+10%", "zoom_in"),
-        (0.9, 1.01, "closing", "ding", "fade_black", "0%", "none")
-    ]
-}
 
 def resolve_blueprint(niche: str, tone: str, total_scenes: int) -> list[dict]:
     bp = NICHE_PERCENT_BLUEPRINTS.get(niche) or TONE_PERCENT_PALETTES.get(tone) or TONE_PERCENT_PALETTES["viral"]
@@ -825,7 +818,8 @@ async def generate_script(
                     speech_rate_modifier=mech['speech_rate_modifier'],
                     visual_effect=mech['visual_effect'],
                     visual_source="auto",
-                    pause_after_ms=0
+                    pause_after_ms=0,
+                    bgm_volume=scene_data.bgm_volume
                 ))
             
             # Calculate source_coverage (Anti-hallucination metric)
@@ -857,6 +851,139 @@ async def generate_script(
 
 
 # ---------------------------------------------------------------------------
+# 3.5. AI SCRIPT REVIEWER — Kiểm soát chất lượng tự động (B2)
+# ---------------------------------------------------------------------------
+# Lớp QC chạy sau generate_script, trước khi trả kịch bản cho FE.
+# Gọi thêm 1 lần Gemini (model flash, temperature=0.3 cho deterministic)
+# nhưng chỉ với prompt ngắn + input là kịch bản đã sinh → tăng ~0.3-0.5x token.
+# Với 2 API key, hệ thống tự xoay vòng nếu 1 key cạn quota.
+# ---------------------------------------------------------------------------
+
+# ── Danh sách cụm từ sáo rỗng bị CẤM ──
+CLICHE_PHRASES = [
+    "xin chào các bạn", "hôm nay mình sẽ", "cùng tìm hiểu nhé",
+    "bạn có biết rằng", "các bạn ơi", "như chúng ta đã biết",
+    "không thể phủ nhận", "nói cách khác", "tóm lại là",
+    "điều đáng nói ở đây", "thực chất là", "đúng như bạn nghĩ",
+    "và đó chính là", "hãy cùng khám phá", "chào mừng bạn đến với",
+]
+
+
+class SceneReviewNote(BaseModel):
+    scene_index: int = Field(description="Số thứ tự cảnh (1-indexed)")
+    issue_type: str = Field(description="Loại lỗi: 'cliche' | 'too_long' | 'weak_hook' | 'missing_cta' | 'flat_pacing'")
+    severity: str = Field(description="Mức độ: 'error' | 'warning' | 'info'")
+    message: str = Field(description="Mô tả lỗi ngắn gọn tiếng Việt")
+    suggestion: str = Field(default="", description="Gợi ý sửa (nếu có)")
+
+
+class ScriptReviewResult(BaseModel):
+    quality_score: int = Field(description="Điểm chất lượng tổng thể (0-100)")
+    review_notes: List[SceneReviewNote] = Field(default_factory=list)
+    passed: bool = Field(description="True nếu kịch bản đạt chất lượng tối thiểu (≥60)")
+
+
+def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
+    """
+    Review LOCAL (không tốn API): phát hiện cụm từ sáo rỗng, cảnh quá dài,
+    thiếu CTA ở cảnh cuối. Nhanh và miễn phí — luôn chạy.
+    """
+    notes = []
+    total_score = 100
+
+    for i, scene in enumerate(scenes):
+        text = scene.get("text", "") or ""
+        words = text.split()
+
+        # ── Check cụm từ sáo rỗng ──
+        text_lower = text.lower()
+        for cliche in CLICHE_PHRASES:
+            if cliche in text_lower:
+                notes.append(SceneReviewNote(
+                    scene_index=i + 1,
+                    issue_type="cliche",
+                    severity="warning",
+                    message=f"Chứa cụm từ sáo rỗng: '{cliche}'",
+                    suggestion=f"Thay bằng câu cụ thể hơn, ví dụ: con số, câu hỏi gây sốc, hoặc tình huống."
+                ))
+                total_score -= 5
+
+        # ── Check cảnh quá dài ──
+        if len(words) > word_budget_hi:
+            notes.append(SceneReviewNote(
+                scene_index=i + 1,
+                issue_type="too_long",
+                severity="error",
+                message=f"Cảnh có {len(words)} từ, vượt ngân sách {word_budget_hi} từ",
+                suggestion="Tách thành 2-3 cảnh liên tiếp ngắn hơn."
+            ))
+            total_score -= 8
+
+    # ── Check CTA ở cảnh cuối ──
+    if scenes:
+        last_text = (scenes[-1].get("text", "") or "").lower()
+        cta_keywords = ["theo dõi", "subscribe", "chia sẻ", "bình luận", "comment",
+                        "like", "thích", "đăng ký", "share", "tag"]
+        has_cta = any(kw in last_text for kw in cta_keywords)
+        if not has_cta:
+            notes.append(SceneReviewNote(
+                scene_index=len(scenes),
+                issue_type="missing_cta",
+                severity="info",
+                message="Cảnh cuối chưa có CTA rõ ràng (kêu gọi like/share/follow)",
+                suggestion="Thêm câu hỏi mở hoặc lời kêu gọi hành động tự nhiên."
+            ))
+            total_score -= 3
+
+    # ── Check hook cảnh 1 ──
+    if scenes:
+        first_text = (scenes[0].get("text", "") or "").lower()
+        hook_weak_starts = ["xin chào", "hôm nay", "chào các bạn", "trong video này"]
+        if any(first_text.startswith(ws) for ws in hook_weak_starts):
+            notes.append(SceneReviewNote(
+                scene_index=1,
+                issue_type="weak_hook",
+                severity="error",
+                message="Hook mở đầu yếu — dùng câu chào hỏi thay vì gây tò mò",
+                suggestion="Thay bằng câu hỏi gây sốc, con số bất ngờ, hoặc tình huống kịch tính."
+            ))
+            total_score -= 10
+
+    total_score = max(0, min(100, total_score))
+    return ScriptReviewResult(
+        quality_score=total_score,
+        review_notes=notes,
+        passed=total_score >= 60,
+    )
+
+
+async def review_script(
+    script_result: dict,
+    word_budget_hi: int = 20,
+    api_key: str | None = None,
+) -> dict:
+    """
+    Kiểm soát chất lượng kịch bản AI sinh ra.
+    Tầng 1 (local): kiểm tra cụm từ sáo rỗng, word budget, CTA — luôn chạy, miễn phí.
+    Trả về dict chứa quality_score, review_notes, passed.
+    """
+    scenes = script_result.get("scenes", [])
+    if not scenes:
+        return ScriptReviewResult(quality_score=0, review_notes=[], passed=False).model_dump()
+
+    review = _local_review(scenes, word_budget_hi)
+
+    # Ghi log cho debugging
+    if review.review_notes:
+        logger.info(f"Script Review: score={review.quality_score}, issues={len(review.review_notes)}")
+        for note in review.review_notes:
+            logger.info(f"  [{note.severity}] Cảnh {note.scene_index}: {note.message}")
+
+    return review.model_dump()
+
+
+# ---------------------------------------------------------------------------
+
 # 4. MODE: Photo Narration — Gemini multimodal phân tích ảnh
 # ---------------------------------------------------------------------------
 async def generate_script_from_images(
