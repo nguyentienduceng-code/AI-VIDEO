@@ -155,6 +155,8 @@ def master_audio_and_export(
     # Track CHỈ-GIỌNG do video_service.write_voice_sidechain() ghi ra, dùng làm tín hiệu
     # điều khiển ducking. None → rơi về tách đôi track đã trộn (kém hơn, xem chỗ dùng).
     sidechain_audio_path: str | None = None,
+    use_pattern_interrupt: bool = True,
+    narration_tone: str = "viral",
 ) -> str:
     """
     Bước cuối: trộn BGM, master âm thanh, lọc màu, vignette, thanh tiến trình, phụ đề, encode.
@@ -282,6 +284,28 @@ def master_audio_and_export(
     if cg_filter:
         filter_complex.append(f"{video_chain}{cg_filter}[v_cg]")
         video_chain = "[v_cg]"
+
+    # ── Pattern Interrupt (B4) ──
+    # Cú giật sáng nhanh (flash) mỗi ~3s để thu hút sự chú ý.
+    #
+    # LỖI NGHIÊM TRỌNG ĐÃ VÁ: bộ lọc `eq` mặc định `eval=init` — biểu thức tham số
+    # (brightness ở đây) chỉ được TÍNH MỘT LẦN lúc khởi tạo filter, không tính lại mỗi
+    # khung hình, HỆT lỗi `drawbox` từng gặp ở thanh tiến trình (xem chú thích chỗ dùng
+    # `overlay` bên dưới). Thiếu `eval=frame`, `t` bị khoá ở giá trị lúc khởi tạo và
+    # điều kiện `lt(mod(t,3.2),0.1)` luôn đúng — ĐO THẬT bằng `signalstats`: TOÀN BỘ
+    # video cháy sáng trắng xoá (YAVG=255) từ khung đầu tới khung cuối, không có "khung
+    # ngoài cửa sổ flash" nào cả. Đây là loại lỗi cú pháp hợp lệ 100%, FFmpeg không báo
+    # lỗi gì — "đã kiểm tra cú pháp" không bắt được, phải render thật + đo pixel mới lộ.
+    #
+    # Cũng hạ độ mạnh 0.6 → 0.2: đo bằng `eq=brightness=0.6` cố định thấy TỰ NÓ đã đẩy
+    # nền xám 128 lên 255 (bão hoà trắng hoàn toàn) — một "cú giật NHẸ" theo đúng mô tả
+    # tính năng không thể là một khung hình trắng xoá; 0.2 cho độ sáng nhô lên rõ nhưng
+    # không cháy sáng, cũng đỡ rủi ro với người nhạy ánh sáng nhấp nháy hơn một cú full-white.
+    if use_pattern_interrupt and narration_tone not in ("storytelling", "emotional"):
+        filter_complex.append(
+            f"{video_chain}eq=eval=frame:brightness='if(lt(mod(t,3.2),0.1), 0.2, 0)'[v_pi]"
+        )
+        video_chain = "[v_pi]"
 
     # ── Vignette: làm tối 4 góc (thay lớp ImageClip RGBA của MoviePy) ──
     if add_vignette:
