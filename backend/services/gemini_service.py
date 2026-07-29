@@ -853,10 +853,12 @@ async def generate_script(
 # ---------------------------------------------------------------------------
 # 3.5. AI SCRIPT REVIEWER — Kiểm soát chất lượng tự động (B2)
 # ---------------------------------------------------------------------------
-# Lớp QC chạy sau generate_script, trước khi trả kịch bản cho FE.
-# Gọi thêm 1 lần Gemini (model flash, temperature=0.3 cho deterministic)
-# nhưng chỉ với prompt ngắn + input là kịch bản đã sinh → tăng ~0.3-0.5x token.
-# Với 2 API key, hệ thống tự xoay vòng nếu 1 key cạn quota.
+# Lớp QC chạy sau generate_script, trước khi trả kịch bản cho FE. Hai tầng:
+#   Tầng 1 (_local_review): heuristic chuỗi — cụm sáo rỗng/độ dài/CTA. Miễn phí, luôn chạy.
+#   Tầng 2 (_gemini_narrative_review): 1 lần gọi Gemini (model flash, temperature=0.3
+#     cho deterministic, prompt ngắn) đánh giá hook/cao trào/mạch cảm xúc — thứ heuristic
+#     chuỗi không "hiểu" được. Best-effort: lỗi (quota/mạng) bị nuốt êm trong review_script,
+#     không chặn luồng sinh kịch bản chính.
 # ---------------------------------------------------------------------------
 
 # ── Danh sách cụm từ sáo rỗng bị CẤM ──
@@ -881,6 +883,19 @@ class ScriptReviewResult(BaseModel):
     quality_score: int = Field(description="Điểm chất lượng tổng thể (0-100)")
     review_notes: List[SceneReviewNote] = Field(default_factory=list)
     passed: bool = Field(description="True nếu kịch bản đạt chất lượng tối thiểu (≥60)")
+
+
+class NarrativeReviewNote(BaseModel):
+    scene_index: int = Field(description="Số thứ tự cảnh liên quan nhất (1-indexed). Dùng 0 nếu là nhận xét cho toàn bộ kịch bản, không riêng cảnh nào.")
+    issue_type: str = Field(description="Loại lỗi: 'weak_hook' | 'weak_climax' | 'flat_emotion' | 'pacing_issue' | 'narrative_gap'")
+    severity: str = Field(description="Mức độ: 'error' | 'warning' | 'info'")
+    message: str = Field(description="Nhận xét ngắn gọn bằng tiếng Việt")
+    suggestion: str = Field(default="", description="Gợi ý sửa cụ thể, hành động được")
+
+
+class NarrativeReviewResult(BaseModel):
+    narrative_score: int = Field(description="Điểm 0-100 CHỈ đánh giá hook mở đầu, cao trào/plot twist, và mạch cảm xúc xuyên suốt — không tính lỗi câu chữ hay độ dài")
+    notes: List[NarrativeReviewNote] = Field(default_factory=list)
 
 
 def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
@@ -957,6 +972,54 @@ def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
     )
 
 
+_NARRATIVE_REVIEW_PROMPT = """Bạn là biên tập viên kịch bản video ngắn (TikTok/Reels) giàu kinh nghiệm.
+Đánh giá CHỈ 3 khía cạnh sau của kịch bản dưới đây, KHÔNG chấm lỗi chính tả/câu chữ/độ dài
+(đã có lớp kiểm tra khác lo việc đó):
+
+1. HOOK (cảnh 1): có đủ gây tò mò/sốc để giữ chân người xem trong 3 giây đầu không?
+2. CAO TRÀO: kịch bản có một điểm nhấn/plot twist/thông tin bất ngờ rõ ràng ở đâu đó không,
+   hay kể đều đều từ đầu đến cuối?
+3. MẠCH CẢM XÚC: cảm xúc có tăng dần hợp lý không, hay bị đứt quãng/phẳng lì/lặp lại?
+
+Với mỗi vấn đề THỰC SỰ đáng kể tìm thấy, ghi 1 note cụ thể (scene_index liên quan, gợi ý sửa
+hành động được). Đừng bịa lỗi nếu kịch bản đã ổn — narrative_score cao và notes rỗng là kết quả
+hợp lệ. Chấm điểm trung thực, không thiên vị."""
+
+
+def _gemini_narrative_review(scenes: list, api_key: str | None) -> NarrativeReviewResult:
+    """
+    Tầng 2 (Gemini thật) của B2 — bổ sung cho _local_review (chỉ bắt cụm sáo rỗng/độ
+    dài/CTA bằng chuỗi, không "hiểu" hook/cao trào/cảm xúc như tên gọi "AI Script
+    Reviewer" ngụ ý). Model flash, temperature thấp, prompt ngắn — đúng thiết kế đã
+    ghi trong comment ở đầu section này nhưng trước đó chưa ai nối vào.
+
+    Đây là lớp BEST-EFFORT: lỗi ở đây (quota, mạng, timeout) KHÔNG được làm hỏng cả
+    luồng sinh kịch bản — người gọi (review_script) phải bọc try/except quanh hàm này.
+    """
+    client = _get_client(api_key)
+    script_text = "\n".join(
+        f"Cảnh {s.get('scene', i + 1)}: {(s.get('text') or '').strip()}"
+        for i, s in enumerate(scenes)
+        if (s.get("text") or "").strip()
+    )
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=script_text,
+        config=types.GenerateContentConfig(
+            system_instruction=_NARRATIVE_REVIEW_PROMPT,
+            response_mime_type="application/json",
+            response_schema=NarrativeReviewResult,
+            temperature=0.3,
+        ),
+    )
+    try:
+        from services import quota_service
+        quota_service.increment_quota(1)
+    except Exception:
+        pass
+    return response.parsed
+
+
 async def review_script(
     script_result: dict,
     word_budget_hi: int = 20,
@@ -965,6 +1028,8 @@ async def review_script(
     """
     Kiểm soát chất lượng kịch bản AI sinh ra.
     Tầng 1 (local): kiểm tra cụm từ sáo rỗng, word budget, CTA — luôn chạy, miễn phí.
+    Tầng 2 (Gemini): đánh giá hook/cao trào/mạch cảm xúc — best-effort, bỏ qua êm nếu
+    lỗi (quota/mạng) để không chặn luồng sinh kịch bản chính.
     Trả về dict chứa quality_score, review_notes, passed.
     """
     scenes = script_result.get("scenes", [])
@@ -972,6 +1037,29 @@ async def review_script(
         return ScriptReviewResult(quality_score=0, review_notes=[], passed=False).model_dump()
 
     review = _local_review(scenes, word_budget_hi)
+
+    try:
+        narrative = await asyncio.to_thread(_gemini_narrative_review, scenes, api_key)
+    except Exception as e:
+        logger.warning(f"Script Review (tầng Gemini): bỏ qua — {e}")
+        narrative = None
+
+    if narrative is not None:
+        review.review_notes.extend(
+            SceneReviewNote(
+                scene_index=n.scene_index,
+                issue_type=n.issue_type,
+                severity=n.severity,
+                message=n.message,
+                suggestion=n.suggestion,
+            )
+            for n in narrative.notes
+        )
+        # Trung bình cộng 2 tầng: không để riêng 1 tầng (VD Gemini chấm khắt khe hơn
+        # bình thường) kéo điểm xuống một mình, nhưng vẫn phản ánh đủ nếu cả hai đồng
+        # thuận điểm thấp.
+        review.quality_score = round((review.quality_score + narrative.narrative_score) / 2)
+        review.passed = review.quality_score >= 60
 
     # Ghi log cho debugging
     if review.review_notes:
