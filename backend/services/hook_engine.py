@@ -97,9 +97,30 @@ SLOT_DURATION = 2.0   # giây — độ dài pha trục quay
 NUM_FAKES = 8         # số bìa giả lướt qua trước khi chốt vào bìa thật
 
 
-def _blurred_fill_bg(cover_path: str, w: int, h: int, duration: float, darken: float = 0.5):
+def _blurred_fill_bg(
+    cover_path: str,
+    w: int,
+    h: int,
+    duration: float,
+    darken: float = 0.5,
+    blur: int = 35,
+    zoom_to: float = 0.0,
+):
     """
     Nền LẤP ĐẦY khung 9:16 = bản phóng to + làm mờ của chính bìa (bỏ viền đen).
+
+    `blur`    bán kính Gaussian. 35 là mức "xoá sạch chi tiết" — hợp khi nền chỉ để
+              lấp khung phía sau một khối nội dung khác, KHÔNG hợp khi nó là toàn bộ
+              thứ người xem nhìn thấy trong nhiều giây (xem zoom_to).
+    `zoom_to` >1.0 thì nền phóng chậm LIÊN TỤC từ 1.0 tới mức này trong suốt `duration`
+              (Ken Burns). Mặc định 0.0 = đứng yên, giữ nguyên hành vi cũ cho các hook
+              vốn đã có chuyển động riêng.
+
+              VÌ SAO CẦN: ImageClip là MỘT khung hình bất động. Hook nào không tự có
+              chuyển động hình sẽ ĐỨNG HÌNH TUYỆT ĐỐI suốt thời lượng của nó — đã đo
+              được đúng 2.75 giây bất động ở đầu một video thật (lệch giữa các khung
+              chỉ 0.01/255). Đây cùng một lớp lỗi đã phải vá cho camera_shutter và
+              cyber_glitch trước đây; chỗ nào dựng nền từ ImageClip tĩnh cũng dính.
     """
     try:
         from PIL import Image, ImageFilter
@@ -110,14 +131,22 @@ def _blurred_fill_bg(cover_path: str, w: int, h: int, duration: float, darken: f
             img = Image.fromarray(frame).convert("RGB")
         else:
             img = Image.open(cover_path).convert("RGB")
-            
+
         scale = max(w / img.width, h / img.height)
         nw, nh = int(img.width * scale) + 2, int(img.height * scale) + 2
-        img = img.resize((nw, nh)).filter(ImageFilter.GaussianBlur(35))
+        img = img.resize((nw, nh)).filter(ImageFilter.GaussianBlur(blur))
         left, top = (nw - w) // 2, (nh - h) // 2
         img = img.crop((left, top, left + w, top + h))
         arr = (np.array(img).astype(np.float32) * darken).astype(np.uint8)
-        return ImageClip(arr).with_duration(duration)
+        clip = ImageClip(arr).with_duration(duration)
+        if zoom_to and zoom_to > 1.0 and duration > 0:
+            # CHỈ phóng TO (≥1.0), không bao giờ thu nhỏ: nền phải phủ kín khung ở mọi
+            # thời điểm, tụt dưới 1.0 là hở mép. Phải kèm with_position("center"), nếu
+            # không CompositeVideoClip neo góc trái-trên và nền trôi chéo thay vì phóng
+            # từ tâm.
+            _k = (zoom_to - 1.0) / duration
+            clip = clip.resized(lambda t: 1.0 + _k * t).with_position("center")
+        return clip
     except Exception as e:
         logger.warning(f"Blurred BG error: {e}")
         return ColorClip((w, h), color=(15, 15, 25)).with_duration(duration)
@@ -288,7 +317,15 @@ def build_blackout_question_hook(
 ) -> CompositeVideoClip:
     '''Nền mờ siêu tối (cinematic blackout) từ bìa sách, một dòng chữ sáng bật ra.'''
     if cover_image_path:
-        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.4)
+        # GIỮ NGUYÊN darken=0.4 + blur mặc định: "siêu tối" là chủ đích của hiệu ứng này,
+        # nền cố tình không cạnh tranh với chữ (khác typewriter, nơi nền mờ đặc chỉ là
+        # tác dụng phụ ngoài ý muốn). Chỉ thêm phần còn THIẾU: chuyển động.
+        # Không có zoom thì đây cũng là một khung ImageClip chết — pop-in của chữ chỉ chạy
+        # 0.2s đầu, phần còn lại đứng hình y hệt lỗi đã đo được ở typewriter.
+        bg = _blurred_fill_bg(
+            cover_image_path, video_width, video_height, duration,
+            darken=0.4, zoom_to=1.05,
+        )
     else:
         bg = ColorClip(size=(video_width, video_height), color=(12, 12, 15)).with_duration(duration)
 
@@ -336,7 +373,15 @@ def build_typewriter_quote_hook(
     nhưng ở outro thì ngược tác dụng — người xem đã sẵn sàng lướt đi, bắt họ CHỜ đọc
     hết câu chỉ làm mất thêm vài trăm ms mà không đổi lại gì.'''
     if cover_image_path:
-        bg = _blurred_fill_bg(cover_image_path, video_width, video_height, duration, darken=0.6)
+        # blur 35 → 20 và darken 0.6 → 0.66: ở mức cũ, ĐO TRÊN VIDEO THẬT thì 3 giây mở
+        # đầu chỉ là một khối nâu-xanh không nhận ra nổi đó là bìa sách gì. Nền của hook
+        # này không nấp sau thứ gì khác — nó chiếm trọn khung suốt thời lượng, nên phải
+        # còn đủ nhận dạng. Vẫn thừa tương phản cho chữ trắng viền đen nằm trên.
+        # zoom_to: xem chú thích ĐỨNG HÌNH TUYỆT ĐỐI ở _blurred_fill_bg.
+        bg = _blurred_fill_bg(
+            cover_image_path, video_width, video_height, duration,
+            darken=0.66, blur=20, zoom_to=1.06,
+        )
     else:
         bg = ColorClip(size=(video_width, video_height), color=(15, 15, 20)).with_duration(duration)
 
@@ -344,8 +389,11 @@ def build_typewriter_quote_hook(
     if not text:
         return bg
 
-    box_w = int(video_width * 0.8)
-    font_size = int(video_width * 0.05)
+    # Khớp với các hook có chữ khác (_hook_caption_overlay và blackout_question đều dùng
+    # 0.055 / 0.85): trước đây typewriter là hook chữ NHỎ NHẤT (0.05 / 0.8) dù chữ chính
+    # là toàn bộ nội dung nó hiển thị.
+    box_w = int(video_width * 0.85)
+    font_size = int(video_width * 0.055)
     style = dict(color="white", stroke_color="black", stroke_width=3)
 
     if instant:
@@ -367,7 +415,16 @@ def build_typewriter_quote_hook(
         # size=(box_w, canvas_h) cố định đó — TextClip với size cố định luôn trả về
         # cùng shape mảng dù text ngắn hơn (đã verify); thiếu bước này thì mỗi bước gõ
         # chữ ra kích thước ảnh khác nhau, concatenate_videoclips vỡ ngay.
-        probe = _safe_caption_clip(text, font_size, box_w, **style)
+        # Con trỏ LUÔN hiện trong lúc gõ thay vì nháy tắt/bật. LÝ DO: nó nằm TRONG chuỗi
+        # đem đi đo khung, nên bật/tắt giữa các bước làm ĐỔI ĐIỂM XUỐNG DÒNG. Đo thật với
+        # đúng font/cỡ chữ của hook: "Cuốn sách triệu bản suýt bị giấu" vừa khít 1 dòng
+        # (103px) nhưng thêm " |" thành 2 dòng (172px) — chữ tự xuống dòng sớm một bước
+        # rồi bước sau lùi về, giật rõ ngay giữa hook. Giữ con trỏ cố định thì mọi bước
+        # chịu chung một luật xuống dòng, chữ chỉ dài thêm chứ không nhảy.
+        # Cũng vì thế, PHẢI đo canvas_h bằng chuỗi CÓ con trỏ và giữ con trỏ ở cả pha
+        # cuối — bỏ nó ra ở bước cuối là lỗi cũ tái diễn ngay tại khung hình cuối cùng.
+        CURSOR = " |"
+        probe = _safe_caption_clip(text + CURSOR, font_size, box_w, **style)
         canvas_h = probe.h
         probe.close()
 
@@ -384,16 +441,11 @@ def build_typewriter_quote_hook(
         for i in range(1, steps + 1):
             word_count = max(1, round(n_words * i / steps))
             partial = " ".join(words[:word_count])
-            
-            # Thêm con trỏ nhấp nháy '|' (Blinking Cursor)
-            cursor = "|" if (i % 2 == 1) else ""
-            partial_with_cursor = partial + " " + cursor
-
             clips.append(
-                _safe_caption_clip(partial_with_cursor, font_size, box_w, box_h=canvas_h, **style).with_duration(step_dur)
+                _safe_caption_clip(partial + CURSOR, font_size, box_w, box_h=canvas_h, **style).with_duration(step_dur)
             )
         if hold_dur > 0:
-            clips.append(_safe_caption_clip(text, font_size, box_w, box_h=canvas_h, **style).with_duration(hold_dur))
+            clips.append(_safe_caption_clip(text + CURSOR, font_size, box_w, box_h=canvas_h, **style).with_duration(hold_dur))
 
         txt_anim = concatenate_videoclips(clips).with_position("center")
         return CompositeVideoClip([bg, txt_anim], size=(video_width, video_height)).with_duration(duration)
