@@ -347,6 +347,92 @@ SCENE_SFX_REPEAT_MIN_GAP = 1.8
 SCENE_SFX_PITCH_JITTER = 0.06   # ±6% cao độ (kéo theo ±6% độ dài — kiểu tăng/giảm tốc băng cối)
 SCENE_SFX_GAIN_JITTER = 0.08    # ±8% âm lượng (~±0.7dB)
 
+# Không phải SFX nào cũng đáng chịu chung một luật. Chia theo VAI TRÒ trong nhịp kể:
+#
+# - LẤP CHỖ (dưới đây): tiếng chuyển cảnh / đếm nhịp. Gemini rải chúng dày nhất và
+#   bản thân chúng gần như không mang thông tin — ĐÂY mới là nhóm gây nhàm tai khi dồn.
+# - NHẤN (mọi tên còn lại: impact/bass_drop/riser/suspense/heartbeat/laugh/...): hiếm và
+#   được đặt CÓ CHỦ ĐÍCH ở cao trào. Bỏ một tiếng impact ở đúng cú twist gây hại nhiều
+#   hơn hẳn việc để nó vang gần một tiếng whoosh, nên nhóm này MIỄN cooldown bên dưới
+#   (vẫn chịu luật trùng tên SCENE_SFX_REPEAT_MIN_GAP phía trên).
+#
+# Tên KHÔNG nằm trong tập này (SFX user tự tải lên) mặc định xếp vào nhóm NHẤN: không
+# phân loại được thì không tự ý vứt của người dùng.
+SCENE_SFX_FILLER = frozenset({"whoosh", "swoosh_soft", "pop", "tick"})
+
+# Cooldown RIÊNG cho nhóm lấp chỗ, đo từ tiếng lấp chỗ gần nhất ĐƯỢC PHÁT THẬT (không
+# phải từ cảnh gần nhất được GÁN). Quá sát thì BỎ HẲN — không đổi sang một tiếng lấp
+# chỗ khác: đổi tên chỉ xoay âm sắc mà giữ nguyên MẬT ĐỘ, đúng thứ cần giảm.
+#
+# Đo trên 32 kịch bản Gemini thật đã cache (296 cảnh): chỉ 33% số cảnh được gán SFX và
+# khoảng cách nhỏ nhất giữa 2 SFX liên tiếp là 3.67s — nên ở kịch bản do AI sinh, luật
+# này gần như không bao giờ chạm tới. Nó tồn tại cho trường hợp user tự thêm SFX cho
+# từng cảnh trong ScriptEditor, lúc đó mật độ mới thật sự tăng.
+SCENE_SFX_FILLER_MIN_GAP = 3.0
+
+
+def plan_scene_sfx(entries, exists=None):
+    """
+    Quyết định TRƯỚC cảnh nào được phát SFX per-scene.
+
+    Tách hẳn khỏi vòng lặp render để test được mà không phải dựng cả một job — luật
+    chọn/bỏ SFX trước đây nằm lẫn trong thân `render_final_video` nên không bộ test nào
+    chạm tới được, và một lần thay luật đã lọt qua trọn bộ test mà không ai hay.
+
+    entries: [(ten_sfx, moc_bat_dau_giay)] theo ĐÚNG thứ tự cảnh. Tên rỗng = cảnh không
+             có SFX (vẫn phải truyền vào để chỉ số trả về khớp chỉ số cảnh).
+    exists : callable(ten) -> bool. Dùng để một file THIẾU (tên gõ sai, SFX user đã xoá)
+             không chiếm mất suất cooldown của một tiếng hợp lệ phía sau.
+
+    Trả về set chỉ số cảnh ĐƯỢC PHÁT.
+    """
+    allowed = set()
+    prev_name = None
+    prev_start = None          # cảnh CÓ GÁN SFX gần nhất, kể cả khi bị chặn — cho luật trùng tên
+    prev_filler_start = None   # tiếng lấp chỗ gần nhất PHÁT THẬT — cho cooldown lấp chỗ
+    for i, (name, start) in enumerate(entries):
+        if not name:
+            continue
+        # Tầng 1 — trùng TÊN quá sát (áp cho mọi nhóm). Mốc so sánh là cảnh được gán gần
+        # nhất chứ không phải cảnh phát gần nhất: một chuỗi 3 cảnh 'tick' cách nhau 1s
+        # phải bị chặn từ cảnh thứ 2 trở đi, chứ không để cảnh thứ 3 "đủ xa" cảnh thứ 1.
+        gap = (start - prev_start) if prev_start is not None else None
+        blocked = (
+            name == prev_name
+            and gap is not None
+            and gap < SCENE_SFX_REPEAT_MIN_GAP
+        )
+        # Tầng 2 — cooldown nhóm lấp chỗ. Nhóm nhấn không đi qua nhánh này.
+        if not blocked and name in SCENE_SFX_FILLER and prev_filler_start is not None:
+            blocked = (start - prev_filler_start) < SCENE_SFX_FILLER_MIN_GAP
+        prev_name, prev_start = name, start
+        if blocked:
+            continue
+        if exists is not None and not exists(name):
+            continue
+        allowed.add(i)
+        if name in SCENE_SFX_FILLER:
+            prev_filler_start = start
+    return allowed
+
+
+def scene_sfx_jitter(output_path: str, index: int, sfx_name: str):
+    """
+    Biến tấu cao độ + âm lượng cho MỘT lần phát SFX — xem SCENE_SFX_PITCH_JITTER/GAIN_JITTER.
+
+    Gieo hạt từ (tên file đích + chỉ số cảnh + tên SFX) thay vì dùng `random` toàn cục:
+    render lại CÙNG một dự án phải cho ra CÙNG một bản mix. Không có tính tái lập thì
+    không thể đem hai lần render ra so để tìm hồi quy — chính là cách đã bắt được bug
+    Pattern Interrupt cháy trắng trước đây.
+
+    Trả về (hệ_số_gain, tỷ_lệ_cao_độ).
+    """
+    rng = random.Random(f"{os.path.basename(output_path)}|{index}|{sfx_name}")
+    return (
+        rng.uniform(1.0 - SCENE_SFX_GAIN_JITTER, 1.0 + SCENE_SFX_GAIN_JITTER),
+        rng.uniform(1.0 - SCENE_SFX_PITCH_JITTER, 1.0 + SCENE_SFX_PITCH_JITTER),
+    )
+
 # QUAN TRỌNG: font PHẢI có glyph tiếng Việt đầy đủ, đặc biệt ư/Ư (U+01B0/01AF)
 # và ơ/Ơ (U+01A1/01A0).
 # CẢNH BÁO: "Arial Black" (ariblk.ttf) KHÔNG có các glyph này — đã kiểm chứng bằng
@@ -1126,10 +1212,15 @@ def render_final_video(
                 except Exception:
                     pass
 
-    # Theo dõi lần phát SFX per-scene GẦN NHẤT (tên + mốc thời gian) để chặn lặp
-    # quá sát — xem SCENE_SFX_REPEAT_MIN_GAP ở nơi khai báo.
-    _prev_scene_sfx_name = None
-    _prev_scene_sfx_start = None
+    # Chốt TRƯỚC vòng lặp cảnh nào được phát SFX per-scene — xem plan_scene_sfx() và
+    # SCENE_SFX_REPEAT_MIN_GAP / SCENE_SFX_FILLER_MIN_GAP ở nơi khai báo.
+    _sfx_plan = plan_scene_sfx(
+        [
+            (str(a.get("sfx") or ""), a.get("start_time", 0.0) + hook_duration)
+            for a in scene_assets
+        ],
+        exists=lambda n: os.path.isfile(os.path.join(SFX_DIR, f"{n}.wav")),
+    )
 
     for _i, asset in enumerate(scene_assets):
         dur = asset.get("duration", 3.0)
@@ -1156,34 +1247,23 @@ def render_final_video(
 
         # SFX chọn riêng cho từng cảnh giờ ĐÃ BỊ CHẶN bởi toggle global use_sfx
         # theo yêu cầu của user (không bật SFX thì tắt sạch tiếng xoẹt chuyển cảnh).
-        sfx_name = asset.get("sfx", "")
-        if sfx_name and use_sfx:
-            # Chặn lặp quá sát: Gemini hay gán CÙNG một tên cho nhiều cảnh liên tiếp
-            # cùng nhịp kể chuyện (VD 'tick' cho chuỗi cảnh liệt kê) — phát nguyên văn
-            # cùng 1 file cách nhau vài giây nghe như một nhịp trống đơn điệu.
-            gap = (start_time - _prev_scene_sfx_start) if _prev_scene_sfx_start is not None else None
-            is_repeat_too_soon = (
-                sfx_name == _prev_scene_sfx_name
-                and gap is not None
-                and gap < SCENE_SFX_REPEAT_MIN_GAP
-            )
-            _prev_scene_sfx_name = sfx_name
-            _prev_scene_sfx_start = start_time
-
+        sfx_name = str(asset.get("sfx") or "")
+        if sfx_name and use_sfx and _i in _sfx_plan:
+            # Đã qua plan_scene_sfx() phía trên: cảnh nằm trong _sfx_plan nghĩa là vừa
+            # không bị chặn vừa CÓ file thật, không cần kiểm tra isfile lần nữa.
             sfx_path = os.path.join(SFX_DIR, f"{sfx_name}.wav")
-            if not is_repeat_too_soon and os.path.isfile(sfx_path):
-                # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc, kết hợp vol riêng của cảnh.
-                # SCENE_SFX_GAIN cân bằng độ to GỐC giữa các file (xem chú thích ở khai báo) — SFX
-                # tự người dùng tải lên (không có trong bảng) dùng mặc định 1.0, không có gì để
-                # cân bằng theo vì chưa từng đo được RMS của chúng.
-                scene_vol_ratio = asset.get("sfxVolume", 100) / 100.0
-                gain = sfx_volume * SFX_MIX_GAIN * scene_vol_ratio * SCENE_SFX_GAIN.get(sfx_name, 1.0)
-                # Biến tấu nhỏ mỗi lần phát — xem SCENE_SFX_PITCH_JITTER/GAIN_JITTER.
-                gain *= random.uniform(1.0 - SCENE_SFX_GAIN_JITTER, 1.0 + SCENE_SFX_GAIN_JITTER)
-                pitch_ratio = random.uniform(1.0 - SCENE_SFX_PITCH_JITTER, 1.0 + SCENE_SFX_PITCH_JITTER)
-                audio_placements.append((
-                    sfx_path, start_time, gain, 0.0, None, pitch_ratio,
-                ))
+            # Giảm âm lượng SFX chung để không thô/to lấn giọng đọc, kết hợp vol riêng của cảnh.
+            # SCENE_SFX_GAIN cân bằng độ to GỐC giữa các file (xem chú thích ở khai báo) — SFX
+            # tự người dùng tải lên (không có trong bảng) dùng mặc định 1.0, không có gì để
+            # cân bằng theo vì chưa từng đo được RMS của chúng.
+            scene_vol_ratio = asset.get("sfxVolume", 100) / 100.0
+            gain = sfx_volume * SFX_MIX_GAIN * scene_vol_ratio * SCENE_SFX_GAIN.get(sfx_name, 1.0)
+            # Biến tấu nhỏ mỗi lần phát, TÁI LẬP ĐƯỢC — xem scene_sfx_jitter().
+            _gain_jitter, pitch_ratio = scene_sfx_jitter(output_path, _i, sfx_name)
+            gain *= _gain_jitter
+            audio_placements.append((
+                sfx_path, start_time, gain, 0.0, None, pitch_ratio,
+            ))
 
         final_duration = max(final_duration, start_time + dur)
 
