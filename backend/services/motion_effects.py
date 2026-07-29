@@ -14,6 +14,7 @@ Yêu cầu: ffmpeg đã có sẵn trong hệ thống (bạn đang dùng MoviePy 
 """
 
 import os
+import re
 import subprocess
 import logging
 from typing import List, Dict, Any, Tuple
@@ -191,6 +192,59 @@ def _build_fit_filter(src_w: int, src_h: int, w: int, h: int, unify: bool) -> st
     )
 
 
+def _detect_scene_cuts(video_path: str, ffmpeg_exe: str, threshold: float = 0.35) -> List[float]:
+    """
+    Trả danh sách mốc thời gian (giây) có CẮT CẢNH CỨNG bên trong 1 file stock.
+
+    LÝ DO CẦN HÀM NÀY: clip stock dài (VD Pexels 10s) thường thực ra là 2-3 shot
+    khác nhau nối lại (đổi góc quay, đổi vị trí camera) chứ không phải 1 cú quay
+    liên tục. "Cắt đoạn giữa" theo điểm giữa hình học của normalize_stock_clip có
+    thể vô tình lấy đúng đoạn NẰM VẮT NGANG một mối nối đó — hậu quả thực tế đã gặp:
+    cảnh "lật trang sách" ở giữa xuất hiện cú nhảy hình đột ngột, chữ trong sách từ
+    đọc được chuyển sang lộn ngược vì nửa sau đoạn cắt là một shot quay từ phía đối
+    diện bàn. Không tự phát hiện được bằng mắt lúc chọn stock vì chỉ xem preview.
+
+    Best-effort: lỗi ở bước này (ffmpeg lạ phiên bản, timeout...) chỉ log rồi trả
+    rỗng, KHÔNG được làm hỏng luồng chuẩn hoá clip chính.
+    """
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe, "-i", video_path, "-filter:v",
+             f"select='gt(scene\\,{threshold})',showinfo", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return [float(m.group(1)) for m in re.finditer(r"pts_time:(\d+\.?\d*)", r.stderr)]
+    except Exception as e:
+        logger.warning(f"[StockNorm] Không dò được scene cut ({e}), bỏ qua bước né cắt cảnh.")
+        return []
+
+
+def _pick_cutfree_start(src_dur: float, duration: float, cuts: List[float], margin: float = 0.08) -> float:
+    """
+    Chọn điểm bắt đầu cho đoạn dài `duration` trong clip `src_dur` giây sao cho
+    không có scene cut nào ở [cuts] lọt vào GIỮA đoạn (chỉ chấp nhận cắt đúng ở 2
+    đầu mút, tức là mép ngoài của đoạn được lấy).
+
+    Ưu tiên đoạn có tâm gần tâm clip nhất trong số các đoạn "sạch" tìm được, để giữ
+    đúng tinh thần cũ (né phần đầu/cuối clip hay đứng yên/fade). Nếu không đoạn nào
+    đủ dài mà sạch hoàn toàn (VD clip toàn cảnh cắt liên tục), quay về công thức cũ:
+    lấy giữa hình học và CHẤP NHẬN cắt cảnh — còn hơn từ chối cả file.
+    """
+    default_start = max(0.0, (src_dur - duration) / 2.0)
+    if not cuts:
+        return default_start
+
+    bounds = [0.0] + sorted(c for c in cuts if 0.0 < c < src_dur) + [src_dur]
+    candidates = [(a, b) for a, b in zip(bounds, bounds[1:]) if (b - a) >= duration + margin * 2]
+    if not candidates:
+        return default_start
+
+    target_center = src_dur / 2.0
+    a, b = min(candidates, key=lambda ab: abs((ab[0] + ab[1]) / 2.0 - target_center))
+    start = ((a + b) / 2.0) - duration / 2.0
+    return max(a + margin, min(start, b - margin - duration))
+
+
 def normalize_stock_clip(
     video_path: str,
     output_path: str,
@@ -224,8 +278,10 @@ def normalize_stock_clip(
 
     try:
         if src_dur >= duration + 0.15:
-            # Cắt đoạn giữa: bỏ qua phần đầu tĩnh/fade-in của clip stock.
-            start = max(0.0, (src_dur - duration) / 2.0)
+            # Cắt đoạn giữa: bỏ qua phần đầu tĩnh/fade-in của clip stock, đồng thời
+            # né các mối nối shot bên trong clip (xem _detect_scene_cuts).
+            cuts = _detect_scene_cuts(video_path, ffmpeg_exe)
+            start = _pick_cutfree_start(src_dur, duration, cuts)
             cmd = [
                 ffmpeg_exe, "-y", "-ss", f"{start:.3f}", "-i", video_path,
                 "-t", f"{out_dur:.3f}",
@@ -401,5 +457,41 @@ def build_scene_timeline(scenes_with_audio: List[Dict[str, Any]], overlap_dur: f
         cursor += duration
         if i < len(scenes_with_audio) - 1:
             cursor -= overlap_dur
-            
+
     return scenes_with_audio
+
+
+# ---------------------------------------------------------------------------
+# 4. KÍCH THƯỚC CHỮ NHẤN (HIGHLIGHT TEXT) TỰ CO THEO ĐỘ DÀI
+# ---------------------------------------------------------------------------
+def fit_highlight_fontsize(
+    text: str,
+    font_path: str,
+    max_width: int,
+    base_size: int = 120,
+    min_size: int = 46,
+) -> int:
+    """
+    Chữ nhấn (highlight_text/B-Roll Text) trước đây LUÔN vẽ ở fontsize=120 bất kể
+    độ dài chuỗi. Với cụm từ khoá 3-4 tiếng có dấu (VD "MIỆT MÀI KIẾM TIỀN",
+    "LINH HỒN TIỀN TỆ") ở 120px chữ hoa đậm, bề rộng thực tế vượt quá khung 1080px
+    và bị cắt cụt ở CẢ HAI mép trái/phải — vì cả drawtext (FFmpeg, x=(w-text_w)/2)
+    lẫn TextClip (MoviePy, position="center") đều chỉ canh giữa, không tự co chữ.
+
+    Đo bằng font thật (PIL) để biết bề rộng chính xác ở base_size, rồi co tỉ lệ
+    xuống vừa max_width. Chữ ngắn giữ nguyên base_size (không phóng to quá cỡ).
+    """
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(font_path, base_size)
+        bbox = font.getbbox(text)
+        text_w = bbox[2] - bbox[0]
+    except Exception:
+        logger.warning("[Highlight] Không đo được bề rộng chữ, giữ fontsize mặc định.")
+        return base_size
+
+    if text_w <= max_width or text_w <= 0:
+        return base_size
+
+    scaled = int(base_size * max_width / text_w)
+    return max(min_size, scaled)

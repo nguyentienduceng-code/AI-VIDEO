@@ -26,6 +26,8 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import imageio_ffmpeg
 
+from services.motion_effects import fit_highlight_fontsize
+
 logger = logging.getLogger(__name__)
 
 # transition nội bộ → tên bộ lọc xfade của FFmpeg.
@@ -211,19 +213,23 @@ def assemble(
 
         hl = (a.get("highlight_text") or "").strip()
         if hl:
+            hl_upper = hl.upper()
             # Dùng textfile thay vì text= để khỏi phải escape dấu tiếng Việt và ký tự đặc biệt
             fd, tf = tempfile.mkstemp(suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(hl.upper())
+                f.write(hl_upper)
             tmp_texts.append(tf)
             hl_dur = min(HIGHLIGHT_DURATION, dur)
             fade = min(HIGHLIGHT_FADE, hl_dur / 3)
             alpha = (f"if(lt(t,{fade:.3f}),t/{fade:.3f},"
                      f"if(lt(t,{hl_dur - fade:.3f}),1,max(0,({hl_dur:.3f}-t)/{fade:.3f})))")
+            # Co fontsize theo độ dài chuỗi: 120px cố định tràn khung 1080px với cụm
+            # 3-4 tiếng Việt có dấu, bị cắt cụt ở cả hai mép (xem fit_highlight_fontsize).
+            fontsize = fit_highlight_fontsize(hl_upper, HIGHLIGHT_FONT, int(width * 0.92))
             chain += (
                 f",drawtext=fontfile='{_esc_path(HIGHLIGHT_FONT)}':"
                 f"textfile='{_esc_path(tf)}':"
-                f"fontsize=120:fontcolor=yellow:borderw=6:bordercolor=black:"
+                f"fontsize={fontsize}:fontcolor=yellow:borderw=6:bordercolor=black:"
                 f"x=(w-text_w)/2:y=h*0.25:"
                 f"alpha='{_esc_expr(alpha)}':"
                 f"enable='{_esc_expr(f'lt(t,{hl_dur:.3f})')}'"

@@ -214,6 +214,8 @@ def _worker_main(
             progress_bar=master_kwargs.get("progress_bar", True),
             total_duration=master_kwargs.get("total_duration", 0.0),
             bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
+            use_pattern_interrupt=master_kwargs.get("use_pattern_interrupt", True),
+            narration_tone=master_kwargs.get("narration_tone", "viral"),
         )
 
         # Dọn file thô
