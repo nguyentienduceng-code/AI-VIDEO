@@ -103,7 +103,21 @@ class LLMScene(BaseModel):
     scene: int
     text: str = Field(description="Lời thoại đọc voice-over. Không chứa ngoặc đơn hoặc ký hiệu. Nếu scene_type là quote_card, trường này PHẢI rỗng.")
     image_prompt: str = Field(description="Prompt bằng tiếng Anh chi tiết để AI sinh ảnh (dùng các từ khóa điện ảnh như 8k, photorealistic). Bắt buộc phải có.")
-    highlight_text: str = Field(description="Từ khóa quan trọng nhất trong cảnh (tối đa 1-3 từ).")
+    # Gốc rễ của 2 lỗi đo được trên video thật (a67a0fa9, 30 cảnh): Gemini gán từ khoá theo
+    # Ý CHÍNH của cả đoạn nên các cảnh cùng một ý nhận CÙNG một cụm — 12/24 cặp liền kề
+    # trùng y nguyên ("ĐỪNG CHỈ TRÍCH" nhấp 4 lần trong 20 giây). Và chỉ 7/24 cụm thực sự
+    # có mặt trong lời của chính cảnh đó, nên chữ hiện ra chẳng ăn nhập gì với lời đang đọc.
+    # motion_effects.plan_scene_highlights() đã dập cả hai ở tầng render, nhưng chặn ngay từ
+    # đây thì tầng đó không phải vứt bớt công của model nữa.
+    highlight_text: str = Field(
+        description=(
+            "Từ khóa quan trọng nhất trong cảnh (tối đa 1-3 từ, viết HOA). "
+            "BẮT BUỘC là cụm từ XUẤT HIỆN NGUYÊN VĂN trong `text` của CHÍNH cảnh này — "
+            "chữ sẽ hiện lên đúng lúc câu đó được đọc, nên cụm không có trong lời sẽ lạc đề. "
+            "KHÔNG lặp lại từ khoá của cảnh liền trước; cảnh nào không có cụm nào thật sự "
+            "đắt thì để RỖNG."
+        )
+    )
     scene_type: str = Field(default="narration", description="Loại cảnh: 'narration' (kể chuyện có giọng đọc) hoặc 'quote_card' (hiển thị trích dẫn chữ to trên nền tối, không giọng đọc).")
     source_quote: Optional[str] = Field(default=None, description="Nguyên văn trích dẫn từ tài liệu gốc, dùng để đối chiếu chống bịa nội dung.")
     source_ref: Optional[str] = Field(default=None, description="Vị trí chứa đoạn trích trong tài liệu (VD: Chương 1, trang 27).")
@@ -123,8 +137,22 @@ class Scene(LLMScene):
 class LLMScriptResponse(BaseModel):
     sentiment: str = Field(default="happy", description="Cảm xúc tổng thể của video (happy, sad, dramatic, suspense, chill, energetic).")
     recommended_bgm: str = Field(default="moment_of_peace", description="Mã bài nhạc nền phù hợp nhất với cảm xúc kịch bản.")
-    hook_text: str = Field(default="", description="Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video.")
-    hook_variants: List[str] = Field(default_factory=list, description="3 biến thể hook_text khác nhau để người dùng lựa chọn (A/B testing).")
+    # TUYỆT ĐỐI KHÔNG lặp lại tên sách: chữ này được vẽ ĐÈ LÊN chính ảnh bìa, mà bìa đã
+    # in tên sách cỡ lớn sẵn rồi. Đo trên video thật (a67a0fa9): hook "ĐẮC NHÂN TÂM: BÍ
+    # QUYẾT ĐƯỢC LÒNG NGƯỜI" nằm chồng lên bìa "ĐẮC NHÂN TÂM" khổng lồ — người xem đọc
+    # cùng ba chữ hai lần, một mờ một nét, chồng nhau. Giây đầu tiên quý giá bị tiêu vào
+    # thông tin người xem đã có.
+    hook_text: str = Field(
+        default="",
+        description=(
+            "Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video. "
+            "TUYỆT ĐỐI KHÔNG lặp lại tên sách/tên tác giả/chủ đề — chữ này hiện ĐÈ LÊN "
+            "ảnh bìa vốn đã in sẵn những thứ đó, lặp lại là phí giây đầu tiên. "
+            "Hãy nêu MÂU THUẪN hoặc LỜI HỨA khiến người xem phải ở lại (câu hỏi nhức "
+            "nhối, con số bất ngờ, điều ngược với trực giác)."
+        ),
+    )
+    hook_variants: List[str] = Field(default_factory=list, description="3 biến thể hook_text khác nhau để người dùng lựa chọn (A/B testing). Cùng ràng buộc như hook_text: không nhắc lại tên sách.")
     cta_text: str = Field(default="", description="Câu Call To Action (Kêu gọi hành động) ở cuối video.")
     scenes: List[LLMScene]
 
