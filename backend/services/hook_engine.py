@@ -28,15 +28,63 @@ def _safe_caption_clip(text: str, font_size: int, box_w: int, box_h: int | None 
 
     Truyền `box_h` để ép chiều cao khung có sẵn (dùng khi cần nhiều clip cùng shape,
     như từng bước của hiệu ứng gõ chữ); để None thì tự đo + đệm.
+
+    KHUNG CỐ ĐỊNH THÌ NEO ĐỈNH, KHÔNG NEO GIỮA. `vertical_align` mặc định của MoviePy là
+    "center": khối chữ luôn được căn giữa theo chiều dọc trong khung. Với khung cố định
+    (dựng theo câu ĐẦY ĐỦ), lúc chữ mới có 1 dòng nó nằm giữa khung, tới khi mọc dòng thứ
+    2 thì khối chữ cao lên và dòng 1 BỊ ĐẨY NGƯỢC LÊN — đo thật: dòng đầu nhảy từ y=61
+    lên y=24, tức giật đứng 37px đúng khoảnh khắc xuống dòng. Neo đỉnh cho ra y=4 ở cả
+    hai trường hợp: dòng 1 đứng im, dòng mới mọc xuống dưới đúng như máy chữ thật.
     """
     kwargs = dict(font=HOOK_FONT, font_size=font_size, method="caption",
                   text_align="center", **extra)
     if box_h is not None:
+        kwargs.setdefault("vertical_align", "top")
         return TextClip(text=text, size=(box_w, box_h), **kwargs)
     probe = TextClip(text=text, size=(box_w, None), **kwargs)
     padded_h = probe.h + 40
     probe.close()
     return TextClip(text=text, size=(box_w, padded_h), **kwargs)
+
+
+def _ngat_dong(tokens: list, font_size: int, max_w: int, stroke_width: int = 3) -> list:
+    """Tự ngắt dòng theo BỀ RỘNG ĐO ĐƯỢC, trả về danh sách các dòng (mỗi dòng là list token).
+
+    VÌ SAO PHẢI TỰ NGẮT thay vì để MoviePy lo: con trỏ máy chữ nằm TRONG chuỗi đem đi đo,
+    nên bật/tắt nó làm đổi luôn điểm xuống dòng — đo thật với đúng font/cỡ chữ của hook:
+    "Cuốn sách triệu bản suýt bị giấu" vừa khít 1 dòng (103px) nhưng thêm " |" thành 2
+    dòng (172px). Trước đây phải bỏ hẳn nhấp nháy để né, đổi lại con trỏ đứng chết dính.
+
+    Tự tính điểm ngắt MỘT LẦN dựa trên chuỗi CÓ con trỏ, rồi ghép lại bằng "\\n" tường
+    minh, thì bỏ con trỏ ra không thể làm đổi bố cục nữa — nhấp nháy trở lại an toàn.
+
+    Ngưỡng lấy hụt so với `max_w` (trừ viền chữ + đệm) để MoviePy không tự ngắt lại theo
+    ngưỡng của nó và phá mất bố cục ta vừa tính.
+    """
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(HOOK_FONT, font_size)
+    except Exception:
+        logger.warning("[Typewriter] Không đo được bề rộng chữ — dồn hết vào một dòng.")
+        return [list(tokens)]
+
+    nguong = max(1, max_w - 2 * stroke_width - 8)
+
+    def _rong(cum: list) -> int:
+        s = " ".join(cum)
+        bbox = font.getbbox(s)
+        return bbox[2] - bbox[0]
+
+    dong, hien_tai = [], []
+    for tk in tokens:
+        if hien_tai and _rong(hien_tai + [tk]) > nguong:
+            dong.append(hien_tai)
+            hien_tai = [tk]
+        else:
+            hien_tai.append(tk)
+    if hien_tai:
+        dong.append(hien_tai)
+    return dong
 
 
 def _hook_caption_overlay(
@@ -415,37 +463,63 @@ def build_typewriter_quote_hook(
         # size=(box_w, canvas_h) cố định đó — TextClip với size cố định luôn trả về
         # cùng shape mảng dù text ngắn hơn (đã verify); thiếu bước này thì mỗi bước gõ
         # chữ ra kích thước ảnh khác nhau, concatenate_videoclips vỡ ngay.
-        # Con trỏ LUÔN hiện trong lúc gõ thay vì nháy tắt/bật. LÝ DO: nó nằm TRONG chuỗi
-        # đem đi đo khung, nên bật/tắt giữa các bước làm ĐỔI ĐIỂM XUỐNG DÒNG. Đo thật với
-        # đúng font/cỡ chữ của hook: "Cuốn sách triệu bản suýt bị giấu" vừa khít 1 dòng
-        # (103px) nhưng thêm " |" thành 2 dòng (172px) — chữ tự xuống dòng sớm một bước
-        # rồi bước sau lùi về, giật rõ ngay giữa hook. Giữ con trỏ cố định thì mọi bước
-        # chịu chung một luật xuống dòng, chữ chỉ dài thêm chứ không nhảy.
-        # Cũng vì thế, PHẢI đo canvas_h bằng chuỗi CÓ con trỏ và giữ con trỏ ở cả pha
-        # cuối — bỏ nó ra ở bước cuối là lỗi cũ tái diễn ngay tại khung hình cuối cùng.
-        CURSOR = " |"
-        probe = _safe_caption_clip(text + CURSOR, font_size, box_w, **style)
+        # Con trỏ KHÔNG còn tham gia phép ngắt dòng: _ngat_dong() tính điểm ngắt MỘT LẦN
+        # trên chuỗi CÓ con trỏ rồi ghép lại bằng "\n" tường minh, nên bỏ con trỏ ra không
+        # thể làm đổi bố cục. Nhờ vậy khôi phục được nhấp nháy mà không tái phát cú giật
+        # ngang của bản cũ (xem chú thích ở _ngat_dong).
+        CURSOR = "|"
+        words = text.split()
+        n_words = len(words)
+
+        def _chuoi(so_tu: int, hien_con_tro: bool) -> str:
+            dong = _ngat_dong(words[:so_tu] + [CURSOR], font_size, box_w,
+                              style["stroke_width"])
+            if not hien_con_tro:
+                # Bỏ ĐÚNG token con trỏ, giữ nguyên mọi điểm ngắt dòng. Dòng cuối có thể
+                # thành rỗng — vẫn phải giữ lại để số dòng (và chiều cao) không đổi.
+                dong = [list(d) for d in dong]
+                dong[-1] = dong[-1][:-1]
+            return "\n".join(" ".join(d) for d in dong)
+
+        probe = _safe_caption_clip(_chuoi(n_words, True), font_size, box_w, **style)
         canvas_h = probe.h
         probe.close()
 
-        words = text.split()
-        n_words = len(words)
         # Gõ xong ở 85% thời lượng, giữ nguyên câu đủ ở 15% cuối trước khi cắt sang cảnh 1 —
         # gõ xong đúng lúc cắt cảnh sẽ khiến người xem không kịp đọc trọn câu.
         reveal_dur = duration * 0.85
-        hold_dur = duration - reveal_dur
         steps = max(1, min(n_words, 24))  # trần 24 bước: câu dài không dựng quá nhiều TextClip
         step_dur = reveal_dur / steps
 
+        # Cắt dòng thời gian tại HỢP của hai loại mốc: mốc gõ thêm từ, và mốc nhấp nháy.
+        # Gộp nhịp nháy vào nhịp gõ (bản cũ nháy theo i%2) khiến tốc độ nháy chạy theo độ
+        # dài câu — câu 20 từ thì con trỏ giật liên hồi, câu 4 từ thì nháy ì ạch.
+        NHAY = 0.45  # nửa chu kỳ, xấp xỉ con trỏ dòng lệnh thật
+        moc = {0.0, duration, reveal_dur}
+        moc |= {i * step_dur for i in range(steps + 1)}
+        moc |= {k * NHAY for k in range(int(duration / NHAY) + 2)}
+        moc = sorted(m for m in moc if 0.0 <= m <= duration)
+
         clips = []
-        for i in range(1, steps + 1):
-            word_count = max(1, round(n_words * i / steps))
-            partial = " ".join(words[:word_count])
+        for a, b in zip(moc, moc[1:]):
+            if b - a < 0.02:      # khoảng vụn do 2 lưới mốc rơi sát nhau
+                continue
+            if a >= reveal_dur:
+                so_tu = n_words
+            else:
+                buoc = int(a / step_dur) + 1
+                so_tu = max(1, min(n_words, round(n_words * buoc / steps)))
+            # Pha nháy tính NGƯỢC TỪ ĐIỂM KẾT THÚC, không phải từ t=0. Hai lý do:
+            #  - khung hình cuối trước lúc cắt sang Cảnh 1 luôn rơi vào nhịp TẮT, nên
+            #    không đọng lại dấu '|' bất động (bản trước gõ cứng con trỏ vào cả pha
+            #    giữ, nhìn như gõ thừa phím chứ không phải hiệu ứng);
+            #  - đếm xuôi rồi ép tắt riêng khoảng cuối thì hai luật chồng nhau, ĐO ĐƯỢC
+            #    con trỏ tắt liền 0.77s cuối — một quãng chết ngay lúc câu vừa hiện đủ.
+            hien = int((duration - a) / NHAY) % 2 == 1
             clips.append(
-                _safe_caption_clip(partial + CURSOR, font_size, box_w, box_h=canvas_h, **style).with_duration(step_dur)
+                _safe_caption_clip(_chuoi(so_tu, hien), font_size, box_w,
+                                   box_h=canvas_h, **style).with_duration(b - a)
             )
-        if hold_dur > 0:
-            clips.append(_safe_caption_clip(text + CURSOR, font_size, box_w, box_h=canvas_h, **style).with_duration(hold_dur))
 
         txt_anim = concatenate_videoclips(clips).with_position("center")
         return CompositeVideoClip([bg, txt_anim], size=(video_width, video_height)).with_duration(duration)
