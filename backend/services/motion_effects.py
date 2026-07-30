@@ -495,3 +495,95 @@ def fit_highlight_fontsize(
 
     scaled = int(base_size * max_width / text_w)
     return max(min_size, scaled)
+
+
+# ---------------------------------------------------------------------------
+# 5. LỊCH HIỆN CHỮ NHẤN — NEO VÀO LÚC CỤM ĐÓ THỰC SỰ ĐƯỢC ĐỌC
+# ---------------------------------------------------------------------------
+def _chuan_hoa_tu(s: str) -> str:
+    """Bỏ dấu câu + hạ chữ thường, GIỮ NGUYÊN dấu tiếng Việt.
+
+    Bỏ dấu tiếng Việt sẽ làm "chỉ" khớp nhầm "chi", "trích" khớp "trich" của cụm khác —
+    đổi lại chẳng lợi gì vì cả hai vế đều lấy từ cùng một kịch bản, cùng bảng mã.
+    """
+    return "".join(c for c in (s or "").lower() if c.isalnum() or c.isspace()).strip()
+
+
+def _tim_moc_doc(cum: str, word_boundaries: list) -> float | None:
+    """Mốc (giây, tính từ đầu cảnh) mà `cum` bắt đầu được đọc, hoặc None nếu không có.
+
+    Khớp theo CHUỖI TỪ LIÊN TIẾP chứ không phải "chứa chuỗi con": lời đọc là danh sách
+    từ rời có kèm dấu câu ("trích,"), nối lại rồi tìm chuỗi con sẽ khớp cả những chỗ
+    vắt qua ranh giới từ.
+    """
+    tu_cum = _chuan_hoa_tu(cum).split()
+    if not tu_cum or not word_boundaries:
+        return None
+    tu_loi = [_chuan_hoa_tu(w.get("text") or w.get("word") or "") for w in word_boundaries]
+    for i in range(len(tu_loi) - len(tu_cum) + 1):
+        if tu_loi[i:i + len(tu_cum)] == tu_cum:
+            try:
+                return max(0.0, float(word_boundaries[i].get("offset", 0.0)))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def plan_scene_highlights(scene_assets: list, hl_duration: float = 1.2) -> dict:
+    """
+    Cảnh nào được hiện chữ nhấn, và hiện ở giây thứ mấy CỦA CẢNH ĐÓ.
+
+    Trả về {chỉ_số_cảnh: mốc_bắt_đầu_giây}. Cảnh không có trong dict = KHÔNG hiện chữ.
+
+    HAI VẤN ĐỀ ĐO ĐƯỢC TRÊN VIDEO THẬT (a67a0fa9, 30 cảnh) mà hàm này sinh ra để dập:
+
+    1. Chữ nhấn LẶP Y NGUYÊN ở các cảnh liên tiếp — 12/24 cặp. "ĐỪNG CHỈ TRÍCH" nhấp
+       lại 4 lần trong 20 giây (cảnh 14-17), cùng màu cùng vị trí, trong khi lời đọc bên
+       dưới mỗi lần một khác. Gemini gán từ khoá theo Ý CHÍNH của cả đoạn nên các cảnh
+       cùng một ý luôn nhận cùng một cụm.
+
+    2. Chữ nhấn hiện KHÔNG ĐÚNG LÚC. Bản cũ luôn vẽ ở 1.2s ĐẦU cảnh, bất kể cụm đó được
+       đọc lúc nào — đo được: chỉ 7/24 cảnh thực sự nói cụm đang hiện, và ngay cả 7 cảnh
+       đó cũng đọc muộn hơn 0.98-5.32 giây so với lúc chữ hiện ra. Cảnh 1 đọc "Xin chào
+       tất cả mọi người" mà trên màn hình là "THIỆN CHÍ" — mãi cảnh 2 mới nói tới.
+
+    CÁCH LÀM: gom các cảnh LIỀN KỀ có cùng cụm thành một cụm-đoạn, rồi trong mỗi đoạn chỉ
+    chọn ĐÚNG MỘT cảnh để hiện — ưu tiên cảnh thực sự đọc cụm đó, neo vào đúng mốc đọc.
+    Không cảnh nào đọc (cách đọc khác cách viết, VD "30 TRIỆU BẢN" đọc thành "ba mươi
+    triệu bản") thì rơi về cảnh đầu đoạn ở mốc 0 — đúng hành vi cũ, chỉ khác là chỉ còn
+    một lần thay vì lặp.
+
+    Chỉ gom các cảnh LIỀN KỀ: cùng một cụm quay lại sau vài chục giây là nhắc lại có chủ
+    đích, không phải lặp gây nhàm.
+    """
+    ke_hoach = {}
+    i = 0
+    n = len(scene_assets)
+    while i < n:
+        cum = (scene_assets[i].get("highlight_text") or "").strip()
+        if not cum:
+            i += 1
+            continue
+        # Biên của đoạn các cảnh liền kề dùng CÙNG một cụm.
+        j = i
+        while j + 1 < n and _chuan_hoa_tu(
+            (scene_assets[j + 1].get("highlight_text") or "").strip()
+        ) == _chuan_hoa_tu(cum):
+            j += 1
+
+        chon, moc = None, 0.0
+        for k in range(i, j + 1):
+            m = _tim_moc_doc(cum, scene_assets[k].get("word_boundaries") or [])
+            if m is not None:
+                chon, moc = k, m
+                break
+        if chon is None:
+            chon, moc = i, 0.0
+
+        # Không để chữ tràn qua mốc kết thúc cảnh: thà hiện sớm hơn vài trăm ms còn hơn
+        # bị cắt cụt giữa chừng lúc chuyển cảnh.
+        dur = float(scene_assets[chon].get("duration", 3.0) or 3.0)
+        hl = min(hl_duration, dur)
+        ke_hoach[chon] = max(0.0, min(moc, dur - hl))
+        i = j + 1
+    return ke_hoach

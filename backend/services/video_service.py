@@ -655,6 +655,9 @@ def _build_scene_clip(
     subtitle_font_size: int = 52,
     subtitle_color: str = "white",
     transition: str = "crossfade",
+    # None = cảnh này KHÔNG hiện chữ nhấn (bị luật chống lặp loại); số = giây thứ mấy của
+    # cảnh thì chữ bắt đầu hiện. Xem motion_effects.plan_scene_highlights().
+    highlight_start: float | None = 0.0,
 ) -> CompositeVideoClip:
     """Ghép 1 ảnh + 1 audio + phụ đề burn-in thành 1 clip hoàn chỉnh."""
     duration = asset["duration"]
@@ -717,7 +720,7 @@ def _build_scene_clip(
     
     # ── B-Roll Text (Highlight Text) ──
     highlight_text = asset.get("highlight_text", "")
-    if highlight_text:
+    if highlight_text and highlight_start is not None:
         from moviepy.video.VideoClip import TextClip
         from moviepy.video.fx.CrossFadeIn import CrossFadeIn
         from moviepy.video.fx.CrossFadeOut import CrossFadeOut
@@ -745,6 +748,9 @@ def _build_scene_clip(
             .with_position(("center", 0.25), relative=True)  # Đẩy lên 25% phía trên
             .with_duration(hl_dur)
             .with_effects([CrossFadeIn(0.2), CrossFadeOut(0.2)])
+            # Neo vào ĐÚNG lúc cụm được đọc, không phải đầu cảnh. Kẹp để không tràn qua
+            # mốc kết thúc cảnh — tràn thì chữ bị cắt cụt ngay lúc chuyển cảnh.
+            .with_start(max(0.0, min(float(highlight_start), duration - hl_dur)))
         )
         layers.append(txt_clip)
 
@@ -1568,6 +1574,11 @@ def render_final_video(
                     pass  # báo được thì tốt, không báo được cũng không làm hỏng render
 
     # ── Đường chậm (MoviePy) — giữ nguyên làm lưới an toàn ──
+    # CÙNG một kế hoạch chữ nhấn với đường nhanh (ffmpeg_assembler): hai đường ra hai kết
+    # quả khác nhau thì bật/tắt FastAssembly lại đổi cả nội dung hiển thị.
+    from services.motion_effects import plan_scene_highlights
+    _hl_plan = plan_scene_highlights(scene_assets)
+
     for i, asset in enumerate(scene_assets):
         start_time = asset.get("start_time", 0.0) + hook_duration
         # Transition của scene[i] nghĩa là "chuyển cảnh SANG cảnh sau" (đúng như UI).
@@ -1585,6 +1596,7 @@ def render_final_video(
             subtitle_font_size=subtitle_font_size,
             subtitle_color=subtitle_color,
             transition=entrance_transition,
+            highlight_start=_hl_plan.get(i),
         )
 
         clips.append(c.with_start(start_time))

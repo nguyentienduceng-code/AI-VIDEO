@@ -26,7 +26,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import imageio_ffmpeg
 
-from services.motion_effects import fit_highlight_fontsize
+from services.motion_effects import fit_highlight_fontsize, plan_scene_highlights
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,11 @@ def assemble(
     tmp_texts: List[str] = []
 
     # ── 1. Chuẩn hoá từng cảnh + chữ nhấn ──
+    # Chốt TRƯỚC vòng lặp: cảnh nào được hiện chữ nhấn và hiện ở giây thứ mấy của cảnh.
+    # Phải quyết định trên TOÀN BỘ danh sách vì luật chống lặp cần nhìn các cảnh liền kề —
+    # xem plan_scene_highlights().
+    _hl_plan = plan_scene_highlights(scene_assets, hl_duration=HIGHLIGHT_DURATION)
+
     for i, a in enumerate(scene_assets):
         dur = float(a.get("duration", 3.0))
         lbl = f"s{i}"
@@ -219,7 +224,8 @@ def assemble(
                  f"fps={fps},format=yuv420p")
 
         hl = (a.get("highlight_text") or "").strip()
-        if hl:
+        if hl and i in _hl_plan:
+            hl_start = _hl_plan[i]
             hl_upper = hl.upper()
             # Dùng textfile thay vì text= để khỏi phải escape dấu tiếng Việt và ký tự đặc biệt
             fd, tf = tempfile.mkstemp(suffix=".txt")
@@ -228,8 +234,11 @@ def assemble(
             tmp_texts.append(tf)
             hl_dur = min(HIGHLIGHT_DURATION, dur)
             fade = min(HIGHLIGHT_FADE, hl_dur / 3)
-            alpha = (f"if(lt(t,{fade:.3f}),t/{fade:.3f},"
-                     f"if(lt(t,{hl_dur - fade:.3f}),1,max(0,({hl_dur:.3f}-t)/{fade:.3f})))")
+            # Mọi mốc tính theo `u` = thời gian KỂ TỪ LÚC chữ bắt đầu hiện, không phải từ
+            # đầu cảnh — xem plan_scene_highlights(). hl_start=0 cho ra đúng biểu thức cũ.
+            u = f"(t-{hl_start:.3f})"
+            alpha = (f"if(lt({u},{fade:.3f}),{u}/{fade:.3f},"
+                     f"if(lt({u},{hl_dur - fade:.3f}),1,max(0,({hl_dur:.3f}-{u})/{fade:.3f})))")
             # Co fontsize theo độ dài chuỗi: 120px cố định tràn khung 1080px với cụm
             # 3-4 tiếng Việt có dấu, bị cắt cụt ở cả hai mép (xem fit_highlight_fontsize).
             fontsize = fit_highlight_fontsize(hl_upper, HIGHLIGHT_FONT, int(width * 0.92))
@@ -239,7 +248,7 @@ def assemble(
                 f"fontsize={fontsize}:fontcolor=yellow:borderw=6:bordercolor=black:"
                 f"x=(w-text_w)/2:y=h*0.25:"
                 f"alpha='{_esc_expr(alpha)}':"
-                f"enable='{_esc_expr(f'lt(t,{hl_dur:.3f})')}'"
+                f"enable='{_esc_expr(f'between(t,{hl_start:.3f},{hl_start + hl_dur:.3f})')}'"
             )
         fc.append(f"{chain}[{lbl}]")
 
