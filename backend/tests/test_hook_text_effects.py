@@ -159,41 +159,113 @@ def test_con_tro_khong_lam_chu_nhay_dong():
     assert not lui, f"chữ nhảy ngược ở bước {lui} — chuỗi chiều cao: {cao}"
 
 
-def test_pha_giu_cuoi_van_giu_con_tro():
-    """Bỏ con trỏ ra ở pha giữ cuối là lỗi cũ tái diễn ĐÚNG tại khung hình cuối cùng.
+def _mat_na_chu(frame) -> np.ndarray:
+    """Mặt nạ chữ TRẮNG trên nền bìa đã làm mờ + tối."""
+    a = np.asarray(frame, dtype=np.int16)
+    return (a[..., 0] > 200) & (a[..., 1] > 200) & (a[..., 2] > 200)
 
-    Đo trên chính font/cỡ chữ của hook: chuỗi đầy đủ CÓ con trỏ và KHÔNG con trỏ cho ra
-    khung chữ khác nhau. Nên nếu các bước gõ có con trỏ mà bước giữ cuối lại bỏ đi, chữ
-    nhảy một phát ngay trước lúc cắt sang cảnh 1 — chỗ dễ thấy nhất.
+
+def _do_khoi_chu(clip, moc: list) -> list:
+    """[(y_dòng_đầu, chiều_cao_khối, số_pixel_chữ)] tại từng mốc thời gian.
+
+    KHÔNG đếm số dòng bằng khoảng trống giữa các dải pixel: đo thật thì khe đó co từ 12
+    xuống 6 rows ngay khi chữ "viễn" xuất hiện (dấu ngã ăn ngược lên trên), nên mọi ngưỡng
+    gõ cứng đều báo động giả. Chiều cao khối và vị trí dòng đầu mới là số đo ổn định.
     """
-    box_w, fs = int(W * 0.85), int(W * 0.055)
-    style = dict(color="white", stroke_color="black", stroke_width=3)
-    # TỰ TÌM chuỗi nằm sát ngưỡng xuống dòng thay vì gõ cứng một câu mẫu: ngưỡng đó dịch
-    # theo cỡ chữ, và một câu gõ cứng sẽ âm thầm mất tác dụng ngay lần chỉnh font kế tiếp
-    # (đã xảy ra thật khi cỡ chữ đổi 0.05 → 0.055).
-    kho = ("Cuốn sách triệu bản suýt bị giấu vĩnh viễn khỏi bạn đọc "
-           "trong suốt gần một thế kỷ đầy biến động").split()
-    ria = None
-    for i in range(1, len(kho) + 1):
-        s = " ".join(kho[:i])
-        a = _safe_caption_clip(s + " |", fs, box_w, **style)
-        b = _safe_caption_clip(s, fs, box_w, **style)
-        ha, hb = a.h, b.h
-        a.close()
-        b.close()
-        if ha != hb:
-            ria = (s, ha, hb)
-            break
-    assert ria, "không tìm được chuỗi nào mà con trỏ làm đổi số dòng — test mất ý nghĩa"
+    ra = []
+    for t in moc:
+        m = _mat_na_chu(clip.get_frame(t))
+        rows = np.where(m.any(axis=1))[0]
+        if not len(rows):
+            ra.append((None, 0, 0))
+            continue
+        ra.append((int(rows[0]), int(rows[-1] - rows[0]), int(m.sum())))
+    return ra
 
-    import inspect
 
-    from services import hook_engine
+def test_dong_dau_dung_yen_khi_chu_xuong_dong():
+    """Dòng đầu PHẢI nằm im, dòng mới mọc xuống dưới.
 
-    src = inspect.getsource(hook_engine.build_typewriter_quote_hook)
-    assert "text + CURSOR" in src, (
-        "pha giữ cuối không còn nối con trỏ — chữ sẽ nhảy đúng ở khung hình cuối"
+    `vertical_align` mặc định của MoviePy là "center" nên khối chữ luôn căn giữa theo
+    chiều dọc trong khung cố định: lúc 1 dòng thì nằm giữa, tới khi mọc dòng thứ 2 thì
+    dòng 1 BỊ ĐẨY NGƯỢC LÊN. Đo riêng TextClip: dòng đầu nhảy từ y=61 lên y=24 — giật
+    đứng 37px đúng khoảnh khắc xuống dòng.
+    """
+    clip = build_typewriter_quote_hook(TEXT, W, H, DUR, _cover())
+    try:
+        moc = [round(0.1 + k * 0.1, 2) for k in range(int((DUR - 0.15) / 0.1))]
+        do = _do_khoi_chu(clip, moc)
+    finally:
+        clip.close()
+
+    ys = [y for y, _, _ in do if y is not None]
+    cao = [c for _, c, _ in do if c]
+    assert max(cao) >= 1.8 * min(cao), (
+        f"câu mẫu không hề xuống dòng ở cỡ chữ hiện tại (cao {min(cao)}..{max(cao)}px) — "
+        "test mất ý nghĩa, đổi TEXT dài hơn"
     )
+    assert max(ys) - min(ys) <= 4, (
+        f"dòng đầu nhảy {max(ys) - min(ys)}px trong lúc gõ (chỉ được xê dịch do khử răng cưa)"
+    )
+
+
+def test_so_dong_chi_tang_khong_bao_gio_giam():
+    """Chữ chỉ được dài thêm, không bao giờ co ngược về ít dòng hơn.
+
+    Co ngược = con trỏ vừa đẩy chữ xuống dòng xong lại kéo lên — đúng triệu chứng khi con
+    trỏ tham gia phép ngắt dòng. Kiểm ngay trên HÀM NGẮT DÒNG chứ không đếm dải pixel: số
+    dòng là thứ _ngat_dong() quyết định, đo lại qua ảnh chỉ thêm nhiễu (dấu tiếng Việt làm
+    khe giữa 2 dòng co lại còn 6 rows).
+    """
+    from services.hook_engine import _ngat_dong
+
+    words = TEXT.split()
+    fs, box_w = int(W * 0.055), int(W * 0.85)
+    so_dong = [len(_ngat_dong(words[:i] + ["|"], fs, box_w)) for i in range(1, len(words) + 1)]
+    lui = [i for i in range(1, len(so_dong)) if so_dong[i] < so_dong[i - 1]]
+    assert not lui, f"số dòng co ngược tại bước {lui}: {so_dong}"
+    assert max(so_dong) >= 2, f"câu mẫu không xuống dòng — test mất ý nghĩa: {so_dong}"
+
+
+def test_con_tro_nhap_nhay_va_tat_o_khung_cuoi():
+    """Con trỏ phải BẬT/TẮT, và khung hình cuối không được đọng lại dấu '|'.
+
+    Đo trong pha GIỮ CUỐI (chữ đã gõ xong) nên số từ không đổi — mọi chênh lệch pixel ở
+    đó chỉ có thể do con trỏ. Bản trước gõ cứng con trỏ vào cả pha này nên nó đứng chết
+    dính, nhìn như gõ thừa phím chứ không phải hiệu ứng.
+    """
+    clip = build_typewriter_quote_hook(TEXT, W, H, DUR, _cover())
+    try:
+        giu = DUR * 0.85 + 0.02          # sau khi gõ xong
+        moc = [round(giu + k * 0.04, 3) for k in range(int((DUR - giu - 0.02) / 0.04))]
+        px = [p for _, _, p in _do_khoi_chu(clip, moc)]
+    finally:
+        clip.close()
+
+    assert len(px) >= 4, "pha giữ cuối quá ngắn để đo — chỉnh lại mốc"
+    lo, hi = min(px), max(px)
+    assert hi - lo > 150, f"con trỏ không nhấp nháy trong pha giữ cuối: {px}"
+    assert px[-1] - lo < 150, (
+        f"khung hình cuối vẫn còn con trỏ (px={px[-1]}, mức tắt={lo}) — sẽ đọng lại "
+        "một dấu '|' bất động ngay trước lúc cắt sang Cảnh 1"
+    )
+
+
+def test_con_tro_khong_tham_gia_ngat_dong():
+    """Bỏ token con trỏ khỏi kết quả ngắt dòng KHÔNG được làm đổi số dòng.
+
+    Đây là điều kiện để nhấp nháy an toàn: bản trước phải bỏ hẳn nhấp nháy vì con trỏ
+    nằm trong chuỗi đem đi đo, bật/tắt là đổi luôn điểm xuống dòng.
+    """
+    from services.hook_engine import _ngat_dong
+
+    words = TEXT.split()
+    fs, box_w = int(W * 0.055), int(W * 0.85)
+    for i in range(1, len(words) + 1):
+        dong = _ngat_dong(words[:i] + ["|"], fs, box_w)
+        bo = [list(d) for d in dong]
+        bo[-1] = bo[-1][:-1]
+        assert len(bo) == len(dong), f"bỏ con trỏ làm đổi số dòng ở bước {i}"
 
 
 def test_chu_khong_nho_hon_cac_hook_chu_khac():
