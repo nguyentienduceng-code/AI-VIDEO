@@ -209,6 +209,7 @@ def _worker_main(
             use_gpu=master_kwargs.get("use_gpu", True),
             bgm_volume=master_kwargs.get("bgm_volume", 0.15),
             watermark_text=master_kwargs.get("watermark_text"),
+            watermark_logo=master_kwargs.get("watermark_logo"),
             color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
             add_vignette=master_kwargs.get("add_vignette", True),
             progress_bar=master_kwargs.get("progress_bar", True),

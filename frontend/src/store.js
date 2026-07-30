@@ -46,6 +46,7 @@ const INITIAL_STATE = {
   colorGrading: 'warm_cinematic',
   useAudioDucking: true,
   watermarkText: '',
+  watermarkLogo: false,
   hookText: '',
   hookVariants: [],     // A/B Hook variants trả về từ AI (B3)
   scriptReview: null,   // Script Review kết quả (B2): { quality_score, review_notes, passed }
@@ -368,6 +369,12 @@ export const useAppStore = create((set, get) => {
     if (preset.hook_effect) patch.hookEffect = preset.hook_effect;
     if (preset.use_veo !== undefined) patch.useVeo = preset.use_veo;
     if (preset.content_niche !== undefined) patch.contentNiche = preset.content_niche;
+    // Backend lưu TÊN FILE logo (hoặc null), store giữ BOOLEAN cho ô tick — quy đổi ở
+    // đây, đối xứng với chỗ ghi trong PresetManager.jsx. Dùng !! chứ không gán thẳng:
+    // gán chuỗi "logo_ntd" vào state boolean thì ô tick vẫn hiện đúng (truthy) nhưng
+    // payload render sau đó gửi "logo_ntd" cho một field lẽ ra là boolean — lệch kiểu
+    // âm thầm, đúng loại bug mà file này đã dính nhiều lần.
+    if (preset.watermark_logo !== undefined) patch.watermarkLogo = !!preset.watermark_logo;
 
     // LỖI CŨ: hookReelSfx được gán thẳng từ preset.hook_reel_sfx, không đi qua cùng
     // bước validate chéo với hookEffect như setHookEffect (xem resolveValidHookSfx).

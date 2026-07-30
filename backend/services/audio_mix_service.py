@@ -95,6 +95,23 @@ WATERMARK_FONT = (
     else "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 )
 
+# ── Hình học dấu đóng bản quyền (logo + chữ) ────────────────────────────────────
+# ĐẶT THÀNH HẰNG SỐ vì vị trí dòng CHỮ phải tính RA TỪ kích thước LOGO. Trước đây hai
+# con số này được gõ tay rời nhau (logo 120px ở y=40, chữ fontsize 56 ở y=100) nên chúng
+# CHỒNG LÊN NHAU: logo chiếm y=40..160, chữ chiếm y=100..156 — bật cả hai thì chữ chạy
+# xuyên qua logo. Đổi một trong hai con số mà quên con kia là tái hiện đúng lỗi đó, nên
+# giờ chỉ còn MỘT nguồn sự thật và khoảng cách được tính, không gõ.
+WATERMARK_MARGIN = 40           # lề tính từ cạnh phải / cạnh trên
+WATERMARK_LOGO_BOX = 160        # 120px cũ quá nhỏ, gần như vô hình trên màn điện thoại
+WATERMARK_LOGO_ALPHA = 0.6      # 0.45 cũ quá mờ; logo đã cắt nền trong suốt nên 0.6 vẫn nhã
+WATERMARK_TEXT_SIZE = 56
+WATERMARK_TEXT_GAP = 20         # khe giữa đáy logo và đỉnh chữ
+
+# Không có logo thì chữ giữ nguyên chỗ cũ (y=100) — đừng đổi bố cục của video mà người
+# dùng chỉ bật chữ. Có logo thì chữ tụt xuống DƯỚI logo, tính từ chính hằng số trên.
+WATERMARK_TEXT_Y_SOLO = 100
+WATERMARK_TEXT_Y_UNDER_LOGO = WATERMARK_MARGIN + WATERMARK_LOGO_BOX + WATERMARK_TEXT_GAP
+
 # Tần số lấy mẫu của audio đầu ra. PHẢI ép lại sau `loudnorm`.
 # LỖI CŨ: loudnorm ở chế độ động tự nâng nội bộ lên 192kHz và GIỮ NGUYÊN ở đầu ra.
 # Encoder AAC không hỗ trợ 192k nên rơi xuống 96kHz — đã đo trên sản phẩm thật trong
@@ -146,6 +163,7 @@ def master_audio_and_export(
     use_gpu: bool = False,
     bgm_volume: float = 0.15,
     watermark_text: str = None,
+    watermark_logo: str | None = None,
     color_grading: str = "warm_cinematic",
     add_vignette: bool = True,
     progress_bar: bool = True,
@@ -345,17 +363,44 @@ def master_audio_and_export(
         )
         video_chain = "[v_pb]"
 
+    # Phải biết TRƯỚC khi vẽ chữ là có logo hay không, vì vị trí chữ phụ thuộc vào đó,
+    # mà khối logo lại nằm bên dưới. Tính một lần, dùng cho cả hai khối.
+    co_logo = bool(watermark_logo) and os.path.isfile(watermark_logo)
+
     if watermark_text:
         # Dấu nháy đơn và dấu ':' đều là ký tự cấu trúc của filtergraph. Bỏ hẳn chúng
         # (thay vì escape) vì watermark là chuỗi trang trí ngắn — an toàn hơn là
         # rủi ro vỡ cả lệnh vì một dấu nháy lạc. Dấu ',' thì escape được, xem _esc_expr
         # bên ffmpeg_assembler.
         wm_text = watermark_text.replace("'", "").replace(":", "")
+        wm_y = WATERMARK_TEXT_Y_UNDER_LOGO if co_logo else WATERMARK_TEXT_Y_SOLO
         filter_complex.append(
             f"{video_chain}drawtext=fontfile='{_esc_path(WATERMARK_FONT)}':text='{wm_text}':"
-            f"fontcolor=white@0.45:fontsize=56:x=w-text_w-60:y=100:borderw=2:bordercolor=black@0.3[v_wm]"
+            f"fontcolor=white@0.45:fontsize={WATERMARK_TEXT_SIZE}:x=w-text_w-60:y={wm_y}:"
+            f"borderw=2:bordercolor=black@0.3[v_wm]"
         )
         video_chain = "[v_wm]"
+
+    if co_logo:
+        # Logo là input CUỐI CÙNG được thêm vào. Ảnh tĩnh nên không cần -stream_loop:
+        # `overlay` mặc định eof_action=repeat, giữ khung logo tới hết video.
+        cmd.extend(["-i", watermark_logo])
+        # Index = số input đã có - 1. Đếm cờ "-i" là cách đúng ở đây vì mọi input phía
+        # trên đều được thêm bằng "-i" (kể cả input có "-stream_loop -1" đứng trước:
+        # token đó là "-1", KHÔNG phải "-i", nên không làm sai phép đếm).
+        logo_idx = cmd.count("-i") - 1
+
+        # force_original_aspect_ratio=decrease: co vào TRONG khung vuông
+        # WATERMARK_LOGO_BOX, nên chiều CAO luôn ≤ box dù logo có tỉ lệ nào. Nếu dùng
+        # `scale=W:-1` như trước thì logo ngang bẹt sẽ cao hơn box tính toán và vị trí
+        # dòng chữ bên trên (tính từ box) lại chồng lên logo lần nữa.
+        filter_complex.append(
+            f"[{logo_idx}:v]scale={WATERMARK_LOGO_BOX}:{WATERMARK_LOGO_BOX}:"
+            f"force_original_aspect_ratio=decrease,format=rgba,"
+            f"colorchannelmixer=aa={WATERMARK_LOGO_ALPHA}[wm_logo];"
+            f"{video_chain}[wm_logo]overlay=W-w-{WATERMARK_MARGIN}:{WATERMARK_MARGIN}[v_wm_logo]"
+        )
+        video_chain = "[v_wm_logo]"
 
     if ass_subtitle_path and os.path.isfile(ass_subtitle_path):
         ass_safe = _ffmpeg_ass_path(ass_subtitle_path)

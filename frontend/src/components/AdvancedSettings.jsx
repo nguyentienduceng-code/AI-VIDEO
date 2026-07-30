@@ -55,6 +55,7 @@ export default function AdvancedSettings() {
     sfxVolume: s.sfxVolume, setSfxVolume: s.setSfxVolume,
     hookSfxVolume: s.hookSfxVolume, setHookSfxVolume: s.setHookSfxVolume,
     watermarkText: s.watermarkText, setWatermarkText: s.setWatermarkText,
+    watermarkLogo: s.watermarkLogo, setWatermarkLogo: s.setWatermarkLogo,
     introBgm: s.introBgm, setIntroBgm: s.setIntroBgm,
     introBgmDuration: s.introBgmDuration, setIntroBgmDuration: s.setIntroBgmDuration,
     // Outro + Ducking: THIẾU những dòng này thì ctx.setOutroEffect là undefined và bấm
@@ -240,6 +241,14 @@ export default function AdvancedSettings() {
             onChange={e => ctx.setWatermarkText(e.target.value)} 
             placeholder="VD: @username" 
           />
+          <label className="toggle-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input 
+              type="checkbox" 
+              checked={ctx.watermarkLogo} 
+              onChange={e => ctx.setWatermarkLogo(e.target.checked)} 
+            />
+            <span style={{ fontSize: '0.9rem' }}>Chèn Logo NTD (Ảnh NTD Logo)</span>
+          </label>
         </div>
 
         </>)}

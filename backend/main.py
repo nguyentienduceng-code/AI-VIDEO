@@ -131,6 +131,7 @@ from config import (
     SFX_DIR,
     TEMP_DIR,
     VOICES_PREVIEW_DIR,
+    WATERMARKS_DIR,
 )
 
 
@@ -232,6 +233,7 @@ class RenderVideoRequest(BaseModel):
     use_fixed_seed: bool = False
     subtitle_style: str = "karaoke_bold"
     watermark_text: Optional[str] = None
+    watermark_logo: Optional[str] = None
     hook_text: Optional[str] = None
     cover_image_session_id: Optional[str] = None
     cover_image_position: str = "start"  # "start", "end", "both"
@@ -297,6 +299,14 @@ class PresetRequest(BaseModel):
     bgm_volume: float = 15
     subtitle_style: str = "karaoke_bold"
     color_grading: str = "warm_cinematic"
+    # CÓ ở preset, KHÁC với watermark_text ngay bên cạnh nó trong RenderVideoRequest.
+    # Hai thứ này nghe giống nhau nhưng khác loại: `watermark_text` là NỘI DUNG (chữ
+    # riêng của từng video → không lưu, xem chú thích quy tắc bên dưới), còn
+    # `watermark_logo` chỉ là TÊN FILE logo trong assets/watermarks — một lựa chọn kiểu
+    # dáng đóng dấu, dùng lại y nguyên cho mọi video của cùng một kênh. Thiếu nó ở đây
+    # thì user bật "Chèn Logo", lưu preset, nạp lại → toggle âm thầm về False và video
+    # ra không có logo, đúng triệu chứng "chèn logo không hoạt động".
+    watermark_logo: Optional[str] = None
     prefer_stock_video: bool = False
     visual_source: str = "auto"
     use_single_pass_narration: bool = False
@@ -588,6 +598,40 @@ RENDER_POLL_INTERVAL = 2
 # liền vài phút mà không phát tiến độ, nên ngưỡng phải rộng hơn hẳn khoảng đó —
 # báo treo nhầm giữa lúc máy vẫn đang làm việc còn tệ hơn là báo muộn.
 RENDER_STALL_TIMEOUT = 900
+
+
+def _watermark_logo_path(name: Optional[str]) -> Optional[str]:
+    """Tên logo do UI gửi ("logo_ntd") → đường dẫn file PNG trong assets/watermarks.
+
+    LỖI ĐÃ VÁ: biểu thức `os.path.join(BASE_DIR, "assets", "watermarks", ...)` được gõ
+    TAY ở hai chỗ (đường worker + nhánh inline), mà BASE_DIR CHƯA BAO GIỜ được import
+    vào main.py. Nó nằm sau `if req.watermark_logo` của một biểu thức điều kiện, nên
+    Python không đánh giá nó khi user KHÔNG bật logo: module import bình thường, mọi
+    test đi qua, không một cảnh báo nào. Lỗi chỉ nổ đúng lúc user tick "Chèn Logo NTD",
+    và nổ ở dòng 1125 — SAU khi đã sinh xong toàn bộ ảnh + TTS (phần đắt nhất của job).
+    Người dùng thấy đúng một dòng "Lỗi: name 'BASE_DIR' is not defined", nên triệu chứng
+    được hiểu thành "chèn logo không hoạt động".
+
+    Gom về MỘT hàm: một chỗ duy nhất để đúng, và một chỗ duy nhất để cảnh báo khi thiếu
+    file — audio_mix_service bỏ qua logo không tồn tại mà không in gì cả (`if
+    watermark_logo and os.path.isfile(...)`), nên không cảnh báo ở đây thì "bật logo mà
+    video ra không có logo" lại thành một lỗi im lặng khác.
+    """
+    if not name:
+        return None
+    # `name` đến từ request của client. basename() chặn `../..` leo ra khỏi thư mục
+    # watermarks — đây là chuỗi đi thẳng vào os.path.join.
+    safe = os.path.basename(str(name)).strip()
+    if not safe or safe != name:
+        logger.warning("[Watermark] Tên logo không hợp lệ: %r — bỏ qua logo.", name)
+        return None
+    path = os.path.join(WATERMARKS_DIR, f"{safe}.png")
+    if not os.path.isfile(path):
+        logger.warning(
+            "[Watermark] Không tìm thấy logo %r tại %s — video sẽ KHÔNG có logo.", safe, path
+        )
+        return None
+    return path
 
 
 async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
@@ -1121,6 +1165,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             use_gpu=req.use_gpu_encode,
             bgm_volume=req.bgm_volume,
             watermark_text=req.watermark_text,
+            watermark_logo=_watermark_logo_path(req.watermark_logo),
             color_grading=req.color_grading,
             subtitle_style=req.subtitle_style,
             hook_effect=req.hook_effect,
@@ -1189,6 +1234,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     ass_subtitle_path=output_srt_path if os.path.isfile(output_srt_path) else None,
                     use_gpu=req.use_gpu_encode, bgm_volume=req.bgm_volume,
                     watermark_text=req.watermark_text, color_grading=req.color_grading,
+                    watermark_logo=_watermark_logo_path(req.watermark_logo),
                     total_duration=video_total_duration,
                     bgm_volume_segments=bgm_volume_segments,
                     use_audio_ducking=req.use_audio_ducking,
