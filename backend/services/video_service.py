@@ -362,9 +362,9 @@ SCENE_SFX_GAIN = {
     "breath":      1.61,   # đo mean -26.2dB, max -9.6dB — không sát trần như shimmer, dùng thẳng gain RMS
 }
 
-# Gemini gán tên SFX theo NHỊP KỂ CHUYỆN (VD "sfx 'tick' khi liệt kê" — xem
-# TONE_EFFECT_PALETTES/NICHE_BLUEPRINTS ở gemini_service.py), nên nhiều cảnh liên
-# tiếp cùng nhịp rất hay trùng tên. Vì mỗi tên chỉ có ĐÚNG MỘT file .wav cố định,
+# Tên SFX được gán theo BĂNG VỊ TRÍ trong kịch bản (xem NICHE_PERCENT_BLUEPRINTS /
+# TONE_PERCENT_PALETTES ở gemini_service.py — resolve_blueprint gán ở Python, Gemini
+# không còn tự chọn sfx nữa), nên mọi cảnh nằm CÙNG một băng đều nhận CÙNG một tên. Vì mỗi tên chỉ có ĐÚNG MỘT file .wav cố định,
 # video cắt nhanh (cảnh 2-4s) phát nguyên văn cùng một file lặp lại sát nhau nghe
 # như một nhịp trống đơn điệu, khó chịu. Dưới ngưỡng này (giây) thì bỏ lần lặp thứ
 # 2 trở đi của CÙNG một tên, chờ tên khác hoặc khoảng cách đủ xa mới phát lại.
@@ -484,7 +484,6 @@ class SceneAsset(TypedDict):
     text: str              # có thể rỗng "" cho slideshow mode
     duration: float        # độ dài audio (giây), hoặc SLIDESHOW_SCENE_DURATION
     sfx: str               # Tên hiệu ứng âm thanh (whoosh, pop...)
-    visual_effect: str     # zoom_in, zoom_out, pan_left, pan_right
     highlight_text: str    # B-Roll Text
 
 
@@ -651,15 +650,14 @@ def _build_scene_clip(
     video_width: int,
     video_height: int,
     crossfade_dur: float = CROSSFADE_DURATION,
-    show_subtitle: bool = True,
-    subtitle_font_size: int = 52,
-    subtitle_color: str = "white",
     transition: str = "crossfade",
     # None = cảnh này KHÔNG hiện chữ nhấn (bị luật chống lặp loại); số = giây thứ mấy của
     # cảnh thì chữ bắt đầu hiện. Xem motion_effects.plan_scene_highlights().
     highlight_start: float | None = 0.0,
 ) -> CompositeVideoClip:
-    """Ghép 1 ảnh + 1 audio + phụ đề burn-in thành 1 clip hoàn chỉnh."""
+    """Ghép 1 ảnh/video + chữ nhấn (highlight) thành 1 clip hoàn chỉnh.
+
+    Phụ đề KHÔNG burn ở đây — xem generate_ass_file() + bước burn ASS bằng FFmpeg."""
     duration = asset["duration"]
 
     # ── Media clip (Video/Image) ──
@@ -1042,20 +1040,15 @@ def render_final_video(
     # ── Mode-specific settings ──
     is_slideshow = (mode == "photo_slideshow")
     crossfade_dur = SLIDESHOW_CROSSFADE if is_slideshow else CROSSFADE_DURATION
-    show_subtitle = not is_slideshow  # Slideshow không có subtitle
-    subtitle_font_size = 58 if mode == "quiz_listicle" else 52
-    subtitle_color = "#FFD700" if mode == "quiz_listicle" else "white"
 
     clips = []
     audio_placements = []  # (path, start_time, volume, fadeout) — trộn bằng numpy sau vòng lặp
     # TẬP CON chỉ gồm giọng đọc, không SFX. Dùng làm tín hiệu điều khiển ducking ở bước
     # master — xem write_voice_sidechain() để biết vì sao không thể dùng track đã trộn.
     voice_placements = []
-    speech_segments = []
     final_duration = 0.0
 
     # ── Hook Engine (Overlay clip carousel_quote lên đầu video) ──
-    hook_duration = 0.0
     hook_clip_overlay = None
     hook_type = kwargs.get("hook_effect")
     # Định nghĩa VÔ ĐIỀU KIỆN (không phụ thuộc hook_type): khối FastAssembly bên dưới
@@ -1147,8 +1140,11 @@ def render_final_video(
                     step_dur = (hook_dur * 0.85) / steps
                     
                     for i in range(steps):
-                        # Giảm hệ số khuếch đại xuống 1.5 để volume UI tuyến tính hơn
-                        audio_placements.append((tick_sfx, i * step_dur, hook_sfx_level("_tick", effective_volume), 0.0))
+                        # LỖI CŨ: tuple 4 phần tử → KHÔNG có max_dur → tick.wav (4.39s)
+                        # phát HẾT mỗi lần, 8 bản chồng nhau tràn 3.68s ra ngoài hook,
+                        # đè tiếng nhiễu lên giọng đọc Cảnh 1 suốt từ 2.78s đến 6.46s.
+                        # Sửa: cắt mỗi bản đúng step_dur + 50ms đuôi vang.
+                        audio_placements.append((tick_sfx, i * step_dur, hook_sfx_level("_tick", effective_volume), 0.0, step_dur + 0.05))
 
             elif hook_type == "breathing_vignette":
                 hook_clip_overlay = build_breathing_vignette_hook(
@@ -1253,7 +1249,7 @@ def render_final_video(
     # SCENE_SFX_REPEAT_MIN_GAP / SCENE_SFX_FILLER_MIN_GAP ở nơi khai báo.
     _sfx_plan = plan_scene_sfx(
         [
-            (str(a.get("sfx") or ""), a.get("start_time", 0.0) + hook_duration)
+            (str(a.get("sfx") or ""), a.get("start_time", 0.0))
             for a in scene_assets
         ],
         exists=lambda n: os.path.isfile(os.path.join(SFX_DIR, f"{n}.wav")),
@@ -1263,13 +1259,11 @@ def render_final_video(
         dur = asset.get("duration", 3.0)
         # KHÔNG mutate asset["start_time"] (gây cộng dồn nếu render lại + double-offset với
         # generate_ass_file). Chỉ dùng biến local; phụ đề tự cộng offset qua hook_effect.
-        start_time = asset.get("start_time", 0.0) + hook_duration
+        # Hook giờ là overlay THUẦN (không dịch timeline), nên không còn cộng thêm
+        # hook_duration ở đây nữa — xem chú thích khi xoá biến hook_duration ở trên.
+        start_time = asset.get("start_time", 0.0)
         has_audio = bool(asset.get("audio_path"))
-        
-        # Audio ducking tracking
-        if has_audio:
-            speech_segments.append((start_time, start_time + dur))
-            
+
         # ── Build Audio Track ──
         # QUAN TRỌNG: KHÔNG composite giọng đọc + SFX vào chung 1 clip. Composite chung khiến
         # MoviePy đọc SFX NGẮN (vd tick.wav 0.05s) vượt quá độ dài của nó khi giọng đọc dài hơn
@@ -1484,70 +1478,75 @@ def render_final_video(
             if not ok:
                 logger.info(f"[FastAssembly] Bỏ qua, dùng MoviePy: {why}")
             else:
-                mixed = _mix_audio_tracks(_all_placements(audio_placements, master_audio_path,
-                                                          final_duration), final_duration)
-                audio_wav = None
-                if mixed is not None:
-                    audio_wav = output_path + ".mix.wav"
-                    mixed.write_audiofile(audio_wav, fps=44100, logger=None)
+                audio_wav = hook_mp4 = outro_mp4 = None
+                # LỖI CŨ: cleanup 3 file tạm này nằm SAU fa.assemble(), ngay trước
+                # `return` — chỉ chạy trên đường THÀNH CÔNG. fa.assemble()/write_videofile()
+                # lỗi giữa chừng (bắt ở `except fast_err` bên ngoài) là bỏ qua cleanup hẳn,
+                # để lại .mix.wav/.hook.mp4/.outro.mp4 rác vĩnh viễn mỗi lần FastAssembly
+                # lỗi. finally chạy dù khối try bên dưới thành công, lỗi, hay return sớm.
+                try:
+                    mixed = _mix_audio_tracks(_all_placements(audio_placements, master_audio_path,
+                                                              final_duration), final_duration)
+                    if mixed is not None:
+                        audio_wav = output_path + ".mix.wav"
+                        mixed.write_audiofile(audio_wav, fps=44100, logger=None)
 
-                # Track chỉ-giọng cho ducking ở bước master. Ghi CẢ Ở ĐƯỜNG NHANH, nếu
-                # không thì bật FastAssembly (mặc định) sẽ âm thầm mất sidechain và
-                # ducking rơi về dùng track đã trộn lẫn SFX — đúng cái đang muốn tránh.
-                write_voice_sidechain(
-                    voice_placements, master_audio_path, final_duration, output_path
-                )
-
-                hook_mp4 = None
-                if hook_clip_overlay is not None:
-                    # Hook chỉ ~105 khung, để MoviePy dựng riêng ra file rồi FFmpeg phủ lên
-                    hook_mp4 = output_path + ".hook.mp4"
-                    hook_clip_overlay.write_videofile(
-                        hook_mp4, fps=FPS, codec="libx264", preset="veryfast",
-                        audio=False, logger=None,
-                        temp_audiofile_path=TEMP_DIR,
-                    )
-                    
-                outro_mp4 = None
-                if outro_clip_overlay is not None:
-                    outro_mp4 = output_path + ".outro.mp4"
-                    outro_clip_overlay.write_videofile(
-                        outro_mp4, fps=FPS, codec="libx264", preset="veryfast",
-                        audio=False, logger=None,
-                        temp_audiofile_path=TEMP_DIR,
+                    # Track chỉ-giọng cho ducking ở bước master. Ghi CẢ Ở ĐƯỜNG NHANH, nếu
+                    # không thì bật FastAssembly (mặc định) sẽ âm thầm mất sidechain và
+                    # ducking rơi về dùng track đã trộn lẫn SFX — đúng cái đang muốn tránh.
+                    write_voice_sidechain(
+                        voice_placements, master_audio_path, final_duration, output_path
                     )
 
-                # LỖI CŨ #1: hardcode HOOK_CAROUSEL_DURATION (4.5s) ở đây bất kể hook_type
-                # nào đang chạy — chọn blackout_question (1.5s thật) vẫn khiến FFmpeg giữ
-                # khoảng trống 4.5s, thừa 3s đứng hình trước khi vào Cảnh 1.
-                # LỖI CŨ #2: sau khi thêm thời lượng ĐỘNG cho blackout/typewriter
-                # (resolve_hook_timing), tra thẳng HOOK_EFFECTS[...]["duration"] tĩnh ở đây
-                # sẽ ra một con số KHÁC với con số đã dùng để dựng hook_clip_overlay phía
-                # trên — hook thật dài X giây nhưng FFmpeg chỉ mở khung che hình đúng
-                # HOOK_EFFECTS-tĩnh giây, lệch hình/tiếng ngay tại điểm nối. Phải gọi lại
-                # ĐÚNG HÀM, ĐÚNG THAM SỐ như lúc dựng clip để 2 nơi luôn khớp nhau.
-                # Dùng hook_text (không phải hook_quote): đây là field thật sự quyết định
-                # thời lượng động của blackout_question/typewriter_quote (xem sửa ở trên).
-                # carousel_quote/breathing_vignette bỏ qua tham số text này (thời lượng
-                # tĩnh) nên truyền hook_text ở đây vô hại cho 2 loại đó.
-                _timing = resolve_hook_timing(hook_type, hook_text) or {}
-                fa.assemble(
-                    scene_assets, output_path,
-                    width=video_width, height=video_height, fps=FPS,
-                    crossfade_dur=crossfade_dur, audio_path=audio_wav,
-                    hook_video=hook_mp4,
-                    hook_duration=_timing.get("duration", 0.0),
-                    outro_video=outro_mp4,
-                    outro_start=outro_start,
-                    outro_duration=outro_duration,
-                    use_gpu=kwargs.get("use_gpu_encode", True),
-                )
-                for tmp_f in (audio_wav, hook_mp4, outro_mp4):
-                    if tmp_f and os.path.exists(tmp_f):
-                        try:
-                            os.remove(tmp_f)
-                        except OSError:
-                            pass
+                    if hook_clip_overlay is not None:
+                        # Hook chỉ ~105 khung, để MoviePy dựng riêng ra file rồi FFmpeg phủ lên
+                        hook_mp4 = output_path + ".hook.mp4"
+                        hook_clip_overlay.write_videofile(
+                            hook_mp4, fps=FPS, codec="libx264", preset="veryfast",
+                            audio=False, logger=None,
+                            temp_audiofile_path=TEMP_DIR,
+                        )
+
+                    if outro_clip_overlay is not None:
+                        outro_mp4 = output_path + ".outro.mp4"
+                        outro_clip_overlay.write_videofile(
+                            outro_mp4, fps=FPS, codec="libx264", preset="veryfast",
+                            audio=False, logger=None,
+                            temp_audiofile_path=TEMP_DIR,
+                        )
+
+                    # LỖI CŨ #1: hardcode HOOK_CAROUSEL_DURATION (4.5s) ở đây bất kể hook_type
+                    # nào đang chạy — chọn blackout_question (1.5s thật) vẫn khiến FFmpeg giữ
+                    # khoảng trống 4.5s, thừa 3s đứng hình trước khi vào Cảnh 1.
+                    # LỖI CŨ #2: sau khi thêm thời lượng ĐỘNG cho blackout/typewriter
+                    # (resolve_hook_timing), tra thẳng HOOK_EFFECTS[...]["duration"] tĩnh ở đây
+                    # sẽ ra một con số KHÁC với con số đã dùng để dựng hook_clip_overlay phía
+                    # trên — hook thật dài X giây nhưng FFmpeg chỉ mở khung che hình đúng
+                    # HOOK_EFFECTS-tĩnh giây, lệch hình/tiếng ngay tại điểm nối. Phải gọi lại
+                    # ĐÚNG HÀM, ĐÚNG THAM SỐ như lúc dựng clip để 2 nơi luôn khớp nhau.
+                    # Dùng hook_text (không phải hook_quote): đây là field thật sự quyết định
+                    # thời lượng động của blackout_question/typewriter_quote (xem sửa ở trên).
+                    # carousel_quote/breathing_vignette bỏ qua tham số text này (thời lượng
+                    # tĩnh) nên truyền hook_text ở đây vô hại cho 2 loại đó.
+                    _timing = resolve_hook_timing(hook_type, hook_text) or {}
+                    fa.assemble(
+                        scene_assets, output_path,
+                        width=video_width, height=video_height, fps=FPS,
+                        crossfade_dur=crossfade_dur, audio_path=audio_wav,
+                        hook_video=hook_mp4,
+                        hook_duration=_timing.get("duration", 0.0),
+                        outro_video=outro_mp4,
+                        outro_start=outro_start,
+                        outro_duration=outro_duration,
+                        use_gpu=kwargs.get("use_gpu_encode", True),
+                    )
+                finally:
+                    for tmp_f in (audio_wav, hook_mp4, outro_mp4):
+                        if tmp_f and os.path.exists(tmp_f):
+                            try:
+                                os.remove(tmp_f)
+                            except OSError:
+                                pass
                 if hook_clip_overlay is not None:
                     hook_clip_overlay.close()
                 if outro_clip_overlay is not None:
@@ -1580,7 +1579,7 @@ def render_final_video(
     _hl_plan = plan_scene_highlights(scene_assets)
 
     for i, asset in enumerate(scene_assets):
-        start_time = asset.get("start_time", 0.0) + hook_duration
+        start_time = asset.get("start_time", 0.0)
         # Transition của scene[i] nghĩa là "chuyển cảnh SANG cảnh sau" (đúng như UI).
         # Biên i→i+1 hiển thị qua LỐI VÀO của cảnh i+1, nên lối vào của cảnh hiện tại
         # phải dùng transition của cảnh TRƯỚC nó (sửa off-by-one: trước đây cảnh 0 bị bỏ).
@@ -1592,9 +1591,6 @@ def render_final_video(
             video_width=video_width,
             video_height=video_height,
             crossfade_dur=crossfade_dur,
-            show_subtitle=show_subtitle,
-            subtitle_font_size=subtitle_font_size,
-            subtitle_color=subtitle_color,
             transition=entrance_transition,
             highlight_start=_hl_plan.get(i),
         )
@@ -1610,8 +1606,6 @@ def render_final_video(
     # mở màn. Giờ nó tham gia vào cùng một lần trộn nên mọi thứ cùng vang lên.
     write_voice_sidechain(voice_placements, master_audio_path, final_duration, output_path)
     slow_placements = _all_placements(audio_placements, master_audio_path, final_duration)
-    if master_audio_path and os.path.exists(master_audio_path):
-        speech_segments = [(0.0, final_duration)]
 
     # Trộn toàn bộ audio (giọng đọc + SFX) bằng numpy → 1 track duy nhất (an toàn, không bug)
     if slow_placements:

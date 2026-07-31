@@ -175,8 +175,14 @@ export const OUTRO_ONLY_EFFECTS = [
 
 
 // Nguồn hình cho từng cảnh — đồng bộ với backend main.VALID_VISUAL_SOURCES
+//
+// Nhãn của 'auto' TRƯỚC ĐÂY là "(theo Phong cách ảnh)" — và backend đúng là làm vậy: nó dò
+// chữ "realistic"/"photoreal" trong art_style. Nghĩa là chọn phong cách "Realistic (Thực
+// tế)" — lựa chọn hoàn toàn tự nhiên cho chủ đề đời thực — sẽ chuyển TOÀN BỘ video sang
+// video tải về, dù người dùng chỉ đang chọn kiểu vẽ cho ảnh AI. Bẫy đó đã gỡ ở backend
+// (xem main._pick_visual_source), nhãn phải nói đúng sự thật mới.
 export const VISUAL_SOURCES = [
-  { value: 'auto', label: '⚙️ Tự động (theo Phong cách ảnh)' },
+  { value: 'auto', label: '⚙️ Tự động (ảnh AI — trừ khi bật ưu tiên video thật)' },
   { value: 'mixed', label: '🎭 Xen kẽ thông minh (theo cảm xúc cảnh)' },
   { value: 'ai_image', label: '🖼️ Chỉ ảnh AI (không dùng video tải về)' },
   { value: 'stock_video', label: '🎬 Chỉ video thật (Pexels stock)' },

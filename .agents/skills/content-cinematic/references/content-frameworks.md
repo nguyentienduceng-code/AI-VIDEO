@@ -15,7 +15,8 @@ Mỗi framework đã tinh chỉnh cho pipeline app (video stock, cinematic_box, 
 - **Cấu trúc** (240s/300s): Bìa+Quote → Bối cảnh nhân vật → 3-4 nút thắt cốt truyện (mỗi cảnh 1 soft cliffhanger) → Cao trào/plot twist → Bài học đọng lại + mời đọc.
 - **Footage**: hand writing letter, old books on shelf, person reading by window, rainy street, candle, vintage clock, coffee cup.
 - **Palette**: BGM `deep_abstract_ambient`/`moment_of_peace` · transition `fade_black`/`page_flip`/`crossfade` · sfx thưa (`riser` mở, `suspense` cao trào) · rate `-5%` · subtitle `cinematic_box`.
-- **Cảnh 1 image_prompt**: mô tả BÌA SÁCH hoặc vật thể biểu tượng (để carousel dùng làm cover) — VD `close-up of an old book cover on a wooden desk, warm light`.
+- **Cảnh 1 image_prompt**: mô tả BÌA SÁCH hoặc vật thể biểu tượng (để carousel dùng làm cover) — VD `close-up of an old book cover on a wooden desk, warm light`. App lấy đúng ảnh cảnh 1 (`scene_assets[0]`) làm cover cho hiệu ứng carousel/Máy Xèng.
+- **Cảnh 1 text (ngược lại!)**: TUYỆT ĐỐI không tả bìa, không đọc lại tên sách/tác giả — chữ đó đã in to trên bìa mà người xem đang nhìn. Vào thẳng nghịch lý hoặc câu hỏi nhức nhối. (Hai vai trò của cảnh 1 khác nhau: *ảnh* làm bìa, *lời* thì không được nhắc bìa.)
 
 ## 💰 2. Tài chính / Làm giàu / Kinh doanh
 

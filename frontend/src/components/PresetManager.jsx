@@ -39,6 +39,8 @@ export default function PresetManager() {
     outroEffect: s.outroEffect,
     outroReelSfx: s.outroReelSfx,
     outroSfxVolume: s.outroSfxVolume,
+    // Chỉ logo, KHÔNG kèm watermarkText: chữ đóng dấu là nội dung riêng từng video.
+    watermarkLogo: s.watermarkLogo,
   })));
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
@@ -109,7 +111,10 @@ export default function PresetManager() {
         hook_effect: ctx.hookEffect,
         outro_effect: ctx.outroEffect,
         outro_reel_sfx: ctx.outroReelSfx,
-        outro_sfx_volume: ctx.outroSfxVolume
+        outro_sfx_volume: ctx.outroSfxVolume,
+        // Store giữ BOOLEAN (một ô tick), backend giữ TÊN FILE logo. Quy đổi đúng ở
+        // ranh giới này — cùng quy ước với payload render trong ScriptEditor.jsx.
+        watermark_logo: ctx.watermarkLogo ? 'logo_ntd' : null
       };
 
       const res = await fetch(`${API_BASE}/api/presets`, {

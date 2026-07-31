@@ -108,14 +108,20 @@
 |---|---|
 | `GEMINI_API_KEY`, `GEMINI_API_KEY_1..N` | Key Gemini (xoay vòng tự động khi 429) |
 | `PEXELS_API_KEY` | Bắt buộc để có ảnh/video stock thật |
+| `PIXABAY_API_KEY` | Tuỳ chọn (key miễn phí ở pixabay.com/api/docs). Nhà cung cấp stock THỨ HAI: khi Pexels hụt clip cho một từ khoá, có key này thì vẫn giữ được footage thật thay vì âm thầm đổi cảnh đó sang ảnh AI tĩnh |
 | `OMNIVOICE_PATH` | Thư mục cài OmniVoice (mặc định `C:\dev\OmniVoice`) |
 | `OMNIVOICE_WARMUP` | `0` để tắt warmup model lúc khởi động |
-| `ALLOWED_ORIGINS` | CORS (mặc định `*`; đặt origin cụ thể khi deploy) |
+| `ALLOWED_ORIGINS` | CORS. **Mặc định KHÔNG phải `*`** mà là danh sách trắng localhost:3001/5173 (xem `main.DEFAULT_LOCAL_ORIGINS`). Đặt `*` là bất kỳ trang web nào đang mở trong trình duyệt cũng đọc được `GET /api/api-keys-config` — tức lấy được toàn bộ API key. Chỉ mở thêm origin cụ thể khi cần vào từ máy khác trong LAN |
 
 **API endpoints mới thêm gần đây:** `GET /api/tts-health`, `POST /api/voice-clone`, `DELETE /api/voice-clone/{id}`, `GET /api/quota`, `GET/POST/DELETE /api/presets`.
 
 **Cạm bẫy đã từng dính (ĐỪNG lặp lại):**
 - **Pexels API trả 403 nếu THIẾU `User-Agent`** → footage stock không bao giờ xuất hiện. Mọi request Pexels phải kèm User-Agent trình duyệt.
+- **Từ khoá tìm footage phải lấy từ CUỐI cụm danh từ, không phải đầu.** Tiếng Anh đặt danh từ chính ở cuối, nên "lấy 3 từ đầu" làm mất chủ thể: `"a vintage closed leather book lying on a table"` → `"vintage closed leather"`, và Pexels trả về ảnh đồ da/thời trang thay vì sách. Xem `stock_query_from_prompt()` + `tests/test_stock_sourcing.py`.
+- **ĐỪNG suy ra nguồn hình từ `art_style`.** Đã dính hai lần: (1) dò "photorealistic" trong `image_prompt` do Gemini sinh — mà base prompt bắt buộc chèn chuỗi đó nên điều kiện luôn đúng; (2) dò chính chuỗi đó trong `art_style` của user — mà `STYLES[1]` là "Realistic (Thực tế)" = `"Photorealistic, cinematic lighting, 8K UHD"`, nên chọn phong cách này là cả video âm thầm chuyển sang Pexels. `art_style` = "vẽ theo kiểu gì", `visual_source`/`prefer_stock_video` = "lấy hình từ đâu". Xem `main._pick_visual_source` + `tests/test_visual_source_routing.py`.
+- **Dự phòng cho ẢNH AI phải là ảnh AI.** `generate_image_with_fallback` từng đặt Pexels photo trước Pollinations FLUX → hết quota Gemini là trả về ảnh stock tĩnh dù người dùng đang ở chế độ ảnh AI. Thứ tự đúng: Gemini → Pollinations FLUX → Pexels photo → gradient.
+- **`config.write_env_value(key, "")` XOÁ dòng, không ghi `KEY=`.** Đừng đổi lại: giao diện Quản lý Key API dùng chính cơ chế đó để dọn slot key dự phòng cũ.
+- **Mọi nhánh sinh hình phải ghi `source_meta["source"]`.** Không ghi thì hiện tượng "hết quota ảnh Gemini nên cả video âm thầm thành ảnh stock tĩnh" là hoàn toàn vô hình — video vẫn render xong. Xem `_summarize_visual_sources()`.
 - **edge-tts ≥7.x mặc định `SentenceBoundary`** → mất word boundaries → phụ đề karaoke chết. Phải truyền `boundary="WordBoundary"`.
 - **Phụ đề phải dùng `asset["start_time"]`** (đã tính overlap crossfade), KHÔNG cộng dồn `cursor += duration` (lệch tiếng dần).
 - **KHÔNG trả script mock khi Gemini lỗi** — phải `raise` để UI báo lỗi thật.

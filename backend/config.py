@@ -89,6 +89,7 @@ BGM_DIR = os.path.join(BUNDLED_ASSETS_DIR, "bgm")
 SFX_DIR = os.path.join(BUNDLED_ASSETS_DIR, "sfx")
 SLOT_COVERS_DIR = os.path.join(BUNDLED_ASSETS_DIR, "slot_covers")
 FONTS_DIR = os.path.join(BUNDLED_ASSETS_DIR, "fonts")
+WATERMARKS_DIR = os.path.join(BUNDLED_ASSETS_DIR, "watermarks")
 
 # ---------------------------------------------------------------------------
 # Gốc 2: dữ liệu do chạy máy sinh ra (di dời được)
@@ -248,9 +249,36 @@ _migrate_user_data()
 # ---------------------------------------------------------------------------
 # Ghi cấu hình xuống .env
 # ---------------------------------------------------------------------------
+# Chú thích gợi ý cho từng biến, dùng khi PHẢI thêm dòng mới vào .env.
+# LỖI CŨ: hàm này append một comment ĐẶT CỨNG "# Thư mục lưu toàn bộ dữ liệu sinh ra
+# (ảnh, video, cache)." lên trên MỌI key mới. Comment đó viết cho CUSTOM_ASSETS_DIR, nên
+# từ khi có giao diện Quản lý Key API thì .env thật trông như thế này:
+#     # Thư mục lưu toàn bộ dữ liệu sinh ra (ảnh, video, cache).
+#     PIXABAY_API_KEY=5693...
+# Sai lệch kiểu này không làm hỏng gì về mặt chạy, nhưng nó biến file cấu hình — thứ người
+# dùng phải tự đọc khi gỡ lỗi — thành file nói dối về chính nội dung của nó.
+ENV_KEY_COMMENTS = {
+    "GEMINI_API_KEY": "# Key Gemini chính. Lấy miễn phí: https://aistudio.google.com/apikey",
+    "PEXELS_API_KEY": "# Kho video/ảnh stock Pexels: https://www.pexels.com/api/",
+    "PIXABAY_API_KEY": "# Kho stock thứ hai (dự phòng khi Pexels hụt clip): https://pixabay.com/api/docs/",
+    "FAL_KEY": "# FAL AI (tuỳ chọn) — sinh ảnh FLUX.",
+    "OUTPUT_DIR": "# Thư mục lưu video xuất ra.",
+    "CUSTOM_ASSETS_DIR": "# Thư mục lưu toàn bộ dữ liệu sinh ra (ảnh, video, cache).",
+    "TTS_VOICE": "# Giọng đọc mặc định (Edge TTS).",
+    "PORT": "# Cổng chạy Backend (mặc định: 8000).",
+    "ALLOWED_ORIGINS": "# CORS: danh sách origin được phép, phân tách bằng dấu phẩy.",
+}
+
+
 def write_env_value(key: str, value: str) -> None:
     """
     Đặt `key=value` trong backend/.env, GIỮ NGUYÊN mọi dòng khác (API key, comment).
+
+    `value` RỖNG nghĩa là XOÁ biến đó khỏi .env, chứ không phải ghi `KEY=`. Toàn bộ code
+    đọc env trong dự án này đều dùng `os.getenv(...) or <mặc định>`, nên chuỗi rỗng và
+    không tồn tại là một. Ghi `KEY=` chỉ để lại rác: giao diện Quản lý Key API xoá bớt key
+    dự phòng là .env mọc ra 9 dòng `GEMINI_API_KEY_1=` ... `GEMINI_API_KEY_9=` trắng trơn,
+    mỗi dòng kèm một comment sai.
 
     Ghi qua file tạm rồi os.replace: mất điện giữa chừng cũng không để lại .env cụt
     làm mất sạch API key của user.
@@ -263,24 +291,47 @@ def write_env_value(key: str, value: str) -> None:
         with open(ENV_FILE, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
 
-    replaced = False
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("#") or "=" not in stripped:
-            continue
-        if stripped.split("=", 1)[0].strip() == key:
-            lines[i] = f"{key}={value}"
-            replaced = True
-            break
-    if not replaced:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.append("# Thư mục lưu toàn bộ dữ liệu sinh ra (ảnh, video, cache).")
-        lines.append(f"{key}={value}")
+    def _la_dong_cua_key(dong: str) -> bool:
+        s = dong.strip()
+        if s.startswith("#") or "=" not in s:
+            return False
+        return s.split("=", 1)[0].strip() == key
+
+    if value == "":
+        # Xoá dòng của key, và xoá luôn dòng comment ngay trên nó nếu comment đó là của
+        # chính key này (nếu không sẽ để lại comment mồ côi sau vài lần bật/tắt key).
+        chu_thich = ENV_KEY_COMMENTS.get(key)
+        giu = []
+        for dong in lines:
+            if _la_dong_cua_key(dong):
+                if giu and chu_thich and giu[-1].strip() == chu_thich:
+                    giu.pop()
+                continue
+            giu.append(dong)
+        # Gộp các dòng trống liền nhau sinh ra sau khi xoá.
+        lines = []
+        for dong in giu:
+            if not dong.strip() and lines and not lines[-1].strip():
+                continue
+            lines.append(dong)
+    else:
+        replaced = False
+        for i, dong in enumerate(lines):
+            if _la_dong_cua_key(dong):
+                lines[i] = f"{key}={value}"
+                replaced = True
+                break
+        if not replaced:
+            if lines and lines[-1].strip():
+                lines.append("")
+            chu_thich = ENV_KEY_COMMENTS.get(key)
+            if chu_thich:
+                lines.append(chu_thich)
+            lines.append(f"{key}={value}")
 
     tmp = ENV_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write("\n".join(lines).rstrip("\n") + "\n")
     os.replace(tmp, ENV_FILE)
 
 

@@ -2,6 +2,7 @@
 import subprocess
 import logging
 import os
+import re
 import sys
 import imageio_ffmpeg
 
@@ -51,42 +52,70 @@ def _is_nvenc_failure(stderr: str) -> bool:
     return "nvenc" in s or any(m in s for m in _NVENC_FAILURE_MARKERS)
 
 
+_has_nvenc_cache: bool | None = None
+
+
 def _has_nvenc() -> bool:
+    """NVENC có sẵn trên máy hay không — thuộc tính TĨNH của máy trong suốt vòng đời
+    process, không đổi giữa các lần render. Cache lại thay vì spawn `ffmpeg -encoders`
+    mỗi lần master_audio_and_export() chạy."""
+    global _has_nvenc_cache
+    if _has_nvenc_cache is not None:
+        return _has_nvenc_cache
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     try:
         result = subprocess.run(
             [ffmpeg_exe, "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=10,
         )
-        return "h264_nvenc" in result.stdout
+        _has_nvenc_cache = "h264_nvenc" in result.stdout
     except Exception:
-        return False
+        _has_nvenc_cache = False
+    return _has_nvenc_cache
 
-def _probe_width(video_path: str) -> int:
-    """Bề ngang video, dùng để dựng dải thanh tiến trình đúng cỡ. 0 nếu không đọc được."""
-    import re
+# _probe_width() và _has_audio_stream() đều được master_audio_and_export() gọi trên
+# CÙNG input_video_path (đọc width để dựng thanh tiến trình, đọc has_audio để quyết
+# định nhánh -map) — mỗi hàm tự spawn `ffmpeg -i` riêng dù đang đọc cùng 1 output
+# stderr. Cache theo (path, mtime, size) để lần gọi thứ 2 trong cùng 1 lượt export
+# không tốn thêm subprocess; tự invalidate nếu path bị ghi đè bởi file khác.
+_ffmpeg_probe_cache: dict[tuple, tuple[str, str]] = {}
+
+
+def _probe_stderr(video_path: str) -> tuple[str, str]:
+    """(stdout, stderr) của `ffmpeg -hide_banner -i video_path`, cache theo dấu vân tay file."""
+    try:
+        st = os.stat(video_path)
+        key = (video_path, st.st_mtime, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and key in _ffmpeg_probe_cache:
+        return _ffmpeg_probe_cache[key]
+
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     try:
         res = subprocess.run(
             [ffmpeg_exe, "-hide_banner", "-i", video_path],
             capture_output=True, text=True, timeout=15, errors="replace",
         )
-        m = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", res.stderr)
-        return int(m.group(1)) if m else 0
+        out = (res.stdout, res.stderr)
     except Exception:
-        return 0
+        out = ("", "")
+    if key is not None:
+        _ffmpeg_probe_cache[key] = out
+    return out
+
+
+def _probe_width(video_path: str) -> int:
+    """Bề ngang video, dùng để dựng dải thanh tiến trình đúng cỡ. 0 nếu không đọc được."""
+    import re
+    _, stderr = _probe_stderr(video_path)
+    m = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", stderr)
+    return int(m.group(1)) if m else 0
 
 
 def _has_audio_stream(video_path: str) -> bool:
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    try:
-        res = subprocess.run(
-            [ffmpeg_exe, "-hide_banner", "-i", video_path],
-            capture_output=True, text=True, timeout=5
-        )
-        return "Audio:" in res.stderr
-    except Exception:
-        return False
+    _, stderr = _probe_stderr(video_path)
+    return "Audio:" in stderr
 
 # Segoe UI Bold. KHÔNG dùng Arial Black (ariblk.ttf) — thiếu glyph 'ư'/'ơ' tiếng Việt.
 WATERMARK_FONT = (
@@ -368,11 +397,15 @@ def master_audio_and_export(
     co_logo = bool(watermark_logo) and os.path.isfile(watermark_logo)
 
     if watermark_text:
-        # Dấu nháy đơn và dấu ':' đều là ký tự cấu trúc của filtergraph. Bỏ hẳn chúng
-        # (thay vì escape) vì watermark là chuỗi trang trí ngắn — an toàn hơn là
-        # rủi ro vỡ cả lệnh vì một dấu nháy lạc. Dấu ',' thì escape được, xem _esc_expr
+        # Dấu nháy đơn, ':', ';', '[', ']', '\' đều là ký tự CẤU TRÚC của filtergraph
+        # (';' và '[]' phân tách/định danh cả filterchain, '\' là ký tự escape).
+        # LỖI CŨ: chỉ chặn ''' và ':' — text còn lại được nhúng thẳng vào
+        # -filter_complex, nên watermark_text chứa ';[...]' chèn được filterchain
+        # khác vào lệnh ffmpeg (vd movie=<file cục bộ bất kỳ>). Bỏ hẳn cả nhóm
+        # ký tự này (thay vì escape) vì watermark là chuỗi trang trí ngắn — an toàn
+        # hơn là rủi ro vỡ lệnh vì escape sai. Dấu ',' thì escape được, xem _esc_expr
         # bên ffmpeg_assembler.
-        wm_text = watermark_text.replace("'", "").replace(":", "")
+        wm_text = re.sub(r"['\:;\[\]\\]", "", watermark_text)
         wm_y = WATERMARK_TEXT_Y_UNDER_LOGO if co_logo else WATERMARK_TEXT_Y_SOLO
         filter_complex.append(
             f"{video_chain}drawtext=fontfile='{_esc_path(WATERMARK_FONT)}':text='{wm_text}':"

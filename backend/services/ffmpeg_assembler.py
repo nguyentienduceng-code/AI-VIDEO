@@ -121,13 +121,23 @@ def can_assemble(scene_assets: List[Dict[str, Any]], width: int, height: int) ->
     return True, "ok"
 
 
+_has_nvenc_cache: bool | None = None
+
+
 def _has_nvenc() -> bool:
+    """NVENC có sẵn trên máy hay không — thuộc tính TĨNH của máy trong suốt vòng đời
+    process, không đổi giữa các lần assemble(). Cache lại thay vì spawn
+    `ffmpeg -encoders` mỗi lần assemble() chạy."""
+    global _has_nvenc_cache
+    if _has_nvenc_cache is not None:
+        return _has_nvenc_cache
     try:
         r = subprocess.run([_ff(), "-hide_banner", "-encoders"],
                            capture_output=True, text=True, timeout=15)
-        return "h264_nvenc" in r.stdout
+        _has_nvenc_cache = "h264_nvenc" in r.stdout
     except Exception:
-        return False
+        _has_nvenc_cache = False
+    return _has_nvenc_cache
 
 
 # Dấu hiệu NVENC chết trong stderr. `-encoders` chỉ nói driver CÓ encoder, không nói

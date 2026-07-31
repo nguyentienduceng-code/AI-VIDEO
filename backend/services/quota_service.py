@@ -1,10 +1,17 @@
 import os
 import json
+import threading
 from datetime import datetime
 
 # Đường dẫn tuyệt đối theo vị trí file, không phụ thuộc thư mục làm việc (CWD) khi khởi động server.
 from config import QUOTA_FILE
 DAILY_LIMIT = 1500
+
+# gemini_service.generate_script() gọi increment_quota() từ trong asyncio.to_thread
+# (Gemini SDK là blocking call) — 2 request generate-script cùng lúc = 2 thread thật
+# cùng đọc-sửa-ghi QUOTA_FILE không đồng bộ, mất increment, quota đếm thiếu, phá
+# luôn mục đích của DAILY_LIMIT. 1 Lock cho cả đọc lẫn ghi trong 1 process.
+_quota_lock = threading.Lock()
 
 def _get_today_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
@@ -25,11 +32,14 @@ def _load_quota() -> dict:
 
 def _save_quota(data: dict):
     os.makedirs(os.path.dirname(QUOTA_FILE), exist_ok=True)
-    with open(QUOTA_FILE, "w", encoding="utf-8") as f:
+    tmp_path = QUOTA_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f)
+    os.replace(tmp_path, QUOTA_FILE)
 
 def get_quota() -> dict:
-    data = _load_quota()
+    with _quota_lock:
+        data = _load_quota()
     used = data.get("used", 0)
     percent = (used / DAILY_LIMIT) * 100
     return {
@@ -39,6 +49,7 @@ def get_quota() -> dict:
     }
 
 def increment_quota(amount: int = 1):
-    data = _load_quota()
-    data["used"] = data.get("used", 0) + amount
-    _save_quota(data)
+    with _quota_lock:
+        data = _load_quota()
+        data["used"] = data.get("used", 0) + amount
+        _save_quota(data)

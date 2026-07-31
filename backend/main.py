@@ -31,11 +31,13 @@ os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe
 import json
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 # PHẢI chạy trước dòng log tiếng Việt đầu tiên: khi stdout bị chuyển hướng (chạy như
 # service, ghi ra file), Windows mở nó bằng cp1252/strict và mọi dấu tiếng Việt sẽ
@@ -116,6 +118,10 @@ app.add_middleware(
     allow_credentials=ALLOWED_ORIGINS != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Không khai báo thì trình duyệt GIẤU header này khỏi JS (CORS mặc định chỉ lộ vài
+    # header an toàn) — cảnh báo "giọng clone hỏng, đang đọc bằng giọng thay thế" của
+    # /api/preview-scene-voice sẽ tới nơi nhưng không ai đọc được.
+    expose_headers=["X-TTS-Warning"],
 )
 
 # Đường dẫn lấy TẤT CẢ từ config — xem config.py để biết vì sao tài nguyên đi kèm mã
@@ -148,6 +154,12 @@ class JobState(BaseModel):
     scenes: Optional[List[dict]] = None
     error: Optional[str] = None
     mode: str = "storyteller"
+    # Dùng cho job "nghe thử cả bài" (/api/preview-full-script). Để chung JobState thay
+    # vì dựng một bảng trạng thái thứ hai: WebSocket, /api/job-status và cơ chế dọn job
+    # cũ đều đã chạy sẵn trên đây rồi.
+    audio_url: Optional[str] = None
+    scene_ranges: Optional[List[Optional[List[float]]]] = None
+    cache_scope: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -174,12 +186,22 @@ class ConnectionManager:
                 del self.active_connections[job_id]
 
     async def broadcast(self, job_id: str, message: dict):
-        if job_id in self.active_connections:
-            for connection in self.active_connections[job_id]:
-                try:
-                    await connection.send_json(message)
-                except Exception:
-                    pass
+        if job_id not in self.active_connections:
+            return
+        # LỖI CŨ: lỗi gửi bị nuốt nhưng socket KHÔNG bị bỏ khỏi active_connections.
+        # disconnect() chỉ chạy khi websocket.receive_text() nhận được WebSocketDisconnect
+        # "sạch" — client rớt mạng đột ngột (tắt máy, mất wifi) không qua đường đó, để
+        # lại một WebSocket đã chết nằm mãi trong danh sách. Mọi broadcast() sau đó cho
+        # job này thử gửi lại, thất bại lại, mãi mãi — không hại gì ngoài lãng phí, nhưng
+        # dọn ngay khi phát hiện thì rẻ hơn để tích tụ qua một job chạy hàng chục phút.
+        dead = []
+        for connection in self.active_connections[job_id]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection, job_id)
 
 manager = ConnectionManager()
 
@@ -206,6 +228,17 @@ class GenerateScriptRequest(BaseModel):
     auto_balance_scenes: bool = True
     voice: Optional[str] = None      # để ước lượng thời lượng đúng giọng sẽ dùng
     speech_rate: str = "+0%"
+    # Nguồn hình dự kiến khi render — quyết định KIỂU image_prompt Gemini phải viết.
+    # Thiếu hai field này (trạng thái trước đây), tầng sinh kịch bản luôn viết prompt
+    # cinematic kiểu "Extreme close-up shot of..., 8k, Unreal Engine"; nếu user render bằng
+    # footage stock thì extract_search_keyword() phải gỡ lại đúng những chữ đó để tìm Pexels,
+    # và chữ nào lọt lưới sẽ thành từ khoá rác → trả về video sai chủ đề.
+    prefer_stock_video: bool = False
+    visual_source: str = "auto"      # auto | ai_image | stock_video | mixed
+    # Viết lại kịch bản ĐÚNG 1 lượt nếu lớp review chấm dưới 60/100, và chỉ nhận bản mới khi
+    # nó điểm cao hơn. Tốn thêm 1-2 lượt quota mỗi lần kích hoạt, nên có công tắc tắt.
+    # KHÔNG áp cho mode script_video: lời thoại ở đó là của người dùng, giữ nguyên văn 100%.
+    auto_retry_low_quality: bool = True
 
 class RenderVideoRequest(BaseModel):
     scenes: List[dict]
@@ -402,16 +435,94 @@ VALID_VISUAL_SOURCES = {"auto", "ai_image", "stock_video", "mixed"}
 _STOCK_FRIENDLY_EMOTIONS = {"calm", "closing", "dramatic", "suspense"}
 
 
+# Tên hiển thị cho người dùng của từng nguồn hình. Khoá phải khớp các chuỗi mà
+# `image_router.generate_image_with_fallback` và `_fetch_stock_video_cached` ghi vào
+# `source_meta["source"]`.
+VISUAL_SOURCE_LABELS = {
+    "Pexels": "video Pexels",
+    "Pixabay": "video Pixabay",
+    "gemini_image": "ảnh Gemini",
+    "pexels_photo": "ảnh Pexels",
+    "pollinations_flux": "ảnh Pollinations",
+    "gradient_offline": "gradient dự phòng",
+    "placeholder": "ảnh trống",
+    "veo": "video Veo",
+    "user_override": "hình bạn tự chọn",
+    "user_photo": "ảnh bạn tải lên",
+    "user_cover": "ảnh bìa của bạn",
+    "unknown": "không rõ",
+}
+
+
+def _summarize_visual_sources(scenes: list) -> str:
+    """Đếm số cảnh theo từng nguồn hình → một câu đọc được cho log và UI.
+
+    VÌ SAO CẦN: khi mọi nhánh sinh hình đều `return` một đường dẫn giống nhau, hiện tượng
+    "hết quota ảnh Gemini nên cả video âm thầm thành ảnh stock tĩnh" là hoàn toàn vô hình —
+    video vẫn render xong, chỉ là không còn là thứ người dùng chọn. Câu tổng kết này là
+    điều kiện tiên quyết để tối ưu: không có nó thì mọi phán đoán về tỉ lệ nguồn chỉ là
+    cảm giác.
+    """
+    from collections import Counter
+
+    dem = Counter()
+    for s in scenes:
+        raw = str(s.get("visual_source_used") or "unknown")
+        # "cache:Pexels" / "cache:file_mp4" → gộp về nhóm "dùng lại từ cache".
+        dem["cache"] += 1 if raw.startswith("cache:") else 0
+        if not raw.startswith("cache:"):
+            dem[raw] += 1
+    phan = [
+        f"{n} {VISUAL_SOURCE_LABELS.get(k, k)}"
+        for k, n in dem.most_common()
+        if n > 0 and k != "cache"
+    ]
+    if dem.get("cache"):
+        phan.append(f"{dem['cache']} dùng lại từ cache")
+    return ", ".join(phan)
+
+
+def _wants_stock_footage(req) -> bool:
+    """Video này DỰ KIẾN dựng bằng footage stock hay ảnh AI?
+
+    Dùng ở tầng SINH KỊCH BẢN (trước khi có cảnh nào) để chọn kiểu `image_prompt` Gemini
+    phải viết — xem IMAGE_PROMPT_RULES_STOCK/_AI. Cố ý dùng CÙNG bộ luật với
+    `_pick_visual_source`, nhưng gộp ở cấp video vì lúc này chưa có emotion từng cảnh để
+    phân xử chế độ "mixed"; "mixed" đằng nào cũng trộn cả hai nguồn nên viết prompt kiểu
+    cinematic là lựa chọn an toàn hơn (ảnh AI dùng được prompt tả cảnh thật, nhưng Pexels
+    thì không dùng nổi prompt đầy jargon).
+
+    ĐÃ BỎ HẲN `art_style` KHỎI PHÉP CHỌN NÀY — xem chú thích ở `_pick_visual_source`.
+    """
+    source = getattr(req, "visual_source", "auto")
+    if source == "stock_video":
+        return True
+    if source in ("ai_image", "mixed"):
+        return False
+    return bool(getattr(req, "prefer_stock_video", False))
+
+
 def _pick_visual_source(req, scene: dict, scene_index: int) -> str:
     """
     Quyết định nguồn hình cho 1 cảnh: "stock_video" hay "ai_image".
 
-    LÝ DO TỒN TẠI: trước đây pipeline dò chuỗi "photorealistic"/"realistic" trong
-    `image_prompt` để bật Pexels. Nhưng base prompt của gemini_service BẮT BUỘC Gemini
-    chèn "8k, photorealistic, Unreal Engine 5" vào MỌI image_prompt → điều kiện luôn
-    đúng → gần như mọi video đều bị đẩy sang video tải về, kể cả khi user không chọn.
-    Giờ chỉ dựa trên lựa chọn tường minh của user (visual_source / prefer_stock_video)
-    và art_style — thứ do user chọn chứ không do Gemini sinh ra.
+    CHỈ dựa trên lựa chọn TƯỜNG MINH của user: `visual_source` (cấp cảnh rồi cấp video)
+    và công tắc `prefer_stock_video`.
+
+    HAI THẾ HỆ BẪY ĐÃ GỠ Ở ĐÂY — cả hai đều gây đúng một triệu chứng "gần như mọi video
+    đều là footage tải về, ảnh AI hầu như không được dùng":
+
+    1. (cũ) Dò chuỗi "photorealistic"/"realistic" trong `image_prompt`. Nhưng base prompt
+       BẮT BUỘC Gemini chèn "8k, photorealistic, Unreal Engine 5" vào MỌI image_prompt →
+       điều kiện luôn đúng → mọi cảnh bị đẩy sang stock.
+    2. (vừa gỡ) Dò chính chuỗi đó trong `art_style` của user. Nghe hợp lý hơn, nhưng
+       `STYLES[1]` trên giao diện là **"Realistic (Thực tế)"** = `"Photorealistic,
+       cinematic lighting, 8K UHD"` — một lựa chọn hoàn toàn tự nhiên cho chủ đề đời thực.
+       Chọn nó là TOÀN BỘ video âm thầm chuyển sang Pexels, trong khi người dùng tưởng
+       mình vừa chọn PHONG CÁCH VẼ cho AI. `art_style` trả lời câu hỏi "vẽ theo kiểu gì",
+       KHÔNG phải "lấy hình từ đâu"; app đã có sẵn hai điều khiển riêng cho câu hỏi sau.
+
+    Bài học chung: đừng suy ra nguồn hình từ một chuỗi được sinh/chọn cho mục đích khác.
     """
     # 1. Ưu tiên cấu hình riêng của từng cảnh (do người dùng chỉnh sửa trên giao diện)
     scene_source = scene.get("visual_source", "auto")
@@ -436,14 +547,8 @@ def _pick_visual_source(req, scene: dict, scene_index: int) -> str:
         emotion = (scene.get("emotion") or "").strip().lower()
         return "stock_video" if emotion in _STOCK_FRIENDLY_EMOTIONS else "ai_image"
 
-    # auto: chỉ khi user chủ động bật, hoặc art_style do user chọn đúng là dòng
-    # footage/tư liệu thật. KHÔNG dò image_prompt nữa (xem docstring).
-    if req.prefer_stock_video:
-        return "stock_video"
-    art_style = (req.art_style or "").lower()
-    if any(kw in art_style for kw in ("realistic", "photography", "documentary", "footage", "photoreal")):
-        return "stock_video"
-    return "ai_image"
+    # auto: CHỈ khi user chủ động bật công tắc "ưu tiên video thật".
+    return "stock_video" if req.prefer_stock_video else "ai_image"
 
 
 # Biên an toàn khi chọn clip stock: thà lấy clip dài dư rồi cắt, còn hơn lấy clip
@@ -522,6 +627,7 @@ def _stock_cache_params(image_prompt: str, aspect_ratio: str) -> dict:
 async def _fetch_stock_video_cached(
     image_prompt: str, output_path: str, aspect_ratio: str, pexels_key: str,
     needed_duration: float, used_ids: set, api_key: Optional[str],
+    source_meta: Optional[dict] = None,
 ) -> str:
     """
     Tải video stock CÓ CACHE.
@@ -544,18 +650,52 @@ async def _fetch_stock_video_cached(
         if meta.get("id") is not None:
             used_ids.add(meta["id"])
         logger.info("[Stock] Dùng lại clip đã tải trước đó (không gọi Pexels).")
+        if source_meta is not None:
+            source_meta["source"] = f"cache:{meta.get('provider') or 'stock'}"
+            source_meta["query"] = meta.get("query") or ""
         return mp4_path
 
-    from services.gemini_service import extract_search_keyword
-    query = await extract_search_keyword(image_prompt, api_key)
+    from services.gemini_service import build_stock_queries
+
+    # BẬC THANG: cụ thể → rộng dần, và mỗi bậc thử LẦN LƯỢT các nhà cung cấp.
+    # Trước đây chỉ có ĐÚNG MỘT truy vấn trên ĐÚNG MỘT nhà cung cấp: hụt là rơi thẳng về
+    # ảnh AI tĩnh, nên một video dễ thành nửa footage thật nửa ảnh tĩnh — lộ ngay khi xem.
+    pixabay_key = os.getenv("PIXABAY_API_KEY")
+    nha_cung_cap = [("Pexels", image_router.fetch_pexels_video, pexels_key)]
+    if pixabay_key:
+        nha_cung_cap.append(("Pixabay", image_router.fetch_pixabay_video, pixabay_key))
+
     out_meta: dict = {}
-    result = await image_router.fetch_pexels_video(
-        query, output_path, aspect_ratio, pexels_key,
-        needed_duration=needed_duration, used_ids=used_ids, out_meta=out_meta,
-    )
+    result = None
+    loi_cuoi: Optional[Exception] = None
+    for query in build_stock_queries(image_prompt):
+        for ten, fetch, key in nha_cung_cap:
+            try:
+                result = await fetch(
+                    query, output_path, aspect_ratio, key,
+                    needed_duration=needed_duration, used_ids=used_ids, out_meta=out_meta,
+                )
+                break
+            except Exception as e:
+                loi_cuoi = e
+                logger.info(f"[Stock] {ten} không có clip cho '{query}': {e}")
+        if result:
+            break
+
+    if not result:
+        raise loi_cuoi or RuntimeError("Không nhà cung cấp stock nào trả về clip.")
+
+    if source_meta is not None:
+        source_meta["source"] = out_meta.get("provider") or "stock"
+        source_meta["query"] = out_meta.get("query") or ""
+
     try:
         media_cache.set_media("stock", result, **params)
-        media_cache.set("stock_meta", {"id": out_meta.get("id"), "query": query}, **params)
+        media_cache.set("stock_meta", {
+            "id": out_meta.get("id"),
+            "query": out_meta.get("query"),
+            "provider": out_meta.get("provider"),
+        }, **params)
     except Exception as e:
         logger.warning(f"[Stock] Lưu cache thất bại (không ảnh hưởng render): {e}")
     return result
@@ -669,7 +809,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             if available:
                 bgm_path = os.path.join(BGM_DIR, random.choice(available))
         else:
-            candidate = os.path.join(BGM_DIR, req.bgm_track)
+            candidate = os.path.join(BGM_DIR, os.path.basename(req.bgm_track))
             if not candidate.endswith(".mp3"):
                 candidate += ".mp3"
             if os.path.isfile(candidate):
@@ -706,6 +846,18 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # Id các clip Pexels đã dùng trong job này — chặn 2 cảnh nhận về cùng 1 đoạn phim.
         stock_used_ids: set = set()
 
+        # Cảnh báo TTS đã báo cho user trong job này. Giọng clone hỏng là lỗi của CẢ JOB
+        # (thiếu GPU, mất file mẫu), không phải của riêng một cảnh — không chặn thì một
+        # video 20 cảnh dội đúng một câu cảnh báo 20 lần lên UI và đè mất mọi thông báo
+        # tiến độ khác.
+        tts_warned: set = set()
+
+        async def _tts_warning_once(msg: str):
+            if msg in tts_warned:
+                return
+            tts_warned.add(msg)
+            await _update_job(job_id, message=msg)
+
         # ── Single-Pass Narration: đọc TOÀN kịch bản trong 1 lần gọi ──
         # Phải chạy TRƯỚC vòng lặp vì mốc thời gian của mọi cảnh đều suy ra từ dải giọng này.
         master_audio_path = None
@@ -724,9 +876,12 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     ).strip()
                     for s in scenes
                 ]
+                # Cảnh báo từ tầng TTS (đổi cách sinh, giọng clone hỏng...) → đẩy lên UI,
+                # mỗi nội dung đúng một lần cho cả job.
                 narration_total_dur, narration_scene_wbs, _ = await tts_service.synthesize_script_single_pass(
                     scene_texts, master_audio_path,
                     voice=voice, rate=speech_rate, pitch=req.speech_pitch,
+                    warning_callback=_tts_warning_once,
                 )
                 await _update_job(
                     job_id,
@@ -788,18 +943,14 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         except Exception: pass
 
                     await _update_job(job_id, message=f"Đang tạo giọng đọc cảnh {i+1}/{total}...")
-                    
-                    # Tạo callback để broadcast cảnh báo OmniVoice fallback qua WebSocket
-                    async def _voice_warning(msg: str):
-                        await _update_job(job_id, message=msg)
-                    
+
                     final_rate = scene_rate
 
                     try:
                         dur, wbs = await tts_service.synthesize_speech(
                             tts_text, a_path, voice=voice, rate=final_rate, pitch=req.speech_pitch, mode=mode,
                             emotion=scene.get("emotion", ""),
-                            warning_callback=_voice_warning,
+                            warning_callback=_tts_warning_once,
                             use_breathing=req.use_breathing
                         )
                         # Số đo THẬT — kéo dần ước lượng của toàn hệ thống về đúng tốc độ
@@ -807,6 +958,17 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                         # rồi bỏ, nên hệ thống mãi ước lượng bằng hằng số gõ tay.
                         from services import duration_model
                         duration_model.record_observation(tts_text, dur, voice=voice, rate=final_rate)
+
+                        # Giọng AI chạy trên GPU có thể chậm hơn thời gian thực nhiều lần
+                        # (đo được RTF ≈ 8 trên GTX 1660 SUPER). Sau cảnh ĐẦU TIÊN đã có số
+                        # đo thật của chính máy này → nói luôn cho user tổng thời gian phải
+                        # chờ, thay vì để họ đoán qua thanh tiến trình. Ước tổng lời thoại
+                        # bằng cảnh đầu nhân số cảnh: thô nhưng dựa trên số đo, không phải
+                        # hằng số gõ tay.
+                        if voice.startswith("omnivoice_") and dur > 0:
+                            uoc_tinh = tts_service.uoc_tinh_thoi_gian_giong_ai(dur * total)
+                            if uoc_tinh:
+                                await _tts_warning_once(uoc_tinh)
 
                         if os.path.exists(a_path) and os.path.getsize(a_path) > 0:
                             return dur, wbs, a_path
@@ -820,8 +982,28 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 pause_s = scene.get("pause_after_ms", 0) / 1000.0
                 return base_duration + pause_s, [], None
 
+            # Nguồn hình THẬT của cảnh này. Trước đây không có gì ghi lại: mọi nhánh đều
+            # trả về một đường dẫn giống nhau, nên không ai biết cảnh nào là video stock,
+            # cảnh nào là ảnh Gemini, cảnh nào chỉ là gradient dự phòng. Không có số liệu
+            # này thì mọi phán đoán kiểu "đa số video lấy từ Pexels" chỉ là cảm giác.
+            vis_meta: dict = {}
+
             async def _do_visuals():
                 final_img_path = image_path
+
+                def _mark(nguon: str):
+                    vis_meta.setdefault("source", nguon)
+
+                # 3 nhánh bên dưới (cover-image rỗng, Veo lỗi/tắt, mặc định) đều rơi về
+                # sinh ảnh AI với ĐÚNG một bộ tham số giống hệt nhau — gom một chỗ để sửa
+                # 1 tham số không phải nhớ sửa cả 3 nơi.
+                async def _gen_ai_image():
+                    return await image_router.generate_image_with_fallback(
+                        image_prompt=img_prompt, output_path=final_img_path,
+                        aspect_ratio=imagen_aspect, google_api_key=api_key,
+                        negative_prompt=req.negative_prompt, seed=video_seed,
+                        art_style=req.art_style, source_meta=vis_meta,
+                    )
 
                 # ── Ghi đè thủ công: ảnh/video user tự tải lên cho ĐÚNG cảnh này ──
                 # Đặt TRƯỚC mọi thứ khác: khi user đã tự chọn hình, không có lý do gì
@@ -832,17 +1014,21 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     dest = os.path.splitext(final_img_path)[0] + override_ext
                     await asyncio.to_thread(shutil.copy2, override_src, dest)
                     await _update_job(job_id, message=f"Cảnh {i+1}: dùng hình bạn tự tải lên.")
+                    _mark("user_override")
                     return dest
 
                 mp4_alt = final_img_path.replace(".png", ".mp4")
                 # Check cache visual cũ
                 if os.path.exists(mp4_alt) and os.path.getsize(mp4_alt) > 0:
+                    _mark("cache:file_mp4")
                     return mp4_alt
                 if os.path.exists(final_img_path) and os.path.getsize(final_img_path) > 1000:
+                    _mark("cache:file_img")
                     return final_img_path
 
                 if mode in ("photo_narration", "photo_slideshow") and i < len(user_images):
-                    shutil.copy(user_images[i], final_img_path)
+                    await asyncio.to_thread(shutil.copy, user_images[i], final_img_path)
+                    _mark("user_photo")
                     return final_img_path
                 elif req.cover_image_session_id and (
                     (req.cover_image_position in ("start", "both") and i == 0) or
@@ -850,16 +1036,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 ):
                     cover_images = get_upload_paths(req.cover_image_session_id)
                     if cover_images:
-                        shutil.copy(cover_images[0], final_img_path)
+                        await asyncio.to_thread(shutil.copy, cover_images[0], final_img_path)
+                        _mark("user_cover")
                         return final_img_path
                     else:
-                        await image_router.generate_image_with_fallback(
-                            image_prompt=img_prompt, output_path=final_img_path,
-                            aspect_ratio=imagen_aspect, google_api_key=api_key,
-                            banana_mode=getattr(req, "banana_mode", False),
-                            negative_prompt=req.negative_prompt, seed=video_seed,
-                            art_style=req.art_style
-                        )
+                        await _gen_ai_image()
                         return final_img_path
                 elif req.use_veo and not veo_state["disabled"]:
                     await _update_job(job_id, message=f"Đang sinh Video AI (Veo) cho cảnh {i+1}/{total}...")
@@ -869,6 +1050,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             scene_prompt=img_prompt, aspect_ratio=aspect_ratio,
                             use_fast_model=True, negative_prompt=req.negative_prompt or ""
                         )
+                        _mark("veo")
                         return video_path
                     except Exception as veo_err:
                         err_str = str(veo_err)
@@ -892,16 +1074,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                                     img_prompt, final_img_path, imagen_aspect, pexels_key,
                                     needed_duration=_estimate_scene_duration(text, voice, scene_rate),
                                     used_ids=stock_used_ids, api_key=api_key,
+                                    source_meta=vis_meta,
                                 )
                             except Exception as pex_v_err:
                                 logger.warning(f"Pexels Video fallback failed: {pex_v_err}")
-                        return await image_router.generate_image_with_fallback(
-                            image_prompt=img_prompt, output_path=final_img_path,
-                            aspect_ratio=imagen_aspect, google_api_key=api_key,
-                            banana_mode=getattr(req, "banana_mode", False),
-                            negative_prompt=req.negative_prompt, seed=video_seed,
-                            art_style=req.art_style
-                        )
+                        return await _gen_ai_image()
                 else:
                     pexels_key = os.getenv("PEXELS_API_KEY")
                     want_stock = _pick_visual_source(req, scene, i) == "stock_video"
@@ -912,21 +1089,17 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                                 img_prompt, final_img_path, imagen_aspect, pexels_key,
                                 needed_duration=_estimate_scene_duration(text, voice, scene_rate),
                                 used_ids=stock_used_ids, api_key=api_key,
+                                source_meta=vis_meta,
                             )
                         except Exception as pexels_err:
                             logger.warning(f"Pexels video cho cảnh {i+1} thất bại ({pexels_err}). Rơi về ảnh AI.")
 
                     await _update_job(job_id, message=f"Đang sinh ảnh AI cho cảnh {i+1}/{total}...")
                     try:
-                        await image_router.generate_image_with_fallback(
-                            image_prompt=img_prompt, output_path=final_img_path,
-                            aspect_ratio=imagen_aspect, google_api_key=api_key,
-                            banana_mode=getattr(req, "banana_mode", False),
-                            negative_prompt=req.negative_prompt, seed=video_seed,
-                            art_style=req.art_style
-                        )
+                        await _gen_ai_image()
                     except Exception:
                         _create_placeholder_image(final_img_path)
+                        _mark("placeholder")
                     return final_img_path
 
             # Chạy song song TTS và Sinh ảnh (Giảm 50% thời gian!)
@@ -934,13 +1107,20 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             
             scene["image_path"] = image_path
             scene["audio_path"] = audio_path
+            # Nguồn hình thật + truy vấn stock đã dùng: lưu vào scene để nó đi cả vào
+            # project state, log tổng kết và (sau này) badge trên UI.
+            scene["visual_source_used"] = vis_meta.get("source", "unknown")
+            if vis_meta.get("query"):
+                scene["stock_query_used"] = vis_meta["query"]
             # computed_duration sẽ được tính lại chính xác hơn trong build_scene_timeline (motion_effects)
             scene["computed_duration"] = scene_duration
             scene["word_boundaries"] = scene_wbs
 
-            # Checkpoint tự động lưu project state sau từng scene
+            # Checkpoint tự động lưu project state sau từng scene. to_thread: đây là ghi
+            # đĩa đồng bộ (json.dump + os.replace) chạy N lần/video (N = số cảnh) ngay
+            # trong event loop chính — chặn broadcast tiến độ WebSocket của job khác.
             from services import project_service
-            project_service.save_project_state(job_id, {
+            await asyncio.to_thread(project_service.save_project_state, job_id, {
                 "job_id": job_id,
                 "title": getattr(req, "topic", None) or f"Dự án {job_id[:8]}",
                 "mode": mode,
@@ -949,6 +1129,14 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 "status": "generating_assets",
                 "req": req.model_dump(mode='json')
             })
+
+        # ── Tổng kết nguồn hình: nói cho người dùng biết video này thật ra làm từ đâu ──
+        # Trước đây thông tin này bị chôn trong log WARNING rời rạc, nên hiện tượng "hết
+        # quota ảnh Gemini nên cả video thành ảnh stock tĩnh" hoàn toàn vô hình.
+        _tom_tat_nguon = _summarize_visual_sources(scenes)
+        if _tom_tat_nguon:
+            logger.info(f"[VisualSources] {_tom_tat_nguon}")
+            await _update_job(job_id, message=f"Nguồn hình: {_tom_tat_nguon}")
 
         # ── Tính toán Timeline chính xác theo word_boundaries ──
         await _update_job(job_id, message="Tính toán Timeline & Sync...")
@@ -1011,93 +1199,113 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                 message=f"Dời giọng đọc {lead:.2f}s để tránh đè hiệu ứng mở đầu...",
             )
 
-        scene_assets = []
         from services.motion_effects import apply_ken_burns, resolve_motion, normalize_stock_clip
         from services.video_service import ASPECT_RATIO_SIZES
         frame_size = ASPECT_RATIO_SIZES.get(aspect_ratio, (1080, 1920))
-        for i, s in enumerate(scenes):
-            scene_effect = s.get("visual_effect", "")
 
-            img_path = s["image_path"]
-            duration = s.get("computed_duration", 3.0)
-            start_time = s.get("start_time", 0.0)
+        # LỖI CŨ: mỗi cảnh (đúc Ken Burns / chuẩn hoá clip stock) chạy TUẦN TỰ dù không
+        # phụ thuộc cảnh khác — chỉ đọc/ghi biến cục bộ của chính cảnh đó. N cảnh = N lệnh
+        # ffmpeg nối đuôi nhau trong khi có thể chạy song song. Giới hạn bằng semaphore
+        # (KHÔNG song song vô hạn): mỗi lệnh ffmpeg là 1 process CPU-bound, thả hết N cảnh
+        # (có thể 20-30) cùng lúc sẽ tranh CPU/đĩa với chính nó và với job render khác
+        # đang chạy song song trong cùng process (đường này không qua render_worker nên
+        # không bị MAX_CONCURRENT_RENDERS chặn).
+        _visual_sem = asyncio.Semaphore(min(4, os.cpu_count() or 4))
+        _visual_done = 0
 
-            # MỌI ảnh tĩnh đều phải đúc thành .mp4 đúng khung hình đích — kể cả khi user
-            # tắt Ken Burns. Lý do là điều kiện vào FastAssembly: can_assemble() đòi mọi
-            # cảnh vừa là video vừa đúng độ phân giải. Chỉ cần MỘT cảnh còn là .png là
-            # cả job rơi về MoviePy (đơn luồng, không GPU) — 19 cảnh mất 30-45 phút,
-            # trong khi FFmpeg làm cùng việc đó trong ~15-20 giây.
-            # Cái giá phải trả: ~0.2s/cảnh để đúc clip đứng yên. Quá hời.
-            is_video_asset = img_path.lower().endswith((".mp4", ".mov"))
-            if not is_video_asset:
-                out_mp4 = img_path + f"_{i}.mp4"
-                if req.use_ken_burns:
-                    await _update_job(job_id, message=f"Đang xử lý chuyển động (Ken Burns) cho cảnh {i+1}...")
-                    # Hook Zoom Boost: cảnh đầu zoom mạnh hơn (1.0→1.35) tạo "cú đấm" thị giác
-                    # giữ chân người xem trong 2-3 giây đầu. Đây là cờ bật/tắt thật sự.
-                    # NẾU ĐÃ BẬT HOOK MÁY XÈNG (carousel_quote), thì huỷ bỏ zoom boost ở cảnh 1
-                    # vì Hook Máy Xèng đã diễn vai trò hút mắt với ảnh bìa rồi, lặp lại sẽ dư thừa.
-                    hook_boost = bool(i == 0 and req.hook_zoom_boost and req.hook_effect != "carousel_quote")
-                    pan_dir, kb_zoom_start, kb_zoom_end = resolve_motion(scene_effect, i, hook_boost=hook_boost)
-                else:
-                    await _update_job(job_id, message=f"Đang chuẩn hoá ảnh tĩnh cho cảnh {i+1}...")
-                    pan_dir, kb_zoom_start, kb_zoom_end = "center", 1.0, 1.0   # đứng im hoàn toàn
-                try:
-                    await asyncio.to_thread(
-                        apply_ken_burns,
-                        image_path=img_path, output_path=out_mp4, duration=duration, fps=30,
-                        pan_direction=pan_dir, zoom_start=kb_zoom_start, zoom_end=kb_zoom_end,
-                        resolution=frame_size,
-                    )
-                    img_path = out_mp4
-                except Exception as kb_err:
-                    # Giữ ảnh tĩnh: job vẫn chạy được (rơi về MoviePy, chậm) thay vì chết hẳn.
-                    logger.error(
-                        f"[Main] Cảnh {i+1}: đúc ảnh thành video thất bại ({kb_err}). Giữ ảnh tĩnh.",
-                        exc_info=True,
-                    )
-            elif is_video_asset:
-                # Clip stock/Veo: cắt đúng thời lượng cảnh (ưu tiên đoạn giữa), ping-pong nếu
-                # ngắn, ép về đúng khung + đồng chất màu. Lỗi thì giữ nguyên file gốc —
-                # video_service vẫn tự xử lý được, chỉ là không đẹp bằng.
-                await _update_job(job_id, message=f"Đang chuẩn hoá clip nền cảnh {i+1}...")
-                norm_mp4 = f"{os.path.splitext(img_path)[0]}_norm{i}.mp4"
-                try:
-                    await asyncio.to_thread(
-                        normalize_stock_clip,
-                        video_path=img_path, output_path=norm_mp4, duration=duration,
-                        resolution=frame_size, fps=30,
-                    )
-                    img_path = norm_mp4
-                except Exception as norm_err:
-                    logger.warning(f"[StockNorm] Cảnh {i+1} chuẩn hoá thất bại ({norm_err}). Dùng clip gốc.")
+        async def _process_scene_visual(i: int, s: dict) -> dict:
+            nonlocal _visual_done
+            async with _visual_sem:
+                scene_effect = s.get("visual_effect", "")
+                img_path = s["image_path"]
+                duration = s.get("computed_duration", 3.0)
+                start_time = s.get("start_time", 0.0)
 
-            # Hook SFX: tự thêm 'riser' mở màn cho cảnh đầu nếu bật Hook Zoom Boost + SFX
-            # và cảnh chưa có sẵn hiệu ứng âm thanh nào.
-            scene_sfx = s.get("sfx", "")
-            if i == 0 and req.hook_zoom_boost and req.use_sfx and not scene_sfx:
-                scene_sfx = "riser"
+                # MỌI ảnh tĩnh đều phải đúc thành .mp4 đúng khung hình đích — kể cả khi
+                # user tắt Ken Burns. Lý do là điều kiện vào FastAssembly: can_assemble()
+                # đòi mọi cảnh vừa là video vừa đúng độ phân giải. Chỉ cần MỘT cảnh còn
+                # là .png là cả job rơi về MoviePy (đơn luồng, không GPU) — 19 cảnh mất
+                # 30-45 phút, trong khi FFmpeg làm cùng việc đó trong ~15-20 giây.
+                # Cái giá phải trả: ~0.2s/cảnh để đúc clip đứng yên. Quá hời.
+                is_video_asset = img_path.lower().endswith((".mp4", ".mov"))
+                if not is_video_asset:
+                    out_mp4 = img_path + f"_{i}.mp4"
+                    if req.use_ken_burns:
+                        # Hook Zoom Boost: cảnh đầu zoom mạnh hơn (1.0→1.35) tạo "cú đấm"
+                        # thị giác giữ chân người xem trong 2-3 giây đầu. Đây là cờ
+                        # bật/tắt thật sự. NẾU ĐÃ BẬT HOOK MÁY XÈNG (carousel_quote), thì
+                        # huỷ bỏ zoom boost ở cảnh 1 vì Hook Máy Xèng đã diễn vai trò hút
+                        # mắt với ảnh bìa rồi, lặp lại sẽ dư thừa.
+                        hook_boost = bool(i == 0 and req.hook_zoom_boost and req.hook_effect != "carousel_quote")
+                        pan_dir, kb_zoom_start, kb_zoom_end = resolve_motion(scene_effect, i, hook_boost=hook_boost)
+                    else:
+                        pan_dir, kb_zoom_start, kb_zoom_end = "center", 1.0, 1.0   # đứng im hoàn toàn
+                    try:
+                        await asyncio.to_thread(
+                            apply_ken_burns,
+                            image_path=img_path, output_path=out_mp4, duration=duration, fps=30,
+                            pan_direction=pan_dir, zoom_start=kb_zoom_start, zoom_end=kb_zoom_end,
+                            resolution=frame_size,
+                        )
+                        img_path = out_mp4
+                    except Exception as kb_err:
+                        # Giữ ảnh tĩnh: job vẫn chạy được (rơi về MoviePy, chậm) thay vì chết hẳn.
+                        logger.error(
+                            f"[Main] Cảnh {i+1}: đúc ảnh thành video thất bại ({kb_err}). Giữ ảnh tĩnh.",
+                            exc_info=True,
+                        )
+                elif is_video_asset:
+                    # Clip stock/Veo: cắt đúng thời lượng cảnh (ưu tiên đoạn giữa), ping-pong
+                    # nếu ngắn, ép về đúng khung + đồng chất màu. Lỗi thì giữ nguyên file
+                    # gốc — video_service vẫn tự xử lý được, chỉ là không đẹp bằng.
+                    norm_mp4 = f"{os.path.splitext(img_path)[0]}_norm{i}.mp4"
+                    try:
+                        await asyncio.to_thread(
+                            normalize_stock_clip,
+                            video_path=img_path, output_path=norm_mp4, duration=duration,
+                            resolution=frame_size, fps=30,
+                        )
+                        img_path = norm_mp4
+                    except Exception as norm_err:
+                        logger.warning(f"[StockNorm] Cảnh {i+1} chuẩn hoá thất bại ({norm_err}). Dùng clip gốc.")
 
-            scene_assets.append({
-                "image_path": img_path,
-                "audio_path": s.get("audio_path"),
-                "text": s.get("text", ""),
-                "duration": duration,
-                "sfx": scene_sfx,
-                "visual_effect": scene_effect,
-                "word_boundaries": s.get("word_boundaries", []),
-                "transition": s.get("transition", "crossfade"),
-                "start_time": start_time,
-                "highlight_text": s.get("highlight_text", ""),
-                "source_quote": s.get("source_quote", ""),
-                "subtitle_text": s.get("subtitle_text", ""),
-                # Vi chỉnh nhạc nền riêng cảnh này (0-1). None = theo mức chung.
-                "bgm_volume": s.get("bgm_volume"),
-                # True = ảnh gốc VỐN LÀ video (stock/Veo), không phải ảnh tĩnh đúc Ken
-                # Burns. ffmpeg_assembler dùng để né transition "bóp méo" (squeezeh/
-                # squeezev) giữa 2 cảnh quay người/vật thật — xem chú thích ở đó.
-                "is_stock_video": is_video_asset,
-            })
+                # Hook SFX: tự thêm 'riser' mở màn cho cảnh đầu nếu bật Hook Zoom Boost + SFX
+                # và cảnh chưa có sẵn hiệu ứng âm thanh nào.
+                scene_sfx = s.get("sfx", "")
+                if i == 0 and req.hook_zoom_boost and req.use_sfx and not scene_sfx:
+                    scene_sfx = "riser"
+
+                result = {
+                    "image_path": img_path,
+                    "audio_path": s.get("audio_path"),
+                    "text": s.get("text", ""),
+                    "duration": duration,
+                    "sfx": scene_sfx,
+                    "word_boundaries": s.get("word_boundaries", []),
+                    "transition": s.get("transition", "crossfade"),
+                    "start_time": start_time,
+                    "highlight_text": s.get("highlight_text", ""),
+                    "source_quote": s.get("source_quote", ""),
+                    "subtitle_text": s.get("subtitle_text", ""),
+                    # Vi chỉnh nhạc nền riêng cảnh này (0-1). None = theo mức chung.
+                    "bgm_volume": s.get("bgm_volume"),
+                    # True = ảnh gốc VỐN LÀ video (stock/Veo), không phải ảnh tĩnh đúc Ken
+                    # Burns. ffmpeg_assembler dùng để né transition "bóp méo" (squeezeh/
+                    # squeezev) giữa 2 cảnh quay người/vật thật — xem chú thích ở đó.
+                    "is_stock_video": is_video_asset,
+                }
+                _visual_done += 1
+                await _update_job(
+                    job_id, message=f"Đang dựng hình/video cảnh: {_visual_done}/{len(scenes)}...",
+                )
+                return result
+
+        # asyncio.gather GIỮ ĐÚNG thứ tự kết quả theo thứ tự coroutine đưa vào (không phải
+        # thứ tự hoàn thành) — scene_assets[i] luôn khớp scenes[i], bgm_volume_segments và
+        # mọi chỗ dùng index bên dưới không cần đổi gì.
+        scene_assets = list(await asyncio.gather(
+            *[_process_scene_visual(i, s) for i, s in enumerate(scenes)]
+        ))
 
         # ── Nhạc nền theo từng cảnh ──
         # Chỉ gom những cảnh user CHỦ ĐỘNG chỉnh; cảnh không chỉnh không sinh đoạn nào,
@@ -1224,23 +1432,18 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             if not os.path.isfile(inline_sidechain):
                 inline_sidechain = None
             try:
+                # DÙNG LẠI master_kwargs đã dựng cho đường worker ở trên, không gõ lại
+                # ~13 tham số lần thứ hai (kể cả gọi _watermark_logo_path() lần nữa cho
+                # cùng 1 input) — đúng lớp trùng lặp mà render_kwargs đã tránh được, nhưng
+                # trước đây chưa áp dụng cho master_kwargs. Loại "subtitle_style" và
+                # "hook_effect": 2 key này chỉ dành cho generate_ass_file() ở đường worker
+                # (render_worker._worker_main), master_audio_and_export() không nhận.
                 await asyncio.to_thread(
                     master_audio_and_export,
                     input_video_path=raw_video, output_path=output_video_path,
-                    bgm_path=bgm_path,
                     sidechain_audio_path=inline_sidechain,
-                    intro_bgm_path=intro_bgm_path,
-                    intro_bgm_duration=actual_intro_bgm_duration,
                     ass_subtitle_path=output_srt_path if os.path.isfile(output_srt_path) else None,
-                    use_gpu=req.use_gpu_encode, bgm_volume=req.bgm_volume,
-                    watermark_text=req.watermark_text, color_grading=req.color_grading,
-                    watermark_logo=_watermark_logo_path(req.watermark_logo),
-                    total_duration=video_total_duration,
-                    bgm_volume_segments=bgm_volume_segments,
-                    use_audio_ducking=req.use_audio_ducking,
-                    narration_tone=req.narration_tone or "viral",
-                    use_pattern_interrupt=req.use_pattern_interrupt,
-                    hook_duration=(hook_timing or {}).get("duration", 0.0),
+                    **{k: v for k, v in master_kwargs.items() if k not in ("subtitle_style", "hook_effect")},
                 )
                 if os.path.isfile(raw_video):
                     os.remove(raw_video)
@@ -1258,14 +1461,30 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                                 await asyncio.sleep(1)
                     except OSError:
                         pass
-            await _update_job(
-                job_id, status="done", progress=100, message="Hoàn tất!",
-                video_url=f"/api/download/{job_id}.mp4",
-                srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
-            )
+
+            # LỖI CŨ: luôn báo status="done" ở đây bất kể nhánh `except` phía trên có
+            # thật sự tạo ra output_video_path hay không — mastering lỗi + raw_video
+            # không tồn tại (hoặc os.replace() cũng lỗi, bị nuốt trong `except OSError:
+            # pass`) vẫn báo "Hoàn tất!" kèm video_url trỏ tới file không tồn tại (404).
+            # Chỉ báo done khi file thật sự nằm ở output_video_path.
+            if os.path.isfile(output_video_path):
+                await _update_job(
+                    job_id, status="done", progress=100, message="Hoàn tất!",
+                    video_url=f"/api/download/{job_id}.mp4",
+                    srt_url=f"/api/download/{job_id}.ass" if mode != "photo_slideshow" else None,
+                )
+            else:
+                await _update_job(
+                    job_id, status="error",
+                    error="Không tạo được file video đầu ra",
+                    message=(
+                        "❌ Mastering âm thanh lỗi và không phục hồi được video thô. "
+                        "Xem backend/logs/main.log để biết chi tiết."
+                    ),
+                )
         else:
             # Worker đang chạy → poll file status và broadcast qua WebSocket
-            from services.render_worker import cleanup_status, is_render_active
+            from services.render_worker import cancel_render, cleanup_status, is_render_active
 
             # LỖI CŨ: mọi đường thoát khỏi vòng poll đều là `break` bình thường, nên khối
             # `except` bên dưới KHÔNG chạy và hàm rơi thẳng xuống phần dọn asset ở cuối —
@@ -1320,25 +1539,34 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                     break
 
                 # Process còn sống nhưng im lặng quá lâu = treo (FFmpeg đợi I/O ổ mạng,
-                # deadlock...). Không tự giết nó, chỉ trả quyền quyết định cho người dùng
-                # thay vì để họ nhìn một thanh tiến trình đứng yên vô thời hạn.
+                # deadlock, driver GPU treo...).
                 last_beat = (ws or {}).get("updated_at", 0)
                 if last_beat and time.time() - last_beat > RENDER_STALL_TIMEOUT:
                     logger.error(
-                        "[Render] Job %s không nhúc nhích %.0f giây — coi như treo.",
+                        "[Render] Job %s không nhúc nhích %.0f giây — coi như treo, đang huỷ để giải phóng slot render.",
                         job_id, time.time() - last_beat,
                     )
+                    # LỖI CŨ: chỉ báo lỗi cho user rồi break, KHÔNG thật sự giết process con
+                    # (write_videofile/ffmpeg của MoviePy không có tham số timeout). Process
+                    # treo vẫn nằm nguyên trong render_worker._active_processes, chiếm vĩnh
+                    # viễn 1 trong 2 slot MAX_CONCURRENT_RENDERS dù UI đã báo lỗi — mọi job
+                    # sau chỉ còn tranh nhau 1 slot, rồi 0. cancel_render() dùng đúng cơ chế
+                    # kill process-tree của nút "Huỷ" thủ công, KHÔNG đụng tới ảnh/giọng đọc
+                    # (những file đó là input của worker, không phải thứ cancel_render xoá).
+                    try:
+                        cancel_render(job_id)
+                    except Exception as cancel_err:
+                        logger.error(f"[Render] Không huỷ được worker treo của job {job_id}: {cancel_err}")
                     await _update_job(
                         job_id, status="error",
                         error="Render treo quá lâu",
                         message=(
                             f"⚠️ Không có tín hiệu nào từ tiến trình render trong "
-                            f"{RENDER_STALL_TIMEOUT // 60} phút. Nhiều khả năng nó đã treo. "
-                            f"Bấm Huỷ để dừng hẳn, hoặc xem backend/logs/render_worker.log."
+                            f"{RENDER_STALL_TIMEOUT // 60} phút — đã tự huỷ để giải phóng slot render. "
+                            f"Ảnh và giọng đọc đã sinh vẫn được giữ lại, render lại sẽ không tốn "
+                            f"thêm quota API. Chi tiết: backend/logs/render_worker.log."
                         ),
                     )
-                    # KHÔNG dọn asset: worker có thể vẫn đang sống và giữ file mở —
-                    # xoá lúc này vừa mất dữ liệu vừa có thể làm nó chết theo.
                     render_failed = True
                     break
 
@@ -1632,10 +1860,13 @@ async def generate_script(req: GenerateScriptRequest):
     
     try:
         scenes = []
+        # Giữ lại nguyên bộ tham số sinh kịch bản để vòng VIẾT LẠI (nếu điểm chất lượng quá
+        # thấp) dùng đúng cấu hình đó, chỉ khác ở `revision_notes`.
+        gen_kwargs: dict | None = None
         if req.mode == "storyteller" or req.mode == "quiz_listicle":
             if not req.topic or not req.topic.strip():
                 raise HTTPException(status_code=400, detail="Thiếu chủ đề (topic) cho mode này.")
-            scenes = await gemini_service.generate_script(
+            gen_kwargs = dict(
                 topic=req.topic, num_scenes=req.num_scenes, mode=req.mode,
                 art_style=req.art_style, api_key=req.gemini_api_key,
                 target_duration=req.target_duration,
@@ -1644,7 +1875,9 @@ async def generate_script(req: GenerateScriptRequest):
                 sync_characters=req.sync_characters,
                 content_niche=req.content_niche,
                 variation_seed=req.variation_seed,
+                prefer_stock_video=_wants_stock_footage(req),
             )
+            scenes = await gemini_service.generate_script(**gen_kwargs)
 
         elif req.mode == "script_video":
             if not req.script_text or not req.script_text.strip():
@@ -1656,6 +1889,7 @@ async def generate_script(req: GenerateScriptRequest):
                 # sfx/transition/emotion/nhịp đọc của từng cảnh.
                 narration_tone=req.narration_tone or "viral",
                 content_niche=req.content_niche,
+                prefer_stock_video=_wants_stock_footage(req),
             )
             if req.auto_balance_scenes:
                 scenes = _balance_split_scenes(scenes, req)
@@ -1690,6 +1924,17 @@ async def generate_script(req: GenerateScriptRequest):
                 review_result = await gemini_service.review_script(
                     scenes, word_budget_hi=_w_hi, api_key=req.gemini_api_key,
                 )
+                # ── Viết lại 1 lượt nếu điểm dưới ngưỡng ──
+                # Chỉ áp cho các mode SINH nội dung mới. script_video bị loại tuyệt đối: lời
+                # thoại ở đó là của người dùng, giữ nguyên văn 100% là hợp đồng — "viết lại"
+                # nghĩa là sửa lời người ta.
+                if gen_kwargs and req.auto_retry_low_quality:
+                    scenes, review_result = await gemini_service.regenerate_if_low_quality(
+                        scenes, review_result,
+                        word_budget_hi=_w_hi,
+                        gen_kwargs=gen_kwargs,
+                        api_key=req.gemini_api_key,
+                    )
                 scenes["review"] = review_result
             except Exception as review_err:
                 logger.warning(f"Script Review skipped: {review_err}")
@@ -1796,6 +2041,194 @@ async def rebalance_scenes(req: RebalanceRequest):
     return result
 
 
+class ResplitRequest(BaseModel):
+    full_text: str
+    scenes: List[Dict[str, Any]] = []
+    voice: Optional[str] = None
+    speech_rate: str = "+0%"
+    # False = giữ đúng ranh giới người dùng đã chốt bằng dòng trống, không cân nhịp.
+    rebalance: bool = True
+
+
+@app.post("/api/resplit-script")
+async def resplit_script(req: ResplitRequest):
+    """
+    Nhận TOÀN BỘ kịch bản đã sửa (một khối chữ, cảnh ngăn nhau bằng dòng trống) → chia
+    lại thành cảnh, giữ nguyên ảnh/cảm xúc của các cảnh cũ tương ứng.
+
+    CHỈ TRẢ VỀ ĐỀ XUẤT, giống /api/rebalance-scenes: chia lại có thể làm mất `image_prompt`
+    của những cảnh bị gộp, nên tuyệt đối không chạy sau lưng người dùng.
+    """
+    from services import script_resplit
+
+    if not (req.full_text or "").strip():
+        raise HTTPException(status_code=400, detail="Kịch bản trống.")
+    try:
+        return await asyncio.to_thread(
+            script_resplit.resplit, req.full_text, req.scenes,
+            req.voice, req.speech_rate, req.rebalance,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class FullScriptPreviewRequest(BaseModel):
+    scenes: List[Dict[str, Any]]
+    voice: Optional[str] = None
+    speech_rate: Optional[str] = "+0%"
+    speech_pitch: Optional[str] = "+0Hz"
+
+
+# Trần ký tự cho bản đọc thử cả bài. 12.000 ký tự ≈ 15 phút đọc — dài hơn mọi video
+# ngắn, mà vẫn chặn được cú dán nhầm cả quyển sách vào ô nhập.
+MAX_FULL_PREVIEW_CHARS = 12000
+
+
+# Bản nghe thử để lại file trong TEMP_DIR cho tới khi trình duyệt tải về. Quá hạn này
+# thì coi như user đã đóng tab — dọn đi, đừng để TEMP_DIR phình theo mỗi lần bấm.
+FULL_PREVIEW_TTL_S = 3600
+
+
+def _don_ban_nghe_thu_cu():
+    """Xoá các file nghe thử quá hạn. Gọi mỗi lần tạo bản mới — rẻ và không cần cron."""
+    gioi_han = time.time() - FULL_PREVIEW_TTL_S
+    try:
+        for ten in os.listdir(TEMP_DIR):
+            if not ten.startswith("fullpreview_"):
+                continue
+            p = os.path.join(TEMP_DIR, ten)
+            try:
+                if os.path.isfile(p) and os.path.getmtime(p) < gioi_han:
+                    os.remove(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+async def _chay_nghe_thu_ca_bai(job_id: str, scene_texts: list[str], req: "FullScriptPreviewRequest"):
+    """Sinh giọng cả bài dưới nền, cập nhật tiến độ qua JobState/WebSocket."""
+    voice = req.voice or tts_service.DEFAULT_VOICE
+    out_path = os.path.join(TEMP_DIR, f"fullpreview_{job_id}.mp3")
+    da_bao: set = set()
+    tong_canh = sum(1 for t in scene_texts if t.strip())
+
+    async def _canh_bao(msg: str):
+        if msg not in da_bao:
+            da_bao.add(msg)
+            await _update_job(job_id, message=msg)
+
+    async def _tien_do(i: int, _n: int):
+        xong = sum(1 for t in scene_texts[:i] if t.strip())
+        await _update_job(
+            job_id,
+            progress=int(xong * 95 / max(1, tong_canh)),
+            message=f"Đang đọc cảnh {i + 1}/{len(scene_texts)}...",
+        )
+
+    try:
+        dur, scene_wbs, _ = await tts_service.synthesize_script_single_pass(
+            scene_texts, out_path,
+            voice=voice,
+            rate=req.speech_rate or "+0%",
+            pitch=req.speech_pitch or "+0Hz",
+            warning_callback=_canh_bao,
+            progress_callback=_tien_do,
+        )
+        written = tts_service._resolve_written_path(out_path)
+        if not written:
+            raise RuntimeError("Không sinh được giọng đọc (file rỗng).")
+
+        # Mốc đầu/cuối của từng cảnh trên dải audio, để UI chạy con trỏ theo lời đọc.
+        ranges = []
+        for wbs in scene_wbs:
+            if wbs:
+                ranges.append([round(min(w["offset"] for w in wbs), 2),
+                               round(max(w["offset"] + w["duration"] for w in wbs), 2)])
+            else:
+                ranges.append(None)
+
+        await _update_job(
+            job_id, status="done", progress=100,
+            message=f"Đã đọc xong cả bài ({dur:.1f} giây).",
+            audio_url=f"/api/preview-full-script/{job_id}/audio",
+            scene_ranges=ranges,
+            cache_scope=tts_service.narration_cache_scope(voice),
+        )
+    except Exception as e:
+        logger.error(f"[FullPreview] Sinh giọng thất bại: {e}", exc_info=True)
+        await _update_job(job_id, status="error", error=f"Không đọc thử được cả bài: {e}")
+
+
+@app.post("/api/preview-full-script")
+async def preview_full_script(req: FullScriptPreviewRequest, background_tasks: BackgroundTasks):
+    """
+    Đọc thử TOÀN BỘ kịch bản thành một dải audio liền. Chạy NỀN, trả về job_id.
+
+    VÌ SAO KHÔNG LÀM ĐỒNG BỘ: đây là tính năng sinh ra cho giọng AI, mà giọng AI trên
+    GPU máy này chạy chậm hơn thời gian thực ~8 lần (xem tts_service.get_omnivoice_rtf).
+    Một kịch bản 20 cảnh = khoảng 15 phút — vượt xa mọi ngưỡng chờ của trình duyệt và
+    proxy. Giữ đồng bộ thì đúng trường hợp cần dùng nhất lại là trường hợp chắc chắn
+    hỏng, và user mất trắng cả 15 phút đó.
+
+    Tiến độ đi qua CÙNG JobState/WebSocket với render, nên giao diện chỉ cần bám
+    /api/job-status/{job_id} như mọi job khác.
+
+    Giá trị kèm theo: bản đọc thử đi qua ĐÚNG synthesize_speech với ĐÚNG bộ tham số của
+    lúc render, nên với giọng AI mỗi cảnh được nạp vào TTS cache — nghe xong một lượt là
+    render không phải sinh lại giây nào (xem tts_service.narration_cache_scope).
+    """
+    if not req.scenes:
+        raise HTTPException(status_code=400, detail="Chưa có cảnh nào để đọc thử.")
+
+    scene_texts = [
+        tts_service.strip_break_tags(
+            tts_service._strip_emoji(s.get("text", "") or "")
+        ).strip()
+        for s in req.scenes
+    ]
+    tong = sum(len(t) for t in scene_texts)
+    if not tong:
+        raise HTTPException(status_code=400, detail="Kịch bản chưa có lời thoại nào.")
+    if tong > MAX_FULL_PREVIEW_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Kịch bản dài {tong} ký tự, vượt giới hạn nghe thử {MAX_FULL_PREVIEW_CHARS}.",
+        )
+
+    _don_ban_nghe_thu_cu()
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = JobState(
+        job_id=job_id, status="generating_assets", progress=0,
+        message="Chuẩn bị đọc thử toàn bộ kịch bản...",
+        mode="full_preview",
+        cache_scope=tts_service.narration_cache_scope(req.voice or tts_service.DEFAULT_VOICE),
+    )
+    background_tasks.add_task(_chay_nghe_thu_ca_bai, job_id, scene_texts, req)
+    return {
+        "job_id": job_id,
+        "scenes": len(scene_texts),
+        "cache_scope": JOBS[job_id].cache_scope,
+        # Ước tính dựa trên SỐ ĐO thật của máy này, None nếu chưa từng sinh giọng AI.
+        "estimate": tts_service.uoc_tinh_thoi_gian_giong_ai(tong / 15.0),
+    }
+
+
+@app.get("/api/preview-full-script/{job_id}/audio")
+async def preview_full_script_audio(job_id: str):
+    """Tải bản đọc thử đã sinh xong. File sống tới FULL_PREVIEW_TTL_S để user tua lại."""
+    from fastapi.responses import FileResponse
+
+    safe = os.path.basename(job_id)
+    written = tts_service._resolve_written_path(os.path.join(TEMP_DIR, f"fullpreview_{safe}.mp3"))
+    if not written:
+        raise HTTPException(status_code=404, detail="Bản đọc thử không còn — hãy bấm đọc lại.")
+    return FileResponse(
+        written,
+        media_type="audio/wav" if written.endswith(".wav") else "audio/mpeg",
+    )
+
+
 @app.get("/api/timing-profile")
 async def timing_profile(
     voice: str = "",
@@ -1862,12 +2295,237 @@ async def tts_health():
 ALLOWED_VOICE_SAMPLE_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
 MAX_VOICE_SAMPLE_SIZE = 15 * 1024 * 1024  # 15MB
 
+# ── Tiền xử lý mẫu giọng clone ──────────────────────────────────────────────
+# Chất lượng file mẫu quyết định TOÀN BỘ chất lượng giọng clone: OmniVoice sao chép cả
+# tạp âm nền, tiếng ù điện và độ to bất thường của mẫu vào mọi cảnh của mọi video sau
+# đó. Trước đây mẫu chỉ bị cắt cứng 15 giây rồi dùng thẳng.
+#
+#   highpass=80    — cắt ù điện 50/60Hz, tiếng gió chạm mic, rung bàn.
+#   lowpass=8000   — cắt tiếng xì trên 8kHz; giọng người gần như không có gì ở dải này,
+#                    còn model sinh ở 24kHz nên phần trên chỉ là nhiễu.
+#   silenceremove  — gọt lặng ĐẦU; đảo băng rồi gọt tiếp = gọt lặng ĐUÔI. Khoảng lặng
+#                    thừa làm model tưởng đó là nhịp nói của người này và bắt chước theo.
+#   loudnorm       — chuẩn EBU R128 (-16 LUFS), để mẫu thu nhỏ tiếng và mẫu thu to
+#                    tiếng cho ra cùng một mức, không còn giọng lúc to lúc bé giữa các
+#                    giọng clone khác nhau.
+# Thứ tự bắt buộc: lọc dải TRƯỚC gọt lặng (bỏ tiếng ù trước thì ngưỡng im lặng mới
+# đúng), và loudnorm CUỐI CÙNG (nó đo cả bài, đo trên bản đã sạch mới ra đúng số).
+VOICE_SAMPLE_FILTERS = (
+    "highpass=f=80,"
+    "lowpass=f=8000,"
+    "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-50dB,"
+    "areverse,"
+    "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-50dB,"
+    "areverse,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+# 10 giây, KHÔNG phải 15: README của OmniVoice ghi rõ "Use a 3–10 seconds reference
+# audio clip. Longer audio slows down inference and may degrade cloning quality."
+# Mẫu 15s vừa làm chậm mọi lần sinh giọng vừa hạ chất lượng bản clone.
+VOICE_SAMPLE_MAX_SECONDS = 10.0
+# Dưới ngưỡng này, OmniVoice không đủ dữ liệu để bắt được chất giọng: nó sẽ trôi về
+# giọng mặc định và user tưởng phần mềm hỏng. Chặn ngay lúc upload, kèm số đo cụ thể,
+# rẻ hơn nhiều so với để họ render xong một video 3 phút rồi mới nghe ra.
+VOICE_SAMPLE_MIN_SPEECH = 3.0
+_SILENCE_DUR_RE = re.compile(r"silence_duration:\s*([0-9.]+)")
+
+
+def _measure_speech_seconds(wav_path: str) -> float:
+    """
+    Số giây CÓ TIẾNG NÓI trong file (tổng thời lượng trừ các quãng lặng bên trong).
+
+    Chỉ đo độ dài file là chưa đủ: một mẫu 10 giây gồm 2 giây nói + 8 giây im vẫn qua
+    cửa, rồi cho ra giọng clone tệ. Dùng silencedetect của FFmpeg để trừ đi phần im.
+    """
+    import imageio_ffmpeg
+
+    total = tts_service._probe_audio_duration(wav_path) or 0.0
+    if total <= 0:
+        return 0.0
+    try:
+        proc = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-nostats", "-i", wav_path,
+             "-af", "silencedetect=noise=-45dB:d=0.35", "-f", "null", "-"],
+            capture_output=True, text=True, errors="replace", timeout=120,
+        )
+        silent = sum(float(m) for m in _SILENCE_DUR_RE.findall(proc.stderr or ""))
+    except Exception as e:
+        logger.warning(f"[VoiceClone] Không đo được quãng lặng ({e}); dùng tổng thời lượng.")
+        silent = 0.0
+    return max(0.0, total - silent)
+
+
+_SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9.]+)")
+
+
+def _diem_cat_theo_khoang_lang(wav_path: str) -> float | None:
+    """
+    Mốc cắt tốt nhất cho mẫu giọng: khoảng lặng CUỐI CÙNG nằm trong khoảng cho phép.
+
+    VÌ SAO KHÔNG CẮT CỨNG THEO GIÂY: OmniVoice coi ref_text là phần mở đầu rồi đọc TIẾP
+    sang văn bản đích. Cắt giữa câu thì transcript cũng dở dang ("...chuyển đến sống tại
+    thành phố") và mô hình được mời nói nốt câu đó — đo được thật: bản đọc ra bắt đầu
+    bằng "giúp đỡ các phòng phố," rồi mới vào nội dung thật. Cắt tại chỗ người nói ngừng
+    lấy hơi thì mẫu kết thúc trọn vẹn, không còn gì để nói tiếp.
+
+    Trả về None nếu không tìm được chỗ ngừng nào — khi đó phía gọi cắt cứng như cũ.
+    """
+    import imageio_ffmpeg
+    try:
+        proc = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-nostats", "-i", wav_path,
+             "-af", "silencedetect=noise=-40dB:d=0.18", "-f", "null", "-"],
+            capture_output=True, text=True, errors="replace", timeout=120,
+        )
+    except Exception as e:
+        logger.warning(f"[VoiceClone] Không dò được khoảng lặng ({e}); cắt cứng theo giây.")
+        return None
+
+    ung_vien = [
+        float(m) for m in _SILENCE_START_RE.findall(proc.stderr or "")
+        if VOICE_SAMPLE_MIN_SPEECH < float(m) <= VOICE_SAMPLE_MAX_SECONDS
+    ]
+    return max(ung_vien) if ung_vien else None
+
+
+def _chuan_hoa_mau_giong(nguon: str, ref_wav: str, preview_mp3: str | None = None) -> str:
+    """
+    Chuẩn hoá một file bất kỳ thành mẫu giọng dùng được: lọc dải tần → gọt lặng hai đầu
+    → chuẩn hoá độ to EBU R128 → cắt ở CUỐI MỘT CÂU dưới VOICE_SAMPLE_MAX_SECONDS,
+    24kHz mono. Trả về transcript của đúng phần được giữ lại ("" nếu không chép được).
+
+    Tách riêng khỏi /api/voice-clone vì đường SỬA giọng cũ phải chạy đúng y bộ lọc này —
+    hai bản sao của cùng một chuỗi filter thì chỉ cần vá một bên là hai giọng nghe khác
+    nhau mà không ai hiểu vì sao. Xem VOICE_SAMPLE_FILTERS để biết vì sao từng bước tồn tại.
+    """
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+    # Bước 1: lọc + chuẩn hoá, CHƯA cắt — cần bản đã sạch mới chép lời cho đúng.
+    tmp = ref_wav + ".loc.wav"
+    subprocess.run(
+        [ffmpeg_exe, "-y", "-i", nguon, "-af", VOICE_SAMPLE_FILTERS,
+         "-ar", "24000", "-ac", "1", tmp],
+        check=True, capture_output=True, timeout=180,
+    )
+    ref_text = ""
+    try:
+        # Bước 2: cắt ở CUỐI MỘT CÂU, không cắt giữa chừng. Ưu tiên mốc câu của whisper;
+        # dò khoảng lặng theo năng lượng chỉ là lưới hứng (người nói liên tục thì cả 10
+        # giây không có quãng nào đủ im để nhận ra).
+        cau = tts_service.chep_loi_theo_cau(tmp)
+        cat, ref_text = tts_service.chon_diem_cat_mau(
+            cau, VOICE_SAMPLE_MAX_SECONDS, VOICE_SAMPLE_MIN_SPEECH
+        )
+        if cat is None:
+            cat = _diem_cat_theo_khoang_lang(tmp) or VOICE_SAMPLE_MAX_SECONDS
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", tmp, "-t", f"{cat:.3f}",
+             "-ar", "24000", "-ac", "1", ref_wav],
+            check=True, capture_output=True, timeout=120,
+        )
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    if preview_mp3:
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", ref_wav, "-b:a", "128k", preview_mp3],
+            check=True, capture_output=True, timeout=120,
+        )
+    return ref_text
+
+
+@app.post("/api/voice-clone/{voice_id}/repair")
+async def repair_voice_clone(voice_id: str):
+    """
+    Sửa một giọng clone đã tạo từ TRƯỚC khi có bộ lọc mẫu và bước đối chiếu transcript.
+
+    Giọng cũ mang ba khuyết tật mà người dùng không nhìn thấy được:
+      • file mẫu chưa qua lọc dải tần / gọt lặng / chuẩn hoá độ to — OmniVoice sao chép
+        cả tiếng ù và khoảng lặng thừa vào mọi cảnh của mọi video;
+      • file mẫu dài quá 10 giây (README OmniVoice: 3–10s, dài hơn thì CHẬM và GIẢM chất
+        lượng bản clone);
+      • transcript còn chữ số thô ("1943") trong khi file đọc thành chữ — cặp chữ↔tiếng
+        lệch ngay tại con số, đúng kiểu lỗi làm giọng đọc chệch đi.
+
+    Chạy lại đúng đường xử lý của bản mới, rồi chép lời lại từ chính file đã xử lý.
+    File mẫu cũ được giữ lại (.bak) cho tới khi bản mới qua được cửa kiểm tra.
+    """
+    safe_id = os.path.basename(voice_id)
+    if not safe_id.startswith("omnivoice_custom_"):
+        raise HTTPException(status_code=400, detail="Chỉ sửa được giọng clone cá nhân.")
+    cv = tts_service.get_custom_voice(safe_id)
+    if cv is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giọng clone này.")
+
+    ref_wav = os.path.join(VOICES_PREVIEW_DIR, f"{safe_id}_ref.wav")
+    if not os.path.isfile(ref_wav):
+        raise HTTPException(status_code=400, detail="Không tìm thấy file mẫu giọng để sửa.")
+
+    truoc = {
+        "seconds": round(tts_service._probe_audio_duration(ref_wav) or 0, 1),
+        "ref_text": cv.get("ref_text", ""),
+    }
+    # Bản lưu để lùi lại: đây là DỮ LIỆU DUY NHẤT của giọng này, hỏng là mất luôn giọng.
+    backup = ref_wav + ".bak"
+    await asyncio.to_thread(shutil.copy2, ref_wav, backup)
+    preview_mp3 = os.path.join(VOICES_PREVIEW_DIR, f"{safe_id}.mp3")
+
+    try:
+        # Transcript về thẳng từ đây và ứng với ĐÚNG phần audio được giữ lại — chép lời
+        # lần hai trên file đã cắt là mở đường cho hai bên lệch nhau lần nữa.
+        heard = await asyncio.to_thread(_chuan_hoa_mau_giong, backup, ref_wav, preview_mp3)
+        giay_noi = await asyncio.to_thread(_measure_speech_seconds, ref_wav)
+        if giay_noi < VOICE_SAMPLE_MIN_SPEECH:
+            raise RuntimeError(
+                f"sau khi xử lý chỉ còn {giay_noi:.1f} giây tiếng nói "
+                f"(cần tối thiểu {VOICE_SAMPLE_MIN_SPEECH:.0f})"
+            )
+        if not heard:
+            heard = await asyncio.to_thread(tts_service.transcribe_vietnamese, ref_wav)
+        if not heard:
+            raise RuntimeError("không chép được lời từ file mẫu (whisper lỗi)")
+    except Exception as e:
+        # trả lại nguyên trạng, không để user mất giọng
+        await asyncio.to_thread(shutil.move, backup, ref_wav)
+        logger.error(f"[VoiceClone] Sửa giọng {safe_id} thất bại: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Không sửa được giọng clone: {e}")
+
+    await asyncio.to_thread(os.remove, backup)
+
+    # Số phải là CHỮ trong transcript: file đọc "một nghìn chín trăm bốn mươi ba", để
+    # nguyên "1943" thì cặp chữ↔tiếng lệch đúng tại đó.
+    heard = tts_service.normalize_vi_numbers(heard)
+    entry = tts_service.update_custom_voice(
+        safe_id, ref_text=heard, ref_text_match=1.0, ref_text_source="asr",
+        gender=cv.get("gender"),
+    )
+    purged = tts_service.purge_voice_cache(safe_id)
+    tts_service.invalidate_voice_prompt(safe_id)
+
+    sau = {"seconds": round(tts_service._probe_audio_duration(ref_wav) or 0, 1),
+           "speech_seconds": round(giay_noi, 1), "ref_text": heard}
+    logger.info(f"[VoiceClone] Đã sửa {safe_id}: {truoc['seconds']}s → {sau['seconds']}s.")
+    return {
+        "message": (
+            f"Đã sửa giọng clone: mẫu {truoc['seconds']}s → {sau['seconds']}s (đã lọc nhiễu, "
+            f"chuẩn hoá độ to), chép lại lời mẫu, xoá {purged} file audio cũ trong bộ nhớ đệm."
+        ),
+        "before": truoc, "after": sau, "voice": entry, "purged_cache_files": purged,
+    }
+
 
 @app.post("/api/voice-clone")
 async def create_voice_clone(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     transcript: Optional[str] = Form(None),
+    gender: Optional[str] = Form(None),
+    force_transcript: bool = Form(False),
 ):
     """
     Nhận file mẫu giọng (5-10s) → chuẩn hóa 24kHz mono WAV làm reference cho
@@ -1894,23 +2552,22 @@ async def create_voice_clone(
         f.write(content)
 
     def _convert():
-        """Chuẩn hóa mẫu về 24kHz mono WAV (tối đa 15s) + xuất mp3 preview."""
-        import subprocess
-        import imageio_ffmpeg
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        subprocess.run(
-            [ffmpeg_exe, "-y", "-i", raw_path, "-t", "15", "-ar", "24000", "-ac", "1", ref_wav_path],
-            check=True, capture_output=True, timeout=120,
-        )
-        subprocess.run(
-            [ffmpeg_exe, "-y", "-i", ref_wav_path, "-b:a", "128k", preview_mp3_path],
-            check=True, capture_output=True, timeout=120,
-        )
+        _chuan_hoa_mau_giong(raw_path, ref_wav_path, preview_mp3_path)
+
+    def _cleanup_partial():
+        for p in (raw_path, ref_wav_path, preview_mp3_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     try:
         await asyncio.to_thread(_convert)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Không thể xử lý file âm thanh: {e}")
+        _cleanup_partial()
+        detail = e.stderr.decode("utf-8", "replace")[-400:] if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
+        raise HTTPException(status_code=400, detail=f"Không thể xử lý file âm thanh: {detail}")
     finally:
         if os.path.exists(raw_path):
             try:
@@ -1918,40 +2575,162 @@ async def create_voice_clone(
             except OSError:
                 pass
 
-    # Transcript: user cung cấp hoặc tự nhận dạng bằng whisper (cần cho ref_text của cloning)
-    ref_text = (transcript or "").strip()
-    if not ref_text:
-        def _transcribe():
-            model = tts_service._get_whisper_model()
-            result = model.transcribe(ref_wav_path, language="vi")
-            return " ".join(seg.text.strip() for seg in result.segments).strip()
-        try:
-            ref_text = await asyncio.to_thread(_transcribe)
-        except Exception as e:
-            logger.warning(f"[VoiceClone] Whisper transcribe lỗi: {e}")
+    speech_seconds = await asyncio.to_thread(_measure_speech_seconds, ref_wav_path)
+    if speech_seconds < VOICE_SAMPLE_MIN_SPEECH:
+        _cleanup_partial()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Mẫu giọng chỉ có {speech_seconds:.1f} giây tiếng nói thật (sau khi cắt bỏ "
+                f"khoảng lặng), cần tối thiểu {VOICE_SAMPLE_MIN_SPEECH:.0f} giây. "
+                "Hãy thu lại một đoạn nói liên tục 5-10 giây, không ngắt quãng."
+            ),
+        )
+
+    # ── Transcript PHẢI khớp file ghi âm ────────────────────────────────────
+    # OmniVoice nhận (ref_audio, ref_text) như một CẶP: nó coi ref_text là lời của
+    # ref_audio rồi đọc tiếp sang văn bản đích. Lệch cặp = mất mốc căn chữ↔tiếng = giọng
+    # đọc ra thứ nghe rất giống tiếng Việt nhưng vô nghĩa.
+    #
+    # ĐÃ XẢY RA THẬT và không ai phát hiện ra suốt nhiều video: một giọng clone có
+    # transcript ghi "Chào các bạn, tôi là ... giúp tự động hóa hoàn toàn quy trình..."
+    # trong khi file mẫu đọc "Hãy yêu thương bản thân như cách đất trời nâng niu...".
+    # Đo lại bằng cách cho model đọc thử: transcript sai → hoàn toàn vô nghĩa; thay đúng
+    # transcript → đọc chuẩn. Vì thế cửa này chặn ngay từ lúc upload.
+    heard = await asyncio.to_thread(tts_service.transcribe_vietnamese, ref_wav_path)
+    user_text = (transcript or "").strip()
+    match_score = 1.0
+    ref_source = "asr"
+
+    if user_text and heard:
+        match_score = tts_service.transcript_similarity(user_text, heard)
+        if match_score < tts_service.MIN_REF_TEXT_MATCH and not force_transcript:
+            _cleanup_partial()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Văn bản đọc mẫu bạn nhập KHÔNG khớp nội dung file ghi âm "
+                    f"(độ khớp {match_score:.0%}).\n\n"
+                    f"File ghi âm thực sự đọc:\n\"{heard}\"\n\n"
+                    "Dùng sai cặp này thì giọng AI sẽ đọc ra tiếng Việt vô nghĩa. "
+                    "Hãy sửa lại văn bản cho khớp, hoặc để trống để hệ thống tự chép lời."
+                ),
+            )
+        ref_text, ref_source = user_text, "user"
+    elif user_text:
+        ref_text, ref_source = user_text, "user"      # không chép lời được → tin user
+    else:
+        ref_text = heard
+
     if not ref_text:
         ref_text = "Chào bạn, đây là giọng đọc tham khảo để đồng bộ video."
+        match_score = 0.0
 
     display_name = (name or "").strip() or f"Giọng của tôi {voice_id[-4:]}"
-    entry = tts_service.register_custom_voice(voice_id, display_name, ref_text)
+    entry = tts_service.register_custom_voice(voice_id, display_name, ref_text, gender=gender)
+    # Ghi lại điểm đối chiếu để lần dùng sau không phải chép lời lại (xem
+    # ensure_clone_ref_text) — và để biết transcript này đã được kiểm chứng hay chưa.
+    entry = tts_service.update_custom_voice(
+        voice_id, ref_text_match=match_score, ref_text_source=ref_source
+    ) or entry
     return {
         "voice_id": voice_id,
         "name": display_name,
         "ref_text": ref_text,
+        "gender": entry.get("gender"),
+        "speech_seconds": round(speech_seconds, 1),
+        "transcript_match": round(match_score, 2),
+        "transcript_source": ref_source,
+        "heard": heard,
         "message": "Đã tạo giọng clone thành công. Chọn giọng này trong danh sách Giọng đọc.",
         "voice": entry,
     }
 
 
+class VoiceCloneUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    transcript: Optional[str] = None
+    gender: Optional[str] = None
+    # Chép lại lời từ chính file mẫu, bỏ qua transcript đang lưu. Đây là nút "chữa" cho
+    # các giọng đã lỡ lưu transcript của một đoạn ghi âm khác.
+    retranscribe: bool = False
+    # Bỏ qua cửa đối chiếu (user khẳng định transcript của mình mới đúng).
+    force_transcript: bool = False
+
+
+@app.put("/api/voice-clone/{voice_id}")
+async def update_voice_clone(voice_id: str, req: VoiceCloneUpdateRequest):
+    """
+    Sửa tên hiển thị / văn bản đọc mẫu (transcript) / giới tính của một giọng clone.
+
+    Transcript là `ref_text` mà OmniVoice dùng để căn chỉnh giọng theo file mẫu — sai
+    transcript thì phát âm và ngữ điệu lệch hẳn, nên đây là thứ user cần sửa được nhất
+    (whisper tự nhận dạng rất hay sai dấu tiếng Việt).
+
+    Sửa xong PHẢI xoá cache: mọi file audio đã sinh trước đó thuộc về bản ghi cũ, giữ
+    lại thì lần render sau vẫn đọc bằng giọng cũ và user tưởng sửa không ăn thua.
+    """
+    safe_id = os.path.basename(voice_id)
+    if not safe_id.startswith("omnivoice_custom_"):
+        raise HTTPException(status_code=400, detail="Chỉ sửa được giọng clone cá nhân.")
+    if req.name is not None and not req.name.strip() and req.transcript is None and req.gender is None:
+        raise HTTPException(status_code=400, detail="Tên hiển thị không được để trống.")
+    if tts_service.get_custom_voice(safe_id) is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giọng clone này.")
+
+    ref_wav = os.path.join(VOICES_PREVIEW_DIR, f"{safe_id}_ref.wav")
+    new_transcript, match_score, ref_source = req.transcript, None, None
+    heard = ""
+
+    if req.retranscribe or (req.transcript and not req.force_transcript):
+        if not os.path.isfile(ref_wav):
+            raise HTTPException(status_code=400, detail="Không tìm thấy file mẫu giọng để đối chiếu.")
+        heard = await asyncio.to_thread(tts_service.transcribe_vietnamese, ref_wav)
+
+    if req.retranscribe:
+        if not heard:
+            raise HTTPException(status_code=502, detail="Không chép được lời từ file mẫu (whisper lỗi).")
+        new_transcript, match_score, ref_source = heard, 1.0, "asr"
+    elif req.transcript and heard:
+        # Cùng cửa chặn như lúc upload — sửa transcript thành sai cặp cũng hỏng y hệt.
+        match_score = tts_service.transcript_similarity(req.transcript, heard)
+        if match_score < tts_service.MIN_REF_TEXT_MATCH and not req.force_transcript:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Văn bản đọc mẫu không khớp file ghi âm (độ khớp {match_score:.0%}).\n\n"
+                    f"File ghi âm thực sự đọc:\n\"{heard}\"\n\n"
+                    "Sai cặp này sẽ làm giọng AI đọc ra tiếng Việt vô nghĩa."
+                ),
+            )
+        ref_source = "user"
+
+    entry = tts_service.update_custom_voice(
+        safe_id, name=req.name, ref_text=new_transcript, gender=req.gender,
+        ref_text_match=match_score, ref_text_source=ref_source,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy giọng clone này.")
+
+    purged = tts_service.purge_voice_cache(safe_id)
+    return {
+        "message": f"Đã cập nhật giọng clone. Đã xoá {purged} file audio cũ trong bộ nhớ đệm.",
+        "voice": entry,
+        "purged_cache_files": purged,
+        "heard": heard,
+    }
+
+
 @app.delete("/api/voice-clone/{voice_id}")
 async def delete_voice_clone(voice_id: str):
-    """Xóa giọng clone cá nhân (registry + file mẫu)."""
+    """Xóa giọng clone cá nhân (registry + file mẫu + audio đã cache)."""
     safe_id = os.path.basename(voice_id)
     if not safe_id.startswith("omnivoice_custom_"):
         raise HTTPException(status_code=400, detail="Chỉ xóa được giọng clone cá nhân.")
+    # remove_custom_voice tự gọi purge_voice_cache — xem tts_service.
     if not tts_service.remove_custom_voice(safe_id):
         raise HTTPException(status_code=404, detail="Không tìm thấy giọng clone này.")
-    return {"message": "Đã xóa giọng clone."}
+    return {"message": "Đã xóa giọng clone và toàn bộ audio đã lưu đệm của giọng này."}
 
 
 from services import preset_service
@@ -2255,7 +3034,10 @@ class StorageConfigRequest(BaseModel):
 @app.get("/api/storage-config")
 async def get_storage_config(with_sizes: bool = False):
     """Kho dữ liệu đang nằm ở đâu, còn trống bao nhiêu."""
-    return config.get_storage_info(with_sizes=with_sizes)
+    # with_sizes=True quét toàn bộ DATA_DIR (os.walk + getsize từng file) — có thể là ổ
+    # ngoài/mạng nếu user đã trỏ CUSTOM_ASSETS_DIR sang đó. Chạy đồng bộ sẽ chặn event
+    # loop cho MỌI request/broadcast tiến độ render khác đang chạy song song.
+    return await asyncio.to_thread(config.get_storage_info, with_sizes=with_sizes)
 
 
 @app.post("/api/storage-config")
@@ -2305,6 +3087,142 @@ async def set_storage_config(req: StorageConfigRequest):
 
 
 # ---------------------------------------------------------------------------
+# Quản lý Key API (Gemini, Pexels, Pixabay, FAL)
+# ---------------------------------------------------------------------------
+class ApiKeysConfigRequest(BaseModel):
+    gemini_api_keys: Optional[List[str]] = None
+    pexels_api_key: Optional[str] = None
+    pixabay_api_key: Optional[str] = None
+    fal_key: Optional[str] = None
+
+
+def _mask_secret(value: str) -> str:
+    """Che bớt key khi hiển thị mặc định — chỉ lộ 4 ký tự đầu/cuối.
+
+    Key thật CHỈ được trả về qua /api/api-keys-config/reveal, gọi bằng hành động
+    bấm "Hiện Key" rõ ràng của người dùng — không còn lộ nguyên văn mỗi lần trang
+    Cấu hình mở lên (GET /api/api-keys-config chạy tự động lúc mount component).
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) <= 10:
+        return "•" * len(value)
+    return f"{value[:4]}{'•' * 6}{value[-4:]}"
+
+
+def _read_api_keys_from_env() -> dict:
+    """Đọc nguyên văn các key từ biến môi trường — dùng cho cả GET thường (sẽ bị
+    che ở tầng gọi) lẫn /reveal (trả thẳng, không che)."""
+    gemini_keys_list = []
+    main_g = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if main_g:
+        gemini_keys_list.append(main_g)
+    idx = 1
+    while True:
+        k = (os.getenv(f"GEMINI_API_KEY_{idx}") or "").strip()
+        if not k:
+            break
+        if k not in gemini_keys_list:
+            gemini_keys_list.append(k)
+        idx += 1
+
+    pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
+    pixabay_key = (os.getenv("PIXABAY_API_KEY") or "").strip()
+    fal_key = (os.getenv("FAL_KEY") or "").strip()
+
+    return {
+        "gemini_api_keys": gemini_keys_list,
+        "pexels_api_key": pexels_key,
+        "pixabay_api_key": pixabay_key,
+        "fal_key": fal_key,
+        "status": {
+            "gemini": len(gemini_keys_list) > 0,
+            "pexels": len(pexels_key) > 0,
+            "pixabay": len(pixabay_key) > 0,
+            "fal": len(fal_key) > 0,
+        }
+    }
+
+
+@app.get("/api/api-keys-config")
+async def get_api_keys_config():
+    """Trạng thái kết nối + key đã CHE BỚT (an toàn để tự động gọi lúc mở trang)."""
+    raw = _read_api_keys_from_env()
+    return {
+        "gemini_api_keys": [_mask_secret(k) for k in raw["gemini_api_keys"]],
+        "pexels_api_key": _mask_secret(raw["pexels_api_key"]),
+        "pixabay_api_key": _mask_secret(raw["pixabay_api_key"]),
+        "fal_key": _mask_secret(raw["fal_key"]),
+        "status": raw["status"],
+    }
+
+
+@app.get("/api/api-keys-config/reveal")
+async def reveal_api_keys_config():
+    """Key API nguyên văn — CHỈ gọi khi người dùng chủ động bấm "Hiện Key",
+    không tự động chạy lúc mở trang (khác GET /api/api-keys-config)."""
+    return _read_api_keys_from_env()
+
+
+@app.post("/api/api-keys-config")
+async def set_api_keys_config(req: ApiKeysConfigRequest):
+    """Cập nhật các API Key trực tiếp vào file .env và làm tươi hệ thống."""
+    try:
+        # 1. Update Gemini Keys
+        if req.gemini_api_keys is not None:
+            clean_g_keys = [k.strip() for k in req.gemini_api_keys if k and k.strip()]
+            main_k = clean_g_keys[0] if clean_g_keys else ""
+            config.write_env_value("GEMINI_API_KEY", main_k)
+            os.environ["GEMINI_API_KEY"] = main_k
+
+            # Ghi key dự phòng, và DỌN các slot cũ giờ không còn dùng.
+            # `write_env_value(key, "")` giờ XOÁ dòng khỏi .env thay vì ghi `KEY=` (xem
+            # config.write_env_value) — nên vòng dọn này không còn để lại rác.
+            # Quét quá số key hiện có 20 slot: đủ để xoá hết dấu vết của lần cấu hình
+            # trước, kể cả khi người dùng vừa hạ từ 15 key xuống 2.
+            for i in range(1, max(len(clean_g_keys), 1) + 20):
+                env_var = f"GEMINI_API_KEY_{i}"
+                val = clean_g_keys[i] if i < len(clean_g_keys) else ""
+                config.write_env_value(env_var, val)
+                if val:
+                    os.environ[env_var] = val
+                else:
+                    os.environ.pop(env_var, None)
+
+        # 2. Update Pexels Key
+        if req.pexels_api_key is not None:
+            pval = req.pexels_api_key.strip()
+            config.write_env_value("PEXELS_API_KEY", pval)
+            os.environ["PEXELS_API_KEY"] = pval
+
+        # 3. Update Pixabay Key
+        if req.pixabay_api_key is not None:
+            pxval = req.pixabay_api_key.strip()
+            config.write_env_value("PIXABAY_API_KEY", pxval)
+            os.environ["PIXABAY_API_KEY"] = pxval
+
+        # 4. Update FAL Key
+        if req.fal_key is not None:
+            fval = req.fal_key.strip()
+            config.write_env_value("FAL_KEY", fval)
+            os.environ["FAL_KEY"] = fval
+
+        # Reload KeyManager instances
+        from services.key_manager import gemini_keys, fal_keys
+        gemini_keys.__init__("GEMINI_API_KEY")
+        fal_keys.__init__("FAL_KEY")
+
+        return {
+            "status": "ok",
+            "message": "Đã lưu cài đặt API Keys vào file .env thành công!"
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi lưu API Keys: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Không thể lưu API Keys: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Minh bạch hoá bộ nhớ đệm — đèn 🟢 đã có sẵn / 🔴 sẽ tạo mới
 # ---------------------------------------------------------------------------
 class CacheProbeRequest(BaseModel):
@@ -2324,19 +3242,14 @@ class CacheProbeRequest(BaseModel):
     use_veo: bool = False
 
 
-@app.post("/api/cache-probe")
-async def cache_probe(req: CacheProbeRequest):
-    """
-    Từng cảnh đã có sẵn giọng đọc / hình trong cache chưa.
+def _cache_probe_sync(req: CacheProbeRequest) -> dict:
+    """Thân thực sự của /api/cache-probe — tách ra để chạy qua asyncio.to_thread.
 
-    QUAN TRỌNG — các tham số cache ở đây phải khớp CHÍNH XÁC với lúc render, nếu không
-    đèn báo sẽ nói dối. Cụ thể:
-      • giọng đọc: tts_service.synthesize_speech dùng (text, voice, rate, pitch,
-        emotion, breathing), trong đó `rate` là kết quả CỘNG DỒN tốc độ user với
-        speech_rate_modifier của từng cảnh — xem _compose_speech_rate.
-      • hình ảnh: image_router.generate_image_with_fallback dùng (prompt, aspect_ratio,
-        art_style, negative_prompt).
-    Đổi công thức khoá cache ở hai chỗ đó thì phải sửa cả đây.
+    LỖI CŨ: hàm route async này chạy vòng lặp has_media() (disk I/O, os.stat) THẲNG
+    trên event loop, không một `await` nào. Theo comment của cache_service._find_cached,
+    endpoint này bị giao diện gọi MỖI LẦN người dùng gõ phím trong ô sửa kịch bản — với
+    19 cảnh x 2 lượt tra/cảnh, mỗi phím bấm là hàng chục lượt os.stat chặn cứng event
+    loop, treo luôn việc broadcast tiến độ của job render khác đang chạy song song.
     """
     from services.cache_service import cache as media_cache
 
@@ -2396,6 +3309,23 @@ async def cache_probe(req: CacheProbeRequest):
         })
 
     return {"scenes": results}
+
+
+@app.post("/api/cache-probe")
+async def cache_probe(req: CacheProbeRequest):
+    """
+    Từng cảnh đã có sẵn giọng đọc / hình trong cache chưa.
+
+    QUAN TRỌNG — các tham số cache ở đây phải khớp CHÍNH XÁC với lúc render, nếu không
+    đèn báo sẽ nói dối. Cụ thể:
+      • giọng đọc: tts_service.synthesize_speech dùng (text, voice, rate, pitch,
+        emotion, breathing), trong đó `rate` là kết quả CỘNG DỒN tốc độ user với
+        speech_rate_modifier của từng cảnh — xem _compose_speech_rate.
+      • hình ảnh: image_router.generate_image_with_fallback dùng (prompt, aspect_ratio,
+        art_style, negative_prompt).
+    Đổi công thức khoá cache ở hai chỗ đó thì phải sửa cả đây (_cache_probe_sync).
+    """
+    return await asyncio.to_thread(_cache_probe_sync, req)
 
 
 # ---------------------------------------------------------------------------
@@ -2476,7 +3406,9 @@ async def delete_scene_asset(asset_id: str):
 async def cache_stats():
     """Bộ nhớ đệm đang chiếm bao nhiêu (ảnh/giọng đọc + kịch bản Gemini)."""
     from services.cache_service import cache as media_cache
-    return media_cache.get_cache_stats()
+    # get_cache_stats() liệt kê thư mục cache (có thể hàng nghìn file ở mức
+    # MAX_CACHE_SIZE_GB) — cùng lý do to_thread như DELETE /api/cache ngay dưới.
+    return await asyncio.to_thread(media_cache.get_cache_stats)
 
 
 @app.delete("/api/cache")
@@ -2538,6 +3470,14 @@ async def preview_scene_voice(req: ScenePreviewRequest):
         )
 
     out_path = os.path.join(TEMP_DIR, f"preview_{uuid.uuid4().hex}.mp3")
+    # Nghe thử KHÔNG có WebSocket của job để đẩy cảnh báo, mà đây lại đúng lúc user cần
+    # biết nhất: bấm nghe thử giọng clone mà nghe ra giọng Hoài My thì phải nói rõ là
+    # OmniVoice đang hỏng, chứ không để họ tưởng bản clone nghe giống hệt giọng mặc định.
+    warnings: list[str] = []
+
+    async def _collect_warning(msg: str):
+        warnings.append(msg)
+
     try:
         await tts_service.synthesize_speech(
             tts_text, out_path,
@@ -2547,6 +3487,7 @@ async def preview_scene_voice(req: ScenePreviewRequest):
             mode=req.mode,
             emotion=req.emotion or "",
             use_breathing=req.use_breathing,
+            warning_callback=_collect_warning,
         )
     except Exception as e:
         logger.error(f"[Preview] Sinh giọng thất bại: {e}", exc_info=True)
@@ -2557,11 +3498,18 @@ async def preview_scene_voice(req: ScenePreviewRequest):
     if not written:
         raise HTTPException(status_code=500, detail="Không sinh được giọng đọc (file rỗng).")
 
+    # Header phải là latin-1: thông báo tiếng Việt đi qua nguyên văn sẽ làm Starlette
+    # ném UnicodeEncodeError ngay lúc gửi. Percent-encode ở đây, decodeURIComponent ở UI.
+    headers = {}
+    if warnings:
+        headers["X-TTS-Warning"] = quote(" ".join(warnings))
+
     # Xoá SAU khi đã gửi xong: bản thật đã nằm trong TTS cache, file này chỉ là bản sao
     # dùng một lần. Giữ lại sẽ làm TEMP_DIR phình lên theo mỗi lần bấm nghe thử.
     return FileResponse(
         written,
         media_type="audio/wav" if written.endswith(".wav") else "audio/mpeg",
+        headers=headers,
         background=BackgroundTask(lambda: os.path.isfile(written) and os.remove(written)),
     )
 

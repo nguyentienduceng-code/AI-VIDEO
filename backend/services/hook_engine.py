@@ -1,4 +1,5 @@
 # backend/services/hook_engine.py
+import functools
 import logging
 
 import numpy as np
@@ -15,6 +16,15 @@ logger = logging.getLogger(__name__)
 # ăn lỗi này với "Arial Black" thiếu glyph ư/ơ tiếng Việt — seguibl.ttf (Segoe UI Black)
 # là font hệ thống đã xác nhận có đủ dấu tiếng Việt.
 HOOK_FONT = "C:/Windows/Fonts/seguibl.ttf"
+
+
+@functools.lru_cache(maxsize=32)
+def _load_hook_font(font_size: int):
+    """ImageFont.truetype(HOOK_FONT, size) cache theo size — build_typewriter_quote_hook
+    gọi lại hàm đo bề rộng chữ (_ngat_dong) một lần cho mỗi mốc thời gian trong timeline,
+    mỗi lần đều đọc + parse lại file .ttf từ đĩa dù font/size không đổi giữa các lần gọi."""
+    from PIL import ImageFont
+    return ImageFont.truetype(HOOK_FONT, font_size)
 
 
 def _safe_caption_clip(text: str, font_size: int, box_w: int, box_h: int | None = None, **extra) -> TextClip:
@@ -62,8 +72,7 @@ def _ngat_dong(tokens: list, font_size: int, max_w: int, stroke_width: int = 3) 
     ngưỡng của nó và phá mất bố cục ta vừa tính.
     """
     try:
-        from PIL import ImageFont
-        font = ImageFont.truetype(HOOK_FONT, font_size)
+        font = _load_hook_font(font_size)
     except Exception:
         logger.warning("[Typewriter] Không đo được bề rộng chữ — dồn hết vào một dòng.")
         return [list(tokens)]
@@ -1011,7 +1020,7 @@ _CTA_ICON_DRAWERS = {"heart": _draw_heart_icon, "plus": _draw_plus_icon, "share"
 
 def _draw_cta_badge(label: str, icon: str, size: int, accent: tuple) -> "np.ndarray":
     """Vẽ 1 huy hiệu tròn (nền màu + icon vector trắng + nhãn chữ dưới) ra 1 ảnh RGBA."""
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     label_h = int(size * 0.34)
     img = Image.new("RGBA", (size, size + label_h), (0, 0, 0, 0))
@@ -1021,7 +1030,7 @@ def _draw_cta_badge(label: str, icon: str, size: int, accent: tuple) -> "np.ndar
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*accent, 235))
     _CTA_ICON_DRAWERS[icon](draw, cx, cy, size * 0.5, (255, 255, 255, 255))
 
-    font = ImageFont.truetype(HOOK_FONT, max(10, int(size * 0.155)))
+    font = _load_hook_font(max(10, int(size * 0.155)))
     bbox = draw.textbbox((0, 0), label, font=font)
     tw = bbox[2] - bbox[0]
     draw.text((cx - tw / 2 - bbox[0], size + label_h * 0.1), label, font=font, fill=(255, 255, 255, 255))

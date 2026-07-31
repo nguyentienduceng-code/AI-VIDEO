@@ -18,6 +18,9 @@ const INITIAL_STATE = {
   targetDuration: '30s',
   narrationTone: 'viral',
   contentNiche: '',
+  // Cho backend tự viết lại kịch bản 1 lượt nếu lớp review chấm dưới 60/100 (và chỉ nhận
+  // bản mới khi nó điểm cao hơn). Tốn thêm quota nên có thể tắt.
+  autoRetryLowQuality: true,
   voice: 'vi-VN-NamMinhNeural',
   style: STYLES[0].value,
   bgm: 'auto',

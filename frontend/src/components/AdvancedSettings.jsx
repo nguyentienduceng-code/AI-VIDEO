@@ -43,11 +43,13 @@ export default function AdvancedSettings() {
     useBreathing: s.useBreathing, setUseBreathing: s.setUseBreathing,
     hookZoomBoost: s.hookZoomBoost, setHookZoomBoost: s.setHookZoomBoost,
     usePatternInterrupt: s.usePatternInterrupt, setUsePatternInterrupt: s.setUsePatternInterrupt,
+    autoRetryLowQuality: s.autoRetryLowQuality, setAutoRetryLowQuality: s.setAutoRetryLowQuality,
     hookEffect: s.hookEffect, setHookEffect: s.setHookEffect,
     hookReelSfx: s.hookReelSfx, setHookReelSfx: s.setHookReelSfx,
     hookText: s.hookText, setHookText: s.setHookText,
     hookQuote: s.hookQuote, setHookQuote: s.setHookQuote,
     visualSource: s.visualSource, setVisualSource: s.setVisualSource,
+    preferStockVideo: s.preferStockVideo, setPreferStockVideo: s.setPreferStockVideo,
     colorGrading: s.colorGrading, setColorGrading: s.setColorGrading,
     subtitleStyle: s.subtitleStyle, setSubtitleStyle: s.setSubtitleStyle,
     speechRate: s.speechRate, setSpeechRate: s.setSpeechRate,
@@ -74,6 +76,7 @@ export default function AdvancedSettings() {
   const [openVoice, setOpenVoice] = useState(true);
   const [openHook, setOpenHook] = useState(true);
   const [openOutro, setOpenOutro] = useState(true);
+  const [openSystem, setOpenSystem] = useState(true);
 
 
 
@@ -132,74 +135,17 @@ export default function AdvancedSettings() {
     <div className="advanced-box">
       <div className="advanced-title">⚡ Tùy chọn nâng cao</div>
       
-      <div className="toggles-grid">
-        <ToggleRow 
-          label={<span>Dùng <b>Veo 3</b> biến ảnh → video clip động</span>} 
-          checked={ctx.useVeo} 
-          onChange={ctx.setUseVeo} 
-          tooltip="Sử dụng Google Veo 3.1 để tạo chuyển động từ ảnh tĩnh (tốn thêm thời gian render)"
-        />
-        <ToggleRow 
-          label="Nối cảnh mượt (Frame Chaining)" 
-          checked={ctx.useFrameChaining} 
-          onChange={ctx.setUseFrameChaining} 
-          tooltip="Ghép nối khung hình đầu cuối giữa các cảnh để chuyển cảnh siêu mượt"
-        />
-        <ToggleRow 
-          label="Đồng bộ theo nhịp nhạc (Beat Sync)" 
-          checked={ctx.useBeatSync} 
-          onChange={ctx.setUseBeatSync} 
-          tooltip="Chuyển cảnh hoặc giật zoom tự động khớp với điểm nhấn của nhạc nền"
-        />
-        <ToggleRow 
-          label="Hiệu ứng Ken Burns (Ảnh tĩnh)" 
-          checked={ctx.useKenBurns} 
-          onChange={ctx.setUseKenBurns} 
-          tooltip="Tự động zoom/pan nhẹ trên ảnh tĩnh nếu không dùng Veo"
-        />
-        <ToggleRow 
-          label="⚡ Pattern Interrupt (Chống lướt)" 
-          checked={ctx.usePatternInterrupt} 
-          onChange={ctx.setUsePatternInterrupt} 
-          tooltip="Tạo các cú giật nhẹ (flash trắng ngắn hoặc zoom nhẹ) cứ mỗi 2.5-3.5s để giữ mắt người xem. Tự động vô hiệu ở tone Storytelling/Emotional để tránh phá hỏng không khí."
-        />
-        <ToggleRow
-          label="Tiếng động phụ hoạ (SFX các cảnh)"
-          checked={ctx.useSfx}
-          onChange={ctx.setUseSfx}
-          tooltip="Cho phép phát các hiệu ứng âm thanh (SFX) mà bạn đã cấu hình riêng cho từng cảnh ở bước Kịch bản. Nếu tắt, toàn bộ SFX chuyển cảnh sẽ bị loại bỏ."
-        />
-        <ToggleRow
-          label="Tự động giảm nhạc nền khi đọc (Audio Ducking)"
-          checked={ctx.useAudioDucking}
-          onChange={ctx.setUseAudioDucking}
-          tooltip="Tự động giảm âm lượng nhạc nền (BGM) xuống nhỏ hơn khi có giọng đọc (để làm rõ lời thoại), và tăng lại khi có khoảng lặng."
-        />
-        <ToggleRow
-          label={<span>🎙️ Đọc <b>liền mạch cả bài</b> (1 lần gọi)</span>}
-          checked={ctx.useSinglePassNarration}
-          onChange={ctx.setUseSinglePassNarration}
-          tooltip="Đọc toàn bộ kịch bản trong MỘT lần gọi thay vì từng cảnh riêng lẻ: ngữ điệu, cao độ và nhịp thở liên tục suốt video, không còn 'vào giọng' lại ở mỗi cảnh. Mốc cắt cảnh sẽ tự bám theo giọng đọc. ĐÁNH ĐỔI: bỏ qua cảm xúc và tốc độ đọc riêng mà AI gán cho từng cảnh. Không dùng được với giọng Minion / OmniVoice."
-        />
-        <ToggleRow
-          label="Lấy hơi tự nhiên (Breathing)"
-          checked={ctx.useBreathing}
-          onChange={ctx.setUseBreathing}
-          tooltip="Tự động chèn tiếng lấy hơi (breathing) vào các khoảng nghỉ để nghe như người thật"
-        />
-        <ToggleRow
-          label={<span>Cú đấm mở màn (<b>Hook Zoom Boost</b>)</span>}
-          checked={ctx.hookZoomBoost}
-          onChange={ctx.setHookZoomBoost}
-          tooltip="Cảnh đầu zoom mạnh (1.0→1.35) + tự thêm tiếng Riser dâng trào để giữ chân người xem trong 3 giây đầu"
-        />
-      </div>
-
       <div className="advanced-inputs-grid" style={{ marginTop: 20 }}>
         
         {/* --- SECTION: HÌNH ẢNH & THỊ GIÁC --- */}
         <SectionHeader title="HÌNH ẢNH & THỊ GIÁC" isOpen={openImage} onToggle={() => setOpenImage(!openImage)} />
-        {openImage && (<>
+        <div className={`accordion-wrapper ${openImage ? 'open' : ''}`}>
+          <div className="accordion-inner">
+        <div className="toggles-grid" style={{ marginBottom: 15, gridColumn: '1 / -1' }}>
+          <ToggleRow label={<span>Dùng <b>Veo 3</b> biến ảnh → video clip động</span>} checked={ctx.useVeo} onChange={ctx.setUseVeo} tooltip="Sử dụng Google Veo 3.1 để tạo chuyển động từ ảnh tĩnh (tốn thêm thời gian render)" />
+          <ToggleRow label="Nối cảnh mượt (Frame Chaining)" checked={ctx.useFrameChaining} onChange={ctx.setUseFrameChaining} tooltip="Ghép nối khung hình đầu cuối giữa các cảnh để chuyển cảnh siêu mượt" />
+          <ToggleRow label="Hiệu ứng Ken Burns (Ảnh tĩnh)" checked={ctx.useKenBurns} onChange={ctx.setUseKenBurns} tooltip="Tự động zoom/pan nhẹ trên ảnh tĩnh nếu không dùng Veo" />
+        </div>
         <div className="input-group">
           <label className="field-label">NGUỒN HÌNH ẢNH</label>
           <select
@@ -212,8 +158,25 @@ export default function AdvancedSettings() {
               <option key={vs.value} value={vs.value}>{vs.label}</option>
             ))}
           </select>
+          {/* `prefer_stock_video` KHÔNG có công tắc riêng trên giao diện — chỉ preset bật
+              được nó (2 preset mặc định: Review sách, Du lịch). Nên trước đây người dùng nạp
+              preset là toàn bộ video chuyển sang footage tải về mà không có dấu hiệu nào, và
+              cũng KHÔNG có cách nào tắt ngoài việc nạp preset khác. Dòng dưới hiện ra đúng
+              lúc đó, kèm nút tắt. */}
+          {ctx.preferStockVideo && ctx.visualSource === 'auto' && (
+            <span style={{ fontSize: 11, color: '#f59e0b', marginTop: 4, display: 'block', lineHeight: 1.5 }}>
+              ⚠️ Preset đang bật <b>ưu tiên video thật</b>, nên "Tự động" = video Pexels cho mọi cảnh.{' '}
+              <button
+                type="button"
+                onClick={() => ctx.setPreferStockVideo(false)}
+                style={{ background: 'none', border: 'none', padding: 0, color: '#3b82f6', cursor: 'pointer', fontSize: 11, textDecoration: 'underline' }}
+              >
+                Tắt để dùng ảnh AI
+              </button>
+            </span>
+          )}
         </div>
-        
+
         <div className="input-group">
           <label className="field-label">BỘ LỌC MÀU (COLOR GRADING)</label>
           <select className="form-select form-select-sm" value={ctx.colorGrading} onChange={e => ctx.setColorGrading(e.target.value)}>
@@ -251,11 +214,20 @@ export default function AdvancedSettings() {
           </label>
         </div>
 
-        </>)}
+        </div>
+        </div>
 
         {/* --- SECTION: GIỌNG ĐỌC & SFX CƠ BẢN --- */}
         <SectionHeader title="GIỌNG ĐỌC & SFX CƠ BẢN" isOpen={openVoice} onToggle={() => setOpenVoice(!openVoice)} />
-        {openVoice && (<>
+        <div className={`accordion-wrapper ${openVoice ? 'open' : ''}`}>
+          <div className="accordion-inner">
+        <div className="toggles-grid" style={{ marginBottom: 15, gridColumn: '1 / -1' }}>
+          <ToggleRow label={<span>🎙️ Đọc <b>liền mạch cả bài</b> (1 lần gọi)</span>} checked={ctx.useSinglePassNarration} onChange={ctx.setUseSinglePassNarration} tooltip="Đọc toàn bộ kịch bản trong MỘT lần gọi thay vì từng cảnh riêng lẻ: ngữ điệu, cao độ và nhịp thở liên tục suốt video, không còn 'vào giọng' lại ở mỗi cảnh. Mốc cắt cảnh sẽ tự bám theo giọng đọc. ĐÁNH ĐỔI: bỏ qua cảm xúc và tốc độ đọc riêng mà AI gán cho từng cảnh. Không dùng được với giọng Minion / OmniVoice." />
+          <ToggleRow label="Lấy hơi tự nhiên (Breathing)" checked={ctx.useBreathing} onChange={ctx.setUseBreathing} tooltip="Tự động chèn tiếng lấy hơi (breathing) vào các khoảng nghỉ để nghe như người thật" />
+          <ToggleRow label="Tiếng động phụ hoạ (SFX các cảnh)" checked={ctx.useSfx} onChange={ctx.setUseSfx} tooltip="Cho phép phát các hiệu ứng âm thanh (SFX) mà bạn đã cấu hình riêng cho từng cảnh ở bước Kịch bản. Nếu tắt, toàn bộ SFX chuyển cảnh sẽ bị loại bỏ." />
+          <ToggleRow label="Đồng bộ theo nhịp nhạc (Beat Sync)" checked={ctx.useBeatSync} onChange={ctx.setUseBeatSync} tooltip="Chuyển cảnh hoặc giật zoom tự động khớp với điểm nhấn của nhạc nền" />
+          <ToggleRow label="Tự động giảm nhạc nền khi đọc (Audio Ducking)" checked={ctx.useAudioDucking} onChange={ctx.setUseAudioDucking} tooltip="Tự động giảm âm lượng nhạc nền (BGM) xuống nhỏ hơn khi có giọng đọc (để làm rõ lời thoại), và tăng lại khi có khoảng lặng." />
+        </div>
         <div className="input-group">
           <label className="field-label">TỐC ĐỘ ĐỌC (EDGE-TTS / OMNIVOICE)</label>
           <select className="form-select form-select-sm" value={ctx.speechRate} onChange={e => ctx.setSpeechRate(e.target.value)}>
@@ -293,11 +265,17 @@ export default function AdvancedSettings() {
           />
         </div>
 
-        </>)}
+        </div>
+        </div>
 
         {/* --- SECTION: MỞ ĐẦU VIDEO (INTRO & HOOK) --- */}
         <SectionHeader title="MỞ ĐẦU VIDEO (INTRO & HOOK)" isOpen={openHook} onToggle={() => setOpenHook(!openHook)} />
-        {openHook && (<>
+        <div className={`accordion-wrapper ${openHook ? 'open' : ''}`}>
+          <div className="accordion-inner">
+        <div className="toggles-grid" style={{ marginBottom: 15, gridColumn: '1 / -1' }}>
+          <ToggleRow label={<span>Cú đấm mở màn (<b>Hook Zoom Boost</b>)</span>} checked={ctx.hookZoomBoost} onChange={ctx.setHookZoomBoost} tooltip="Cảnh đầu zoom mạnh (1.0→1.35) + tự thêm tiếng Riser dâng trào để giữ chân người xem trong 3 giây đầu" />
+          <ToggleRow label="⚡ Pattern Interrupt (Chống lướt)" checked={ctx.usePatternInterrupt} onChange={ctx.setUsePatternInterrupt} tooltip="Tạo các cú giật nhẹ (flash trắng ngắn hoặc zoom nhẹ) cứ mỗi 2.5-3.5s để giữ mắt người xem. Tự động vô hiệu ở tone Storytelling/Emotional để tránh phá hỏng không khí." />
+        </div>
         <div className="input-group" style={{ gridColumn: '1 / -1' }}>
           <label className="field-label">♬ NHẠC MỞ ĐẦU (INTRO BGM - Tùy chọn)</label>
           <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
@@ -389,11 +367,13 @@ export default function AdvancedSettings() {
           />
         </div>
 
-        </>)}
+        </div>
+        </div>
 
         {/* --- SECTION: KẾT THÚC VIDEO (OUTRO) --- */}
         <SectionHeader title="KẾT THÚC VIDEO (OUTRO)" isOpen={openOutro} onToggle={() => setOpenOutro(!openOutro)} />
-        {openOutro && (<>
+        <div className={`accordion-wrapper ${openOutro ? 'open' : ''}`}>
+          <div className="accordion-inner">
         <div className="input-group">
           <label className="field-label">HIỆU ỨNG OUTRO KẾT THÚC</label>
           <select className="form-select form-select-sm" value={ctx.outroEffect} onChange={e => ctx.setOutroEffect(e.target.value)}>
@@ -456,7 +436,23 @@ export default function AdvancedSettings() {
             placeholder="Nhập câu kết..." 
           />
         </div>
-        </>)}
+        </div>
+        </div>
+
+        {/* --- SECTION: TỐI ƯU & HỆ THỐNG --- */}
+        <SectionHeader title="TỐI ƯU & HỆ THỐNG" isOpen={openSystem} onToggle={() => setOpenSystem(!openSystem)} />
+        <div className={`accordion-wrapper ${openSystem ? 'open' : ''}`}>
+          <div className="accordion-inner">
+        <div className="toggles-grid" style={{ marginBottom: 15, gridColumn: '1 / -1' }}>
+          <ToggleRow
+            label="✍️ Tự viết lại kịch bản nếu điểm thấp"
+            checked={ctx.autoRetryLowQuality}
+            onChange={ctx.setAutoRetryLowQuality}
+            tooltip="Nếu lớp biên tập AI chấm kịch bản dưới 60/100, hệ thống viết lại ĐÚNG 1 lượt kèm các góp ý cụ thể, và chỉ nhận bản mới khi nó điểm cao hơn. Tốn thêm 1-2 lượt quota mỗi khi kích hoạt. Không áp dụng cho mode Kịch bản → Video (lời thoại của bạn luôn giữ nguyên văn)."
+          />
+        </div>
+        </div>
+        </div>
       </div>
     </div>
   );

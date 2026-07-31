@@ -19,6 +19,7 @@ Ba lỗi thật mà bộ test này canh:
      whoosh/impact tự dìm nhạc nền y như giọng nói.
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -215,6 +216,68 @@ def test_thu_tu_input_sidechain_dung_khi_co_du_ca_hai_bgm():
         use_audio_ducking=True,
     ))
     assert "[3:a]" in fg, f"sidechain phải là input số 3: {fg}"
+
+
+# ── Dấu đóng bản quyền: logo + chữ ───────────────────────────────────────────
+# LỖI THẬT ĐÃ VÁ: logo (120px ở y=40 → chiếm 40..160) và chữ (fontsize 56 ở y=100 →
+# chiếm 100..156) được đặt bằng hai con số gõ tay rời nhau, nên bật CẢ HAI thì chữ chạy
+# xuyên qua logo. Không test nào bắt được vì mỗi thứ riêng lẻ đều trông đúng.
+_LOGO_THAT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "assets", "watermarks", "logo_ntd.png",
+)
+
+
+def _hinh_hoc_logo(fg: str) -> tuple:
+    """(box, alpha, y_dinh) của lớp logo trong filtergraph."""
+    sc = re.search(r"scale=(\d+):(\d+):force_original_aspect_ratio=decrease", fg)
+    aa = re.search(r"colorchannelmixer=aa=([\d.]+)\[wm_logo\]", fg)
+    ov = re.search(r"\[wm_logo\]overlay=W-w-(\d+):(\d+)\[v_wm_logo\]", fg)
+    assert sc and aa and ov, f"không đọc được lớp logo: {fg}"
+    return int(sc.group(1)), float(aa.group(1)), int(ov.group(2))
+
+
+def _y_chu(fg: str) -> int:
+    m = re.search(r"drawtext=[^;]*?:y=(\d+)", fg)
+    assert m, f"không tìm thấy drawtext: {fg}"
+    return int(m.group(1))
+
+
+def test_chu_watermark_khong_chong_len_logo():
+    """Bật cả logo và chữ thì chữ phải nằm HOÀN TOÀN dưới đáy logo."""
+    fg = _fg(_build_cmd(watermark_text="@artciphers", watermark_logo=_LOGO_THAT))
+    box, _, y_logo = _hinh_hoc_logo(fg)
+    day_logo = y_logo + box   # force_original_aspect_ratio=decrease → cao luôn ≤ box
+    assert _y_chu(fg) >= day_logo, (
+        f"chữ ở y={_y_chu(fg)} nhưng logo kéo tới y={day_logo} — chồng lên nhau."
+    )
+
+
+def test_chi_co_chu_thi_khong_doi_bo_cuc_cu():
+    """Không bật logo thì chữ phải ở ĐÚNG chỗ cũ — đừng đổi bố cục video của người chỉ
+    dùng chữ, chỉ vì tính năng logo được thêm vào."""
+    fg = _fg(_build_cmd(watermark_text="@artciphers"))
+    assert _y_chu(fg) == ams.WATERMARK_TEXT_Y_SOLO == 100
+    assert "[wm_logo]" not in fg
+
+
+def test_logo_co_vao_trong_khung_vuong():
+    """`scale=W:-1` để logo ngang bẹt cao hơn khung tính toán → chữ lại chồng lên logo.
+    force_original_aspect_ratio=decrease chốt chiều cao ≤ box với MỌI tỉ lệ logo."""
+    fg = _fg(_build_cmd(watermark_logo=_LOGO_THAT))
+    box, alpha, _ = _hinh_hoc_logo(fg)
+    assert box == ams.WATERMARK_LOGO_BOX
+    assert alpha == ams.WATERMARK_LOGO_ALPHA
+    # 120px @ 0.45 là bản cũ, gần như vô hình trên màn điện thoại.
+    assert box >= 160 and alpha >= 0.6, f"logo bị hạ lại quá nhỏ/quá mờ: {box}px @ {alpha}"
+
+
+def test_logo_khong_ton_tai_thi_bo_qua_khong_lam_chet_lenh():
+    """Đường dẫn logo sai không được làm vỡ filtergraph — chỉ đơn giản là không có logo."""
+    fg = _fg(_build_cmd(watermark_text="@x", watermark_logo=r"C:\khong\ton\tai.png"))
+    assert "[wm_logo]" not in fg
+    # và chữ quay về chỗ của trường hợp chỉ-có-chữ
+    assert _y_chu(fg) == ams.WATERMARK_TEXT_Y_SOLO
 
 
 # ── Đầu ra ───────────────────────────────────────────────────────────────────

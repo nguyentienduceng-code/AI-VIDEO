@@ -413,9 +413,16 @@ def build_timeline_from_narration(
     for i, scene in enumerate(scenes):
         if i < n - 1:
             duration = visual_start[i + 1] - visual_start[i] + overlap_dur
+            # LỖI CŨ: ép duration lên tối thiểu min_scene mà KHÔNG kéo theo
+            # visual_start[i+1] — khi gap tự nhiên giữa 2 mốc vào hình nhỏ hơn
+            # min_scene (xảy ra khi speech_start[i] ở nhánh `hi` phía trên kéo
+            # visual_start[i] xuống dưới sàn `lo`), cảnh này bị "kéo dài" ĐÈ LÊN
+            # cảnh kế tiếp thay vì chỉ ngắn hơn mong muốn. Ưu tiên đúng thứ tự
+            # timeline hơn đạt đủ min_scene: chỉ floor bằng epsilon dương nhỏ.
+            duration = max(duration, 0.1)
         else:
             duration = total_audio_dur + tail_pad - visual_start[i]
-        duration = max(duration, min_scene)
+            duration = max(duration, min_scene)
 
         scene["start_time"] = visual_start[i]
         scene["computed_duration"] = duration
@@ -582,6 +589,12 @@ def plan_scene_highlights(scene_assets: list, hl_duration: float = 1.2) -> dict:
 
         # Không để chữ tràn qua mốc kết thúc cảnh: thà hiện sớm hơn vài trăm ms còn hơn
         # bị cắt cụt giữa chừng lúc chuyển cảnh.
+        # "duration" ĐÚNG là key của scene_assets (khác `scenes` ở bước build timeline
+        # sớm hơn): main.py dòng ~1205 đọc "computed_duration" từ `scenes` rồi ĐỔI TÊN
+        # thành "duration" lúc đóng gói scene_assets — ffmpeg_assembler.py và
+        # video_service._build_scene_clip cũng đều đọc "duration" cho đúng cảnh này.
+        # (Đã thử đổi sang "computed_duration" — vỡ 2 test trong test_scene_highlight.py
+        # vì scene_assets không có key đó, luôn rơi về mặc định 3.0.)
         dur = float(scene_assets[chon].get("duration", 3.0) or 3.0)
         hl = min(hl_duration, dur)
         ke_hoach[chon] = max(0.0, min(moc, dur - hl))

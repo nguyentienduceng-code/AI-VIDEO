@@ -200,32 +200,39 @@ def _worker_main(
         if not os.path.isfile(sidechain):
             sidechain = None
 
-        master_audio_and_export(
-            sidechain_audio_path=sidechain,
-            input_video_path=raw_video_path,
-            output_path=output_video_path,
-            bgm_path=master_kwargs.get("bgm_path"),
-            ass_subtitle_path=ass_path,
-            use_gpu=master_kwargs.get("use_gpu", True),
-            bgm_volume=master_kwargs.get("bgm_volume", 0.15),
-            watermark_text=master_kwargs.get("watermark_text"),
-            watermark_logo=master_kwargs.get("watermark_logo"),
-            color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
-            add_vignette=master_kwargs.get("add_vignette", True),
-            progress_bar=master_kwargs.get("progress_bar", True),
-            total_duration=master_kwargs.get("total_duration", 0.0),
-            bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
-            use_pattern_interrupt=master_kwargs.get("use_pattern_interrupt", True),
-            narration_tone=master_kwargs.get("narration_tone", "viral"),
-            # Để Pattern Interrupt không chớp đè lên hook — xem chú thích ở audio_mix_service.
-            hook_duration=master_kwargs.get("hook_duration", 0.0),
-        )
+        try:
+            master_audio_and_export(
+                sidechain_audio_path=sidechain,
+                input_video_path=raw_video_path,
+                output_path=output_video_path,
+                bgm_path=master_kwargs.get("bgm_path"),
+                ass_subtitle_path=ass_path,
+                use_gpu=master_kwargs.get("use_gpu", True),
+                bgm_volume=master_kwargs.get("bgm_volume", 0.15),
+                watermark_text=master_kwargs.get("watermark_text"),
+                watermark_logo=master_kwargs.get("watermark_logo"),
+                color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
+                add_vignette=master_kwargs.get("add_vignette", True),
+                progress_bar=master_kwargs.get("progress_bar", True),
+                total_duration=master_kwargs.get("total_duration", 0.0),
+                bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
+                use_pattern_interrupt=master_kwargs.get("use_pattern_interrupt", True),
+                narration_tone=master_kwargs.get("narration_tone", "viral"),
+                # Để Pattern Interrupt không chớp đè lên hook — xem chú thích ở audio_mix_service.
+                hook_duration=master_kwargs.get("hook_duration", 0.0),
+            )
+        finally:
+            # LỖI CŨ: cleanup sidechain nằm SAU lệnh gọi master_audio_and_export, nên khi
+            # bước mastering lỗi (nhánh fail phổ biến nhất — rơi thẳng vào `except
+            # Exception` của cả hàm) dòng xoá này không bao giờ chạy tới, để lại file
+            # .voice.wav rác vĩnh viễn mỗi lần render lỗi. finally chạy dù thành công hay không.
+            if sidechain and os.path.isfile(sidechain):
+                os.remove(sidechain)
 
-        # Dọn file thô
+        # Dọn file thô — chỉ khi mastering đã THÀNH CÔNG. Nếu lỗi, nhánh `except` bên
+        # dưới cần raw_video_path còn nguyên để fallback os.replace() sang output.
         if os.path.isfile(raw_video_path):
             os.remove(raw_video_path)
-        if sidechain and os.path.isfile(sidechain):
-            os.remove(sidechain)
 
         write_status(
             job_id, status="done", progress=100,
@@ -281,6 +288,15 @@ def spawn_render(
         _active_processes[jid].join(timeout=1)
         del _active_processes[jid]
 
+    # LỖI CŨ: chỉ đếm TỔNG SỐ process đang chạy, không check riêng job_id này đã có
+    # worker sống chưa. Request trùng (double-click Render, hoặc client tự động retry
+    # khi timeout) spawn 2 process con cùng ghi vào MỘT raw_video_path/output_video_path
+    # — file bị 2 tiến trình MoviePy/FFmpeg ghi chồng lẫn nhau.
+    existing = _active_processes.get(job_id)
+    if existing is not None and existing.is_alive():
+        logger.warning(f"[RenderWorker] Job {job_id} đã có worker đang chạy — bỏ qua request trùng.")
+        return False
+
     if len(_active_processes) >= MAX_CONCURRENT_RENDERS:
         return False
 
@@ -320,6 +336,7 @@ def cancel_render(job_id: str) -> bool:
     if p is None or not p.is_alive():
         return False
         
+    children = []  # tham chiếu được ở nhánh except chung bên dưới kể cả khi psutil.Process() thất bại
     try:
         import psutil
         parent = psutil.Process(p.pid)
@@ -330,10 +347,10 @@ def cancel_render(job_id: str) -> bool:
                 child.terminate()
             except psutil.NoSuchProcess:
                 pass
-                
+
         # Wait for children to terminate
         psutil.wait_procs(children, timeout=3)
-        
+
         # Kill the main worker process
         parent.terminate()
         parent.wait(timeout=3)
@@ -344,6 +361,15 @@ def cancel_render(job_id: str) -> bool:
         pass
     except Exception as e:
         logger.error(f"[Cancel] Error killing process tree for job {job_id}: {e}")
+        # LỖI CŨ: fallback này chỉ p.kill() process CHA. Nếu `children` (ffmpeg,
+        # MoviePy) đã liệt kê được ở trên nhưng bước terminate/wait phía sau lỗi vì lý
+        # do khác (AccessDenied, timeout...), chúng bị bỏ quên — mồ côi, vẫn giữ session
+        # NVENC — dù UI đã báo "đã huỷ". Kill nốt từng child còn sống trước khi kill cha.
+        for child in children:
+            try:
+                child.kill()
+            except Exception:
+                pass
         p.kill() # fallback
         
     p.join(timeout=2)

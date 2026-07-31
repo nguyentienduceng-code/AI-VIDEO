@@ -27,6 +27,18 @@ CHUẨN HOÁ THEO RATE
 Mẫu đo được quy về mốc rate "+0%" trước khi ghi (đọc nhanh 20% thì wps cao hơn 20%),
 nên MỌI mẫu của cùng một giọng đều dồn vào một hồ sơ duy nhất, hội tụ nhanh hơn nhiều
 so với việc tách hồ sơ riêng cho từng cặp (giọng, tốc độ).
+
+KHÔNG NHẦM VỚI motion_effects.build_scene_timeline() / build_timeline_from_narration()
+----------------------------------------------------------------------------------------
+Đây là 2 "nguồn sự thật" khác nhau cho 2 câu hỏi khác nhau, không phải bản trùng lặp:
+  • duration_model (file này) trả lời "ước lượng bao lâu TRƯỚC KHI có audio thật" — dùng
+    để lên kế hoạch (chọn clip stock, cảnh báo độ dài kịch bản trên UI...).
+  • motion_effects.build_scene_timeline/build_timeline_from_narration trả lời "audio
+    TTS đã sinh ra rồi, cảnh này thực sự dài bao nhiêu trên timeline" — dựa trên
+    word_boundaries đo được thật, không phải ước lượng. Đây là con số CUỐI đi vào
+    scene_assets["duration"] mà render thật sự dùng.
+Không hợp nhất hai hàm này: một cái chạy TRƯỚC TTS (chỉ có chữ), một cái chạy SAU TTS
+(đã có audio thật) — thời điểm gọi khác nhau nên không thể chỉ còn một hàm.
 """
 from __future__ import annotations
 

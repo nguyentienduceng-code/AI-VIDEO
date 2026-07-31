@@ -118,6 +118,24 @@ export default function ScriptEditor() {
   const [cacheStatus, setCacheStatus] = useState(null);
   const [probing, setProbing] = useState(false);
   const [expandedAdvanced, setExpandedAdvanced] = useState(new Set());
+  const [collapsedScenes, setCollapsedScenes] = useState(new Set());
+  
+  const toggleCollapseAll = () => {
+    if (collapsedScenes.size === ctx.scenes.length) {
+      setCollapsedScenes(new Set());
+    } else {
+      setCollapsedScenes(new Set(ctx.scenes.map((_, i) => i)));
+    }
+  };
+  
+  const toggleSceneCollapse = (idx) => {
+    setCollapsedScenes(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
   
   const [customSfxList, setCustomSfxList] = useState([]);
   
@@ -556,6 +574,163 @@ export default function ScriptEditor() {
     setBalancePreview(null);
   };
 
+  // ── Sửa TOÀN BỘ kịch bản như một bài liền ────────────────────────────────
+  // Sửa theo từng ô cảnh thì không ai kiểm soát nổi mạch văn: câu cuối cảnh 3 lặp ý câu
+  // đầu cảnh 4 mà chẳng ai thấy, vì hai ô cách nhau một màn hình cuộn. Ở chế độ này cả
+  // kịch bản là MỘT khối chữ; dòng trống là ranh giới cảnh, xoá đi thì gộp, thêm vào thì
+  // tách. Sửa xong mới nhờ thuật toán chia lại và gán ảnh.
+  const [fullMode, setFullMode] = useState(false);
+  const [fullText, setFullText] = useState('');
+  const [resplitting, setResplitting] = useState(false);
+  const [resplitPreview, setResplitPreview] = useState(null);
+  const [keepBoundaries, setKeepBoundaries] = useState(false);
+  const [fullPlaying, setFullPlaying] = useState(false);
+  const [fullLoading, setFullLoading] = useState(false);
+  const [fullAt, setFullAt] = useState(null);          // cảnh đang được đọc tới
+  const [fullScope, setFullScope] = useState(null);    // bản đọc vừa rồi nạp cache tới đâu
+  const [fullProgress, setFullProgress] = useState(null);  // {percent, message} khi đang sinh
+  const fullAudioRef = useRef(null);
+  const fullUrlRef = useRef(null);
+
+  const scenesToText = useCallback(
+    (scenes) => scenes.map(s => (s.text || '').trim()).filter(Boolean).join('\n\n'),
+    []
+  );
+
+  const openFullMode = () => {
+    setFullText(scenesToText(ctx.scenes));
+    setResplitPreview(null);
+    setFullMode(true);
+  };
+
+  // Chữ trong ô soạn chỉ vào kịch bản thật khi bấm "Chia lại thành cảnh" rồi "Áp dụng".
+  // Đóng chế độ giữa chừng là mất sạch — phải hỏi, đây có thể là mười phút viết lách.
+  const coSuaChuaLuu = fullMode && fullText.trim() !== scenesToText(ctx.scenes).trim();
+
+  const closeFullMode = () => {
+    if (coSuaChuaLuu && !window.confirm(
+      'Bạn đã sửa lời thoại nhưng chưa chia lại thành cảnh.\n\n' +
+      'Đóng bây giờ sẽ mất toàn bộ phần sửa. Vẫn đóng?'
+    )) return;
+    setFullMode(false);
+    setResplitPreview(null);
+    stopFullPreview();
+  };
+
+  const fullPollRef = useRef(null);
+
+  const stopFullPreview = useCallback(() => {
+    if (fullPollRef.current) { clearInterval(fullPollRef.current); fullPollRef.current = null; }
+    if (fullAudioRef.current) { fullAudioRef.current.pause(); fullAudioRef.current = null; }
+    if (fullUrlRef.current) { URL.revokeObjectURL(fullUrlRef.current); fullUrlRef.current = null; }
+    setFullPlaying(false);
+    setFullLoading(false);
+    setFullAt(null);
+    setFullProgress(null);
+  }, []);
+
+  useEffect(() => stopFullPreview, [stopFullPreview]);
+
+  const phatBanDoc = async (audioUrl, ranges) => {
+    const audio = new Audio(`${API_BASE}${audioUrl}`);
+    fullAudioRef.current = audio;
+    // Chạy con trỏ theo lời đọc để user biết đang nghe tới đoạn nào
+    audio.addEventListener('timeupdate', () => {
+      const t = audio.currentTime;
+      const i = (ranges || []).findIndex(r => r && t >= r[0] && t <= r[1]);
+      setFullAt(i >= 0 ? i : null);
+    });
+    audio.addEventListener('ended', () => { setFullPlaying(false); setFullAt(null); });
+    await audio.play();
+    setFullPlaying(true);
+  };
+
+  // Nghe thử cả bài. Ngoài việc nghe được mạch văn, nó còn nạp SẴN từng cảnh vào bộ nhớ
+  // đệm giọng đọc — với giọng AI chạy GPU (chậm hơn thời gian thực nhiều lần) đây là
+  // khác biệt giữa "render chờ 15 phút" và "render xong ngay".
+  //
+  // Chạy NỀN qua job: với giọng AI, cả bài có thể mất hơn mười phút — giữ trong một
+  // request HTTP là cầm chắc timeout đúng lúc cần nhất.
+  const previewFullScript = async () => {
+    if (fullPlaying || fullLoading) { stopFullPreview(); return; }
+    stopFullPreview();
+    ctx.stopAllAudio?.();
+    setFullLoading(true);
+    setFullProgress({ percent: 0, message: 'Đang gửi yêu cầu...' });
+    try {
+      const res = await fetch(`${API_BASE}/api/preview-full-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenes: ctx.scenes, voice: ctx.voice,
+          speech_rate: ctx.speechRate, speech_pitch: ctx.speechPitch,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Máy chủ trả lỗi ${res.status}`);
+      if (data.estimate) setFullProgress({ percent: 0, message: data.estimate });
+
+      // Bám /api/job-status — cùng đường mà job render vẫn dùng.
+      fullPollRef.current = setInterval(async () => {
+        try {
+          const r = await fetch(`${API_BASE}/api/job-status/${data.job_id}`);
+          if (!r.ok) return;
+          const job = await r.json();
+          setFullProgress({ percent: job.progress || 0, message: job.message || '' });
+          if (job.status === 'error') {
+            clearInterval(fullPollRef.current); fullPollRef.current = null;
+            setFullLoading(false); setFullProgress(null);
+            ctx.setErrorMsg(job.error || 'Không đọc thử được cả bài.');
+          } else if (job.status === 'done' && job.audio_url) {
+            clearInterval(fullPollRef.current); fullPollRef.current = null;
+            setFullLoading(false); setFullProgress(null);
+            setFullScope(job.cache_scope || null);
+            // Chỉ tô xanh đèn khi bản đọc THẬT SỰ nằm trong cache của từng cảnh. Giọng
+            // Edge-TTS đọc cả bài trong một lần gọi nên chỉ có MỘT mục cache chung —
+            // tô xanh hết là nói dối, user tưởng render tức thì rồi ngồi chờ sinh lại.
+            if (job.cache_scope === 'per_scene') {
+              setCacheStatus(prev => prev ? prev.map(s => ({ ...s, audio_cached: true })) : prev);
+            }
+            await phatBanDoc(job.audio_url, job.scene_ranges);
+          }
+        } catch { /* mạng chớp nháy — lần bám sau tự khỏi */ }
+      }, 1500);
+    } catch (e) {
+      stopFullPreview();
+      ctx.setErrorMsg(`Không đọc thử được cả bài: ${e.message}`);
+    }
+  };
+
+  const requestResplit = async () => {
+    setResplitting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/resplit-script`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_text: fullText, scenes: ctx.scenes,
+          voice: ctx.voice, speech_rate: ctx.speechRate,
+          rebalance: !keepBoundaries,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Máy chủ trả lỗi ${res.status}`);
+      setResplitPreview(data);
+    } catch (e) {
+      ctx.setErrorMsg(`Không chia lại được kịch bản: ${e.message}`);
+    } finally {
+      setResplitting(false);
+    }
+  };
+
+  const applyResplit = () => {
+    if (!resplitPreview?.scenes?.length) return;
+    ctx.setScenes(resplitPreview.scenes);
+    setResplitPreview(null);
+    setFullMode(false);
+    stopFullPreview();
+  };
+
   // Nguồn hình quyết định cảnh sẽ tốn gì khi tạo mới — hiện trong tooltip để user hiểu
   // vì sao đèn đỏ, thay vì chỉ biết là đỏ.
   const SOURCE_LABEL = {
@@ -637,8 +812,20 @@ export default function ScriptEditor() {
           )}
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            className="btn-outline"
+            style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)', padding: '10px 16px' }}
+            onClick={fullMode ? closeFullMode : openFullMode}
+            disabled={!ctx.scenes.length}
+            title="Xem và sửa toàn bộ lời thoại như một bài liền mạch, rồi để thuật toán chia lại thành cảnh"
+          >
+            <PenLine size={16} /> {fullMode ? 'Đóng chế độ toàn bài' : 'Sửa toàn bộ kịch bản'}
+          </button>
           <button className="btn-outline" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', padding: '10px 16px' }} onClick={handleImportJson}>
             <Code size={16} /> Import JSON
+          </button>
+          <button className="btn-outline" style={{ padding: '10px 16px' }} onClick={toggleCollapseAll} disabled={!ctx.scenes.length}>
+            {collapsedScenes.size === ctx.scenes.length ? <ChevronDown size={16} /> : <ChevronUp size={16} />} {collapsedScenes.size === ctx.scenes.length ? 'Mở rộng tất cả' : 'Thu gọn tất cả'}
           </button>
           <button className="btn-generate" style={{ width: 'auto', padding: '10px 24px', marginTop: 0 }} onClick={handleRenderVideo}>
             <Play size={16} /> Render Video (Bước 2)
@@ -738,8 +925,13 @@ export default function ScriptEditor() {
           <button
             className="btn-outline"
             onClick={requestRebalance}
-            disabled={balancing || !ctx.scenes.length}
-            title="Chia lại ranh giới các cảnh cho đều nhịp. KHÔNG sửa một chữ nào trong lời thoại — chỉ di chuyển chỗ ngắt cảnh. Bạn sẽ được xem trước rồi mới quyết định."
+            // Khoá khi đang sửa toàn bài: nút này chia lại theo lời thoại ĐANG LƯU, còn
+            // ô soạn kia giữ bản đã sửa chưa áp dụng. Chạy cả hai là hai nguồn sự thật
+            // đá nhau, user áp dụng xong không hiểu chữ của mình đi đâu mất.
+            disabled={balancing || !ctx.scenes.length || fullMode}
+            title={fullMode
+              ? 'Đang ở chế độ sửa toàn bài — dùng nút "Chia lại thành cảnh" trong ô soạn để chia theo bản bạn vừa sửa.'
+              : 'Chia lại ranh giới các cảnh cho đều nhịp. KHÔNG sửa một chữ nào trong lời thoại — chỉ di chuyển chỗ ngắt cảnh. Bạn sẽ được xem trước rồi mới quyết định.'}
             style={{ marginLeft: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
           >
             {balancing ? 'Đang tính...' : 'Chia lại nhịp'}
@@ -795,6 +987,133 @@ export default function ScriptEditor() {
         </div>
       )}
 
+      {fullMode && (
+        <div className="panel-box" style={{ marginBottom: 16, padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <strong style={{ flex: 1 }}>Toàn bộ lời thoại — sửa thoải mái, chia cảnh tính sau</strong>
+            <button
+              className="btn-outline"
+              onClick={previewFullScript}
+              disabled={fullLoading || !ctx.scenes.length}
+              style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)' }}
+              title={
+                (ctx.voice || '').startsWith('omnivoice_')
+                  ? 'Đọc cả bài một lượt. Giọng AI sinh từng cảnh rồi ghép lại, nên mỗi cảnh được lưu đệm — lúc render không phải sinh lại giây nào.'
+                  : 'Đọc cả bài một lượt để nghe mạch văn. Giọng thường đọc liền trong một lần gọi nên bản này chỉ tái dùng được khi render bật "Đọc liền mạch".'
+              }
+            >
+              {fullLoading ? <>Đang sinh giọng… (bấm để huỷ)</> : fullPlaying ? <><Pause size={14} /> Dừng</> : <><Headphones size={14} /> Nghe thử cả bài</>}
+            </button>
+          </div>
+
+          {fullProgress && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ height: 6, background: 'var(--bg-dim, #1e293b)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{
+                  width: `${fullProgress.percent}%`, height: '100%',
+                  background: 'var(--green, #22c55e)', transition: 'width .4s ease',
+                }} />
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                {fullProgress.message}
+              </div>
+            </div>
+          )}
+
+          {fullScope && (
+            <div style={{ fontSize: 12, marginBottom: 8, color: fullScope === 'per_scene' ? 'var(--green, #22c55e)' : 'var(--text-dim, #94a3b8)' }}>
+              {fullScope === 'per_scene'
+                ? '✅ Đã lưu đệm giọng đọc cho từng cảnh — lúc render sẽ dùng lại ngay, không sinh lại.'
+                : 'ℹ️ Bản đọc này được lưu đệm cho CẢ BÀI. Nó chỉ được dùng lại nếu bạn render với tuỳ chọn “Đọc liền mạch”; render từng cảnh vẫn sinh mới (giọng thường sinh rất nhanh nên không đáng ngại).'}
+            </div>
+          )}
+
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
+            Mỗi đoạn cách nhau một <strong>dòng trống</strong> là một cảnh.
+            Xoá dòng trống để <strong>gộp</strong> hai cảnh, thêm dòng trống để <strong>tách</strong>.
+            Ảnh và cảm xúc của cảnh cũ được giữ lại theo lời thoại giống nhất.
+          </div>
+
+          <textarea
+            className="form-input"
+            value={fullText}
+            onChange={(e) => {
+              setFullText(e.target.value);
+              // Sửa tiếp thì đề xuất vừa xem không còn đúng với chữ hiện tại nữa —
+              // để nguyên là user bấm Áp dụng và nhận về bản cũ.
+              if (resplitPreview) setResplitPreview(null);
+            }}
+            spellCheck={false}
+            style={{ width: '100%', minHeight: 320, lineHeight: 1.7, fontSize: 15, resize: 'vertical' }}
+            placeholder="Toàn bộ lời thoại của video..."
+          />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, opacity: 0.7 }}>
+              {fullText.trim() ? fullText.trim().split(/\n\s*\n+/).length : 0} đoạn · {countWords(fullText)} từ
+              {fullAt !== null && <> · đang đọc cảnh <strong>{fullAt + 1}</strong></>}
+            </span>
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                   title="Bật khi bạn đã tự chốt đúng số cảnh (ví dụ đã chuẩn bị sẵn đúng 12 tấm ảnh) và không muốn thuật toán gộp/tách thêm.">
+              <input type="checkbox" checked={keepBoundaries} onChange={(e) => setKeepBoundaries(e.target.checked)} />
+              Giữ đúng ranh giới tôi chia (không cân nhịp)
+            </label>
+            <div style={{ flex: 1 }} />
+            <button
+              className="btn-outline"
+              onClick={requestResplit}
+              disabled={resplitting || !fullText.trim()}
+              style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)', fontWeight: 700 }}
+            >
+              {resplitting ? 'Đang chia…' : 'Chia lại thành cảnh →'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {resplitPreview && (
+        <div className="warning-box" style={{ marginBottom: 16, display: 'block', borderColor: 'var(--green, #22c55e)' }}>
+          {(() => {
+            const r = resplitPreview.report;
+            return (
+              <>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Đề xuất: {r.canh_goc} cảnh → <strong>{r.canh_ket_qua} cảnh</strong>
+                  {r.da_can_nhip ? ' (đã cân nhịp)' : ' (giữ đúng ranh giới bạn chia)'}
+                </div>
+                {r.doan_viet_moi > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 8 }}>
+                    {r.doan_viet_moi} đoạn bạn viết mới không dò được về cảnh cũ — chúng tạm dùng ảnh
+                    của cảnh liền trước. Hãy xem lại mô tả ảnh của các cảnh đó.
+                  </div>
+                )}
+                <div style={{ maxHeight: 200, overflowY: 'auto', fontSize: 12, marginBottom: 10 }}>
+                  {resplitPreview.scenes.map((s, i) => (
+                    <div key={i} style={{ marginBottom: 4 }}>
+                      <strong>Cảnh {i + 1}:</strong> {(s.text || '').slice(0, 90)}{(s.text || '').length > 90 ? '…' : ''}
+                      <div style={{ opacity: 0.6, paddingLeft: 12 }}>
+                        🖼 {(s.image_prompt || '(chưa có mô tả ảnh)').slice(0, 80)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+                  Lời thoại giữ đúng từng chữ bạn vừa sửa. Khi hai cảnh gộp làm một, ảnh của cảnh
+                  bị gộp sẽ không còn được dùng.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn-outline" onClick={applyResplit}
+                          style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)', fontWeight: 700 }}>
+                    Áp dụng
+                  </button>
+                  <button className="btn-outline" onClick={() => setResplitPreview(null)}>Huỷ</button>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       <div className="scene-list">
         {ctx.scenes.map((scene, idx) => {
           const status = cacheStatus?.[idx];
@@ -804,11 +1123,18 @@ export default function ScriptEditor() {
           return (
             <div key={idx} className="scene-card">
               <div className="scene-header">
-                <div className="scene-number">Cảnh {idx + 1}</div>
-                <div style={{ display: 'flex', gap: 12, fontSize: 11, alignItems: 'center', marginLeft: 12 }}>
+                <div className="scene-number" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => toggleSceneCollapse(idx)}>
+                  {collapsedScenes.has(idx) ? <ChevronRight size={14} /> : <ChevronDown size={14} />} Cảnh {idx + 1}
+                </div>
+                <div style={{ display: 'flex', gap: 12, fontSize: 11, alignItems: 'center', marginLeft: 12, flex: 1 }}>
                   <CacheDot state={status?.audio_cached} kindLabel="Giọng" />
                   <CacheDot state={status?.image_cached} kindLabel="Hình" source={status?.image_source} />
                   <SceneTiming seconds={sceneSeconds[idx]} />
+                  {collapsedScenes.has(idx) && (
+                    <span style={{ marginLeft: 12, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
+                      {scene.text}
+                    </span>
+                  )}
                 </div>
                 <div className="scene-actions">
                   <button className="btn-icon" onClick={() => moveScene(idx, idx - 1)} disabled={idx === 0} title="Di chuyển lên"><ChevronUp size={14} /></button>
@@ -816,6 +1142,7 @@ export default function ScriptEditor() {
                   <button className="btn-icon btn-danger" onClick={() => removeScene(idx)} title="Xóa cảnh" disabled={ctx.scenes.length <= 1}><Trash2 size={14} /></button>
                 </div>
               </div>
+              {!collapsedScenes.has(idx) && (
               <div className="scene-fields">
                 <div className="scene-field">
                   <label className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1076,6 +1403,7 @@ export default function ScriptEditor() {
                   </div>
                 )}
               </div>
+              )}
             </div>
           );
         })}

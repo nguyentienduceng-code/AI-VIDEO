@@ -95,6 +95,29 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
     raise RuntimeError("_retry_sync: hết lượt thử nhưng không ghi nhận lỗi nào.")
 
 
+def _track_quota() -> None:
+    """Ghi nhận 1 lượt gọi Gemini vào bộ đếm quota trong ngày (xem quota_service).
+    Lỗi ở đây KHÔNG được làm hỏng luồng chính — quota.json hỏng thì chịu đếm sai,
+    chứ không được chặn cả tính năng sinh kịch bản/ảnh."""
+    try:
+        from services import quota_service
+        quota_service.increment_quota(1)
+    except Exception:
+        pass
+
+
+def _require_parsed(response, where: str):
+    """response.parsed là None khi Gemini trả JSON không khớp schema (structured output
+    thất bại) — dereference thẳng ném AttributeError khó hiểu ở tận nơi dùng, thay vì lỗi
+    rõ ràng ngay tại đây. Chuỗi lỗi generic "NoneType..." cũng không khớp is_retryable
+    trong _retry_sync nên sẽ không được thử lại — coi như một lỗi khác hẳn 429/503."""
+    if response.parsed is None:
+        raise RuntimeError(
+            f"Gemini không trả về dữ liệu hợp lệ ({where}) — có thể do lỗi schema hoặc nội dung bị chặn."
+        )
+    return response.parsed
+
+
 # ---------------------------------------------------------------------------
 # 1. Định nghĩa Schema bằng Pydantic — đây chính là "Structured Output".
 #    Gemini sẽ bị BẮT phải trả JSON khớp 100% với schema này.
@@ -153,6 +176,24 @@ class LLMScriptResponse(BaseModel):
         ),
     )
     hook_variants: List[str] = Field(default_factory=list, description="3 biến thể hook_text khác nhau để người dùng lựa chọn (A/B testing). Cùng ràng buộc như hook_text: không nhắc lại tên sách.")
+    # KHÁC hook_text: hook_text là TIÊU ĐỀ giật gân vẽ đè lên ảnh bìa (hiệu ứng word_by_word,
+    # full_shake); hook_quote là CÂU TRÍCH dùng cho carousel_quote / typewriter_quote /
+    # blackout_question — bìa thu nhỏ vào giữa rồi câu này hiện ra 2.5 giây.
+    # LỖI CŨ: RenderVideoRequest có field `hook_quote`, video_service có
+    # build_carousel_hook(cover, hook_quote, ...), tài liệu skill coi nó là BẮT BUỘC cho niche
+    # sách — nhưng schema Gemini không có trường này, nên nó chưa bao giờ được sinh tự động.
+    # Ai muốn dùng hiệu ứng bìa-sách-kèm-quote đều phải tự gõ tay câu quote.
+    hook_quote: str = Field(
+        default="",
+        description=(
+            "Câu trích ĐẮT NHẤT của nội dung, dùng cho hiệu ứng mở màn dạng quote "
+            "(carousel_quote/typewriter_quote). Viết HOA, dưới 15 từ, tốt nhất là 2 vế đối "
+            "lập hoặc một sự thật lật ngược — VD 'NGƯỜI NGHÈO LÀM VIỆC VÌ TIỀN. NGƯỜI GIÀU "
+            "BẮT TIỀN LÀM VIỆC CHO MÌNH.'. Phải là mệnh đề CỤ THỂ, đứng một mình vẫn đáng "
+            "trích; KHÔNG chung chung ('sách rất hay', 'bài học sâu sắc') và KHÔNG chỉ là "
+            "tên chủ đề. Để RỖNG nếu nội dung không có câu nào thật sự đắt."
+        ),
+    )
     cta_text: str = Field(default="", description="Câu Call To Action (Kêu gọi hành động) ở cuối video.")
     scenes: List[LLMScene]
 
@@ -236,12 +277,13 @@ ART_STYLES = {
     }
 }
 
-EMOTION_VISUAL_COUPLING = {
-    "hook": "image_style: dramatic, high contrast, bold composition | visual_effect: zoom_in_fast, high energy | color_mood: warm tones, saturated, attention-grabbing | lighting: rim light, dramatic shadows",
-    "calm": "image_style: peaceful, soft, natural | visual_effect: slow pan, gentle zoom | color_mood: cool tones, pastel, soothing | lighting: soft diffused, golden hour",
-    "dramatic": "image_style: cinematic, moody, intense | visual_effect: slow_motion, dramatic_angle | color_mood: desaturated, high contrast, cinematic | lighting: chiaroscuro, single source",
-    "excited": "image_style: vibrant, dynamic, energetic | visual_effect: fast cuts, multiple angles | color_mood: bright, saturated, warm | lighting: bright, colorful, high energy"
-}
+# ĐÃ BỎ: EMOTION_VISUAL_COUPLING.
+# Bảng này từng được tiêm vào prompt chế độ quiz_listicle bằng `f"{EMOTION_VISUAL_COUPLING}"`
+# — tức dump nguyên văn repr của một dict Python vào system_instruction, kèm dấu ngoặc và
+# dấu nháy. Nhưng nó chỉ có nghĩa nếu Gemini biết cảm xúc của cảnh nó đang viết, mà từ khi
+# resolve_blueprint() gán `emotion` ở Python theo băng vị trí thì Gemini KHÔNG còn chọn
+# emotion nữa: nó không có cách nào biết cảnh này là 'hook' hay 'calm' để áp đúng dòng.
+# Việc ghép tông màu theo cảm xúc giờ do color_grading + motion_effects lo ở tầng render.
 
 NEGATIVE_PROMPT_TEMPLATES = {
     "default": "blurry, low quality, distorted, deformed, ugly, bad anatomy, extra limbs, poorly drawn face",
@@ -260,18 +302,18 @@ def get_enhanced_art_style(style: str) -> str:
 # ---------------------------------------------------------------------------
 # ── Bảng cấu hình thời lượng → số từ ────────────────────────────────
 # Đổi chuỗi này mỗi khi luật prompt thay đổi → cache kịch bản cũ tự hết hiệu lực.
-PROMPT_REVISION = "2026-07-26-sprint1"
+PROMPT_REVISION = "2026-07-30-hookquote-retry-nojargon"
 
 # Cùng vai trò cho split_script_to_scenes. Tách riêng để sửa prompt chia cảnh không xoá
 # oan cache của generate_script (và ngược lại). LỖI CŨ: cache key của "split_script" hoàn
 # toàn không có trường revision, nên mọi lần sửa prompt đều bị cache cũ đè — sửa xong
 # không thấy gì thay đổi.
-SPLIT_PROMPT_REVISION = "2026-07-26-niche-effects"
+SPLIT_PROMPT_REVISION = "2026-07-30-image-prompt-source"
 
 # Cùng vai trò cho generate_script_from_images. Trước đây cache key của nó KHÔNG có
 # trường revision — sửa prompt xong vẫn nhận lại kịch bản cũ từ cache, y hệt lỗi của
 # split_script mô tả ở trên.
-IMAGE_PROMPT_REVISION = "2026-07-26-scene-word-budget"
+IMAGE_PROMPT_REVISION = "2026-07-30-photo-content-rules"
 
 # Tốc độ đọc thực đo trên chính pipeline này (Edge-TTS giọng Việt, rate 0%): ~3.0 từ/giây.
 # Luật cũ ghi "15-20 từ ≈ 3-5 giây" là BẤT KHẢ THI về số học — 18 từ cần ~6 giây, không
@@ -359,133 +401,342 @@ def scene_word_budget(target_duration: str, num_scenes: int) -> tuple[int, int]:
     return per_lo, per_hi
 
 # ── Bảng tone kể chuyện ─────────────────────────────────────────────
+# KHOÁ PHẢI KHỚP frontend/src/constants.js › NARRATION_TONES.
+# LỖI CŨ: bảng này đánh khoá theo bộ từ vựng riêng (drama/inspirational) trong khi UI chỉ
+# gửi viral/storytelling/educational/emotional/humorous. Vì tra bằng `.get(tone, "")`, hai
+# tone ĐƯỢC DÙNG NHIỀU NHẤT — `viral` (mặc định, nút đầu tiên) và `emotional` — nhận về
+# chuỗi RỖNG: kịch bản viral chưa từng được nói cho biết nó phải "viral" ra sao. Đồng thời
+# "drama"/"inspirational" là prompt chết vì không UI nào gửi tới. Nay khoá chính là 5 giá
+# trị thật của UI; hai tên cũ giữ làm alias cho preset đã lưu từ trước.
 NARRATION_TONE_PROMPTS = {
-    "drama": "Tone: Đanh thép, kịch tính, dồn dập. Dùng từ ngữ mạnh, hơi hướng giật gân, tạo ra cảm giác bí ẩn, đe doạ hoặc bất ngờ tột độ. Không dùng từ thừa.",
-    "educational": "Tone: Cuốn hút, khai mở trí óc. Giống như một bí mật vừa được bật mí, tiết lộ sự thật gây shock nhưng vẫn đáng tin cậy. Dùng số liệu để đè bẹp sự nghi ngờ.",
-    "humorous": "Tone: Cà khịa, châm biếm, hài hước sâu cay. Chơi chữ, dùng từ ngữ trending của Gen Z hoặc văn phong 'troll' nhẹ nhàng nhưng thâm thúy.",
-    "inspirational": "Tone: Cảm xúc, hùng hồn, truyền động lực mãnh liệt. Đánh vào trái tim người nghe, dùng từ ngữ khơi gợi khát vọng và vượt qua giới hạn.",
-    "storytelling": "Tone: Trầm lắng, chiêm nghiệm, dẫn chuyện như một người kể chuyện tài hoa. Giọng văn điện ảnh, giàu cảm xúc nhưng KHÔNG lên gân. Mỗi cảnh kết bằng một câu tạo tò mò nhẹ (soft cliffhanger) để người xem muốn nghe tiếp.",
-}
-
-
-# ── PALETTE HIỆU ỨNG THEO TONE ──────────────────────────────────────
-# Chỉ dẫn cho AI chọn transition/sfx/nhịp ĐÚNG CHẤT từng thể loại (đồng bộ với
-# .agents/skills/content-cinematic/references/content-frameworks.md).
-# Nhờ vậy "hiệu ứng đi kèm" tự khớp niche thay vì mặc định crossfade toàn bộ.
-TONE_EFFECT_PALETTES = {
     "viral": (
-        "PALETTE HIỆU ỨNG (viral): transition chủ đạo 'whip_pan'/'zoom_punch' ở các cú chuyển dồn dập, "
-        "'fade_white' cho khoảnh khắc bất ngờ, 'crossfade' cho đoạn nối thường. "
-        "sfx: hook dùng 'riser', twist dùng 'bass_drop' hoặc 'impact', chốt dùng 'ding'. "
-        "speech_rate_modifier: hook '+15%', thân '0%', climax '+10%'."
+        "Tone: Đanh thép, dồn dập, giật gân có cơ sở. Câu ngắn như đấm. Mỗi câu bỏ được một "
+        "chữ thì phải bỏ. Ưu tiên động từ mạnh và con số; tránh tính từ rỗng ('tuyệt vời', "
+        "'kinh khủng'). Nói như đang tiết lộ điều lẽ ra không nên nói ra — nhưng KHÔNG bịa, "
+        "không hứa hẹn quá lời."
     ),
     "storytelling": (
-        "PALETTE HIỆU ỨNG (kể chuyện): transition chủ đạo 'crossfade' và 'fade_black' (chuyển đoạn), "
-        "'page_flip' khi sang chương/bước ngoặt mới (hợp review sách), 'droplet' cho khoảnh khắc cảm xúc/kết. "
-        "sfx: ĐỂ TRỐNG hầu hết cảnh; chỉ 'riser' hoặc 'suspense' ở đúng 1-2 điểm cao trào, 'shimmer' ở khoảnh khắc nhận ra, "
-        "'breath' (hơi thở nhẹ) ngay TRƯỚC câu lắng đọng/ngừng lại để tạo khoảng lặng. "
-        "speech_rate_modifier: mở '+5%', thân '0%' hoặc '-5%', cao trào '-3%' (chậm để nhấn)."
+        "Tone: Trầm lắng, chiêm nghiệm, dẫn chuyện như một người kể chuyện tài hoa. Giọng văn "
+        "điện ảnh, giàu cảm xúc nhưng KHÔNG lên gân. Mỗi cảnh kết bằng một câu tạo tò mò nhẹ "
+        "(soft cliffhanger) để người xem muốn nghe tiếp."
     ),
     "educational": (
-        "PALETTE HIỆU ỨNG (giáo dục/tài chính): transition 'slide_left'/'slide_right' khi liệt kê ý, "
-        "'zoom_punch' khi nêu CON SỐ gây sốc, 'wipe_right' khi so sánh 2 vế, 'crossfade' mặc định. "
-        "sfx: 'tick' khi liệt kê, 'bass_drop' khi chốt con số quan trọng, 'ding' ở kết luận. "
-        "speech_rate_modifier: hook '+10%', giải thích '0%', số liệu '-3%'."
+        "Tone: Cuốn hút, khai mở trí óc. Giống như một bí mật vừa được bật mí: tiết lộ sự thật "
+        "gây sốc nhưng vẫn đáng tin cậy. Dùng số liệu để đè bẹp sự nghi ngờ. Giải thích bằng "
+        "phép so sánh đời thường, không dùng từ hàn lâm."
     ),
     "emotional": (
-        "PALETTE HIỆU ỨNG (cảm xúc/tâm lý): transition 'crossfade' chậm rãi chủ đạo, 'droplet' ở khoảnh khắc chạm, "
-        "'fade_black' khi lắng đọng. TRÁNH whip_pan/zoom_punch (phá cảm xúc). "
-        "sfx: gần như KHÔNG dùng; tối đa 'shimmer' 1 lần ở insight, 'heartbeat' nếu hồi hộp nội tâm, "
-        "'breath' ngay trước câu tự vấn/lặng đọng cuối cùng. "
-        "speech_rate_modifier: toàn bài '-5%', câu đắt nhất '-8%'."
+        "Tone: Sâu sắc, chạm tim, nói thật chậm. Đi vào một chi tiết nhỏ rồi ở lại đó (bàn tay, "
+        "lá thư, một câu nói cũ) thay vì kể lướt nhiều chuyện. Chèn '...' ở chỗ cần lặng. "
+        "TUYỆT ĐỐI không lên gân, không hô hào, không dạy đời."
     ),
     "humorous": (
-        "PALETTE HIỆU ỨNG (hài hước): transition 'zoom_punch'/'whip_pan' cho cú bẻ lái, 'slide_up' cho ý mới. "
-        "sfx: 'pop' cho tình huống ngộ nghĩnh, 'laugh' SAU cú đấm hài (dùng tiết chế 1-2 lần), 'ding' cho chốt. "
-        "speech_rate_modifier: setup '0%', punchline '+10%'."
+        "Tone: Cà khịa, châm biếm, hài hước sâu cay. Chơi chữ, dùng từ ngữ trending của Gen Z "
+        "hoặc văn phong 'troll' nhẹ nhàng nhưng thâm thúy. Cú punchline luôn nằm ở CUỐI cảnh, "
+        "không giải thích lại câu hài vừa nói."
+    ),
+    # ── Alias tương thích preset cũ ──
+    "drama": (
+        "Tone: Đanh thép, kịch tính, dồn dập. Dùng từ ngữ mạnh, hơi hướng giật gân, tạo cảm "
+        "giác bí ẩn hoặc bất ngờ tột độ. Không dùng từ thừa."
+    ),
+    "inspirational": (
+        "Tone: Cảm xúc, hùng hồn, truyền động lực mãnh liệt. Đánh vào trái tim người nghe, "
+        "dùng từ ngữ khơi gợi khát vọng và vượt qua giới hạn."
     ),
 }
 
 
-# ── PALETTE + BLUEPRINT THEO NICHE (chính xác hơn tone) ─────────────
-# Khi FE truyền content_niche, dùng palette + bản vẽ vị trí riêng của niche đó
-# (đồng bộ .agents/skills/content-cinematic/references/scene-blueprints.md).
-# "N" = tổng số cảnh; các mốc % được AI tự quy ra vị trí cảnh.
+# ── CÔNG THỨC HOOK 3 GIÂY ĐẦU (đồng bộ references/hook-library.md) ──
+# Prompt cũ chỉ ra lệnh trừu tượng "phải tạo Curiosity Gap" rồi để Gemini tự bơi — nên
+# hook hay rơi về mẫu an toàn nhất ("Bạn có biết..."), đúng thứ mà CLICHE_PHRASES trừ điểm.
+# Đưa hẳn công thức vào thì model có khuôn để điền.
+HOOK_FORMULAS = {
+    "viral": (
+        "- Phủ định gây sốc: 'Đừng [làm X]... nếu bạn chưa biết điều này.'\n"
+        "- Sự thật ẩn giấu: 'Sự thật rùng mình về [chủ đề] mà không ai nói cho bạn.'\n"
+        "- Con số sốc: '99% người [làm X] đều sai ngay ở bước đầu.'\n"
+        "- Nghịch lý: '[Điều tưởng tốt] mới chính là thứ đang phá bạn.'"
+    ),
+    "storytelling": (
+        "- Mở màn bí ẩn: 'Câu chuyện bắt đầu với [tình huống lạ], nhưng không ai ngờ...'\n"
+        "- Nghịch lý nhân vật: 'Cùng một [người/vật], nhưng lại có hai [số phận] trái ngược.'\n"
+        "- Lời hứa hé lộ: 'Cuốn sách này giấu một bí mật về [chủ đề] — và nó đổi cách bạn nghĩ.'"
+    ),
+    "educational": (
+        "- Đảo chiều nhận thức: 'Hoá ra [điều tưởng đúng] lại hoàn toàn sai. Đây là lý do.'\n"
+        "- Con số mở màn: '[Con số cụ thể] — và gần như không ai giải thích được vì sao.'"
+    ),
+    "emotional": (
+        "- Khoét insight thầm kín: 'Lý do bạn luôn [trạng thái] không phải vì [lời buộc tội "
+        "quen thuộc]. Mà vì điều này.'\n"
+        "- Chi tiết nhỏ mở màn: bắt đầu từ MỘT hình ảnh cụ thể (lá thư, cuộc gọi lỡ) rồi mới "
+        "hé ra nó là chuyện gì."
+    ),
+    "humorous": (
+        "- Tự thú hài: '[Hành động ai cũng làm] và đây là lý do nó ngớ ngẩn hơn bạn tưởng.'\n"
+        "- Bẻ lái: dựng một kỳ vọng rất nghiêm túc ở câu đầu rồi đập vỡ nó ở câu thứ hai."
+    ),
+}
+
+
+# ── LUẬT CHỐNG "CONTENT CHUNG CHUNG" (SKILL.md §1.5) ────────────────
+# Đây là phần tách content hay khỏi content nhạt, và trước đây nó CHỈ nằm trong tài liệu
+# skill dành cho agent viết tay — kịch bản do chính app sinh ra không hề được hưởng.
+SPECIFICITY_RULES = (
+    "QUY TẮC CỤ THỂ (đây là thứ tách content HAY khỏi content NHẠT — BẮT BUỘC):\n"
+    "- Mỗi cảnh phải có ÍT NHẤT MỘT trong: con số, tên riêng, mốc thời gian, hoặc chi tiết "
+    "giác quan (thấy/nghe/ngửi/chạm được). 'Rất giàu' → 'kiếm 1 triệu đô năm 26 tuổi'. "
+    "'Một cuốn sách hay' → 'cuốn 200 trang, bán 40 triệu bản'.\n"
+    "- SHOW, DON'T TELL: viết 'cô run rẩy mở lá thư', KHÔNG viết 'cô rất lo lắng'. Tả hành "
+    "động sinh ra cảm xúc, đừng thông báo cảm xúc.\n"
+    "- MỖI CẢNH PHẢI CÓ ĐÚNG 1 LÝ DO GIỮ CHÂN: một tình tiết mới, một câu hỏi bỏ lửng, hoặc "
+    "một tiết lộ. Cảnh nào không thêm gì mới so với cảnh trước thì viết lại, đừng giữ.\n"
+    "- CẢNH SAU NỐI Ý CẢNH TRƯỚC ('Nhưng...', 'Và đúng lúc đó...', 'Vấn đề là...'). Không "
+    "viết các cảnh rời rạc như gạch đầu dòng.\n"
+    "- KHÔNG mở đầu cảnh nào bằng lời chào, lời dẫn hay lời cảm ơn. Vào thẳng nội dung."
+)
+
+# CTA thật, cấm khan hiếm giả (hook-library.md § CTA). Prompt cũ chỉ nói "kêu gọi hành động
+# khéo léo" nên Gemini hay tự sinh 'lưu ngay kẻo video bị gỡ' — vừa giả vừa dễ vi phạm policy.
+CTA_RULES = (
+    "QUY TẮC CTA (cảnh cuối + trường cta_text):\n"
+    "- Dùng CTA THẬT: 'Lưu lại để không quên nhé.' / 'Bạn nghĩ sao? Comment cho mình biết.' / "
+    "'Theo dõi để xem phần 2.' / 'Tag người bạn muốn cùng xem.'\n"
+    "- CẤM khan hiếm giả: 'lưu ngay trước khi video bị gỡ', 'xem nhanh kẻo mất', hoặc bất kỳ "
+    "con số thống kê bịa ra để tạo áp lực.\n"
+    "- CTA phải dính vào nội dung vừa kể, không phải câu chốt dán được vào video bất kỳ."
+)
+
+# Lời thoại cho TTS (Edge-TTS/OmniVoice). '...' được pipeline hiểu là chỗ ngắt nghỉ thật —
+# trước đây chỉ prompt photo_narration biết mẹo này, hai đường sinh kịch bản kia không.
+TTS_WRITING_RULES = (
+    "KỸ THUẬT VĂN NÓI (đọc bằng giọng AI):\n"
+    "- Xưng 'bạn' trực tiếp. Câu ngắn, mỗi câu một ý.\n"
+    "- Chèn '...' vào `text` ở đúng chỗ cần lặng/nhấn — hệ thống hiểu và ngắt nghỉ thật.\n"
+    "- Giữ MỘT người kể chuyện xuyên suốt, văn phong không đổi giữa các cảnh.\n"
+    "- TUYỆT ĐỐI không Markdown (*, #), không emoji, không ký hiệu lạ trong `text` "
+    "(giọng đọc sẽ đọc thành tiếng hoặc phát âm sai)."
+)
+
+# ── LUẬT VIẾT image_prompt — RẼ THEO NGUỒN HÌNH ─────────────────────
+# Vì sao phải rẽ: khi user render bằng video stock, main.py lấy từ khoá tìm Pexels từ
+# chính image_prompt qua extract_search_keyword(). Prompt cũ BẮT BUỘC mở đầu bằng
+# "Extreme close-up shot of..." + gắn "8k, Unreal Engine 5" cho MỌI chế độ, nên
+# extract_search_keyword phải có một danh sách ~40 stopword chỉ để gỡ lại đúng những chữ
+# mà prompt vừa ép model viết ra. Hai tầng đánh nhau, và cái nào lọt lưới thì thành query
+# rác → Pexels trả video sai chủ đề. Nay chế độ stock được yêu cầu viết chủ thể đời thực
+# ngay từ đầu (khớp .agents/skills/.../stock-footage-guide.md).
+IMAGE_PROMPT_RULES_AI = (
+    "QUY TẮC ĐẠO DIỄN HÌNH ẢNH — CHẾ ĐỘ ẢNH AI (BẮT BUỘC):\n"
+    "- Mở đầu mỗi `image_prompt` bằng góc máy điện ảnh: 'Extreme close-up shot of...', "
+    "'Low-angle drone shot of...', 'Over-the-shoulder shot of...', 'Wide establishing shot of...'\n"
+    "- Công thức: Góc máy + Đối tượng + Hành động + Ánh sáng + Bối cảnh + Phẩm chất nghệ "
+    "thuật (8k, photorealistic, Unreal Engine 5).\n"
+    "- NHẤT QUÁN NHÂN VẬT: nếu có nhân vật, lặp lại CHÍNH XÁC ngoại hình (tuổi, giới tính, "
+    "trang phục) ở TẤT CẢ các cảnh — hệ thống vẽ từng cảnh riêng biệt, thiếu tả lại là đổi "
+    "diễn viên giữa video.\n"
+    "- Dùng CHUNG một tông màu ánh sáng cho toàn video "
+    "(VD 'cinematic teal and orange lighting, volumetric dust')."
+)
+IMAGE_PROMPT_RULES_STOCK = (
+    "QUY TẮC ĐẠO DIỄN HÌNH ẢNH — CHẾ ĐỘ VIDEO STOCK THẬT (BẮT BUỘC):\n"
+    "- Hệ thống sẽ lấy `image_prompt` làm TỪ KHOÁ TÌM VIDEO trên kho stock. Vì vậy phải tả "
+    "một cảnh QUAY THẬT, đời thường, tìm được: 'a hand writing a letter by candlelight', "
+    "'car headlights on a rainy night street', 'lonely person walking in autumn park'.\n"
+    "- CẤM mở đầu bằng thuật ngữ máy quay ('Extreme close-up shot of', 'Low-angle drone "
+    "shot of') và CẤM từ khoá render ('8k', 'Unreal Engine', 'Octane', 'photorealistic') — "
+    "chúng biến thành từ khoá rác và kho stock sẽ trả về video sai chủ đề.\n"
+    "- Viết CHỦ THỂ trước tiên, 3-8 từ tiếng Anh, không dấu câu rườm rà.\n"
+    "- TRÁNH hình ảnh giả tưởng/anime/CGI (rồng, phép thuật, nhân vật hoạt hình) — không có "
+    "footage thật nào khớp.\n"
+    "- Ưu tiên khớp CẢM XÚC của lời kể hơn là minh hoạ đúng từng chữ: bàn tay, ánh đèn, "
+    "khung cửa sổ, thư từ, đường phố, thiên nhiên, đồ vật gợi hoài niệm."
+)
+
+
+# Bước tự kiểm ĐẾM TỪ. Đo trên kịch bản thật (tài chính, 6 cảnh, trần 14 từ): 2/6 cảnh ra
+# 15 từ — lố đúng 1 từ. Model không "cảm" được số từ nếu không được yêu cầu đếm tường minh,
+# nên nói thẳng ra thành một bước phải làm trước khi trả kết quả.
+WORD_COUNT_SELF_CHECK = (
+    "TRƯỚC KHI TRẢ KẾT QUẢ: đếm lại số từ của TỪNG cảnh. Cảnh nào vượt trần thì tự cắt bớt "
+    "chữ hoặc tách thành hai cảnh — đừng trả về cảnh đã biết là quá dài."
+)
+
+# Biên dung sai của lớp review với ngân sách từ. Lố 1 từ trên trần 14 không phá nhịp video
+# (≈0.35 giây), nhưng bản cũ vẫn gắn severity 'error' và trừ 8 điểm cho nó — người dùng thấy
+# hai lỗi ĐỎ trên một kịch bản hoàn toàn dùng được, rồi mất niềm tin vào cả lớp review. Cảnh
+# dài thật (18-20 từ trên trần 14) vẫn bị bắt đúng.
+WORD_BUDGET_TOLERANCE_RATIO = 0.1
+
+
+def _cliche_ban_rule() -> str:
+    """Danh sách cụm sáo rỗng bị cấm, sinh TỪ CHÍNH `CLICHE_PHRASES`.
+
+    LỖI CŨ: prompt liệt kê tay 4 cụm, còn `_local_review` trừ điểm theo 15 cụm khác. Model
+    bị phạt vì những cụm chưa ai nói cho nó biết là cấm ('nói cách khác', 'tóm lại là',
+    'và đó chính là'...). Giờ hai đầu dùng CÙNG một nguồn chân lý, không thể lệch lại.
+    """
+    joined = "; ".join(f"'{p}'" for p in CLICHE_PHRASES)
+    return (
+        "- CẤM TUYỆT ĐỐI các cụm sáo rỗng sau (có lớp kiểm duyệt tự động trừ điểm nếu "
+        f"xuất hiện): {joined}."
+    )
+
+
+def _batch_scope_rule(batch_idx: int, batch_size: int, total_scenes: int) -> str:
+    """Chỉ dẫn phạm vi cho một LÔ khi kịch bản dài phải sinh nhiều lần.
+
+    LỖI CŨ: mỗi lô đều nhận nguyên system prompt có dòng '4. CTA (Cảnh cuối): Kêu gọi hành
+    động', nên với 30 cảnh (3 lô: 12+12+6) Gemini viết CTA + lời chốt ở cuối CẢ BA lô —
+    video có ba cái kết, hai cái nằm giữa bài (cảnh 12 và 24). Cách sửa cũ chỉ thay chuỗi
+    'CHÍNH XÁC N phân cảnh' nên không chạm tới vấn đề này.
+    """
+    first = batch_idx == 0
+    last = batch_idx + batch_size >= total_scenes
+    start, end = batch_idx + 1, batch_idx + batch_size
+    if first and last:
+        return ""  # kịch bản gọn trong 1 lô: giữ nguyên vòng cung đầy đủ
+
+    head = (
+        f"PHẠM VI LÔ HIỆN TẠI: bạn đang viết cảnh {start} đến {end} của một video gồm "
+        f"{total_scenes} cảnh.\n"
+    )
+    if last:
+        return head + (
+            "Lô này CHỨA CẢNH CUỐI của video: đặt CAO TRÀO ở khoảng 80% tổng số cảnh, rồi "
+            "đúc kết và CTA ở cảnh cuối cùng. Đây là chỗ duy nhất được phép có lời kết."
+        )
+    if first:
+        return head + (
+            "Lô này là PHẦN MỞ ĐẦU. TUYỆT ĐỐI KHÔNG viết cảnh kết, không đúc kết, không CTA, "
+            "không câu chốt kiểu 'và đó là lý do...' — video còn dài. Cảnh cuối của lô phải "
+            "BỎ LỬNG để lô sau tiếp mạch."
+        )
+    return head + (
+        "Lô này là PHẦN GIỮA. KHÔNG viết lại hook mở màn, KHÔNG viết cảnh kết/đúc kết/CTA. "
+        "Nối tiếp trực tiếp mạch của cảnh trước và để cảnh cuối lô BỎ LỬNG."
+    )
+
+
+# ── BẢN VẼ NỘI DUNG THEO NICHE (thứ biến content từ "chung chung" thành "đúng chất") ──
+# Đồng bộ .agents/skills/content-cinematic/references/content-frameworks.md +
+# scene-blueprints.md. "~X%" = vị trí tương đối trong tổng số cảnh; Gemini tự quy ra
+# cảnh số mấy.
+#
+# HAI LỖI ĐÃ SỬA Ở BẢN NÀY:
+#
+# 1. TOÀN BỘ BẢNG NÀY TỪNG LÀ CODE CHẾT. Nó được viết ra, được ghi vào tài liệu
+#    (docs/HeThong_SoanContent_AI_Video.md), nhưng KHÔNG một dòng nào tiêm nó vào
+#    system_instruction — grep `NICHE_BLUEPRINTS` chỉ ra đúng 1 kết quả: chính chỗ định
+#    nghĩa. Nghĩa là chọn niche "Tài chính" trên UI chỉ đổi được sfx/transition (phần cơ
+#    học do resolve_blueprint gán ở Python), còn LỜI THOẠI vẫn y hệt niche khác. Giờ
+#    build_script_system_prompt() nối nó vào thật.
+# 2. Mọi chỉ dẫn cơ học (sfx 'riser', transition 'zoom_punch', rate '-3%') đã bị BỎ khỏi
+#    đây. Chúng vô nghĩa với Gemini: LLMScene không có các trường đó, và
+#    resolve_blueprint() ghi đè toàn bộ bằng NICHE_PERCENT_BLUEPRINTS ngay sau khi parse.
+#    Giữ lại chỉ tốn token và làm loãng phần chỉ dẫn NỘI DUNG — thứ duy nhất Gemini thật
+#    sự điều khiển được. Bảng % cơ học vẫn là NICHE_PERCENT_BLUEPRINTS bên dưới.
 NICHE_BLUEPRINTS = {
     "book": (
         "NICHE: REVIEW/KỂ CHUYỆN SÁCH-PHIM.\n"
-        "BẢN VẼ VỊ TRÍ (bắt buộc bám theo): Cảnh 1 = Lời giới thiệu/dẫn đề cuốn hút (VÍ DỤ: 'Hôm nay chúng ta cùng khám phá...'). "
-        "TUYỆT ĐỐI KHÔNG mô tả bìa sách ở Cảnh 1 nữa, vì 3.5 giây đầu video đã được hệ thống chèn hiệu ứng Máy Xèng (Slot Machine) hiển thị bìa rồi. "
-        "Hãy tập trung mô tả hình ảnh tác giả, bối cảnh hoặc hình tượng nội dung cho image_prompt của Cảnh 1. "
-        "~15% đầu = bối cảnh nhân vật (calm, crossfade). "
-        "Giữa = mỗi cảnh 1 nút thắt kết bằng soft cliffhanger; dùng 'page_flip' khi sang chương mới. "
-        "~45% = MINI-TWIST giữ chân (suspense, sfx 'suspense', 'fade_black'). "
-        "~80% = CAO TRÀO tiết lộ lớn nhất (sfx 'riser' ngay trước, transition 'zoom_punch' hoặc 'fade_white', rate '-3%'). "
-        "Sau cao trào = dư âm (sfx 'shimmer' 1 lần lúc ngộ ra, transition 'droplet'). "
-        "Cảnh cuối = BẮT BUỘC phải là KẾT BÀI (tổng kết bài học hoặc kêu gọi hành động - Call to Action) để video không bị cụt (closing, 'fade_black', rate '-5%'). SFX để trống mọi cảnh còn lại."
+        "BẢN VẼ NỘI DUNG (bắt buộc bám theo vị trí):\n"
+        "- Cảnh 1 — `image_prompt`: PHẢI là ảnh bìa sách hoặc một vật thể biểu tượng rõ nét, "
+        "vì hệ thống lấy CHÍNH ảnh cảnh 1 làm bìa cho hiệu ứng Máy Xèng (Slot Machine) 3.5 giây đầu. "
+        "Cảnh 1 — `text`: TUYỆT ĐỐI KHÔNG tả bìa, không đọc lại tên sách/tên tác giả (người xem đang "
+        "nhìn thấy bìa rồi). Vào thẳng nghịch lý hoặc câu hỏi nhức nhối mà cuốn sách trả lời.\n"
+        "- ~15% đầu: dựng bối cảnh & nhân vật bằng một tình huống cụ thể, KHÔNG spoiler cái kết.\n"
+        "- Phần giữa: mỗi cảnh đúng 1 nút thắt, kết bằng soft cliffhanger "
+        "('Nhưng điều cô không ngờ tới là...', 'Câu trả lời anh nhận được nghe thật vô lý...').\n"
+        "- ~45%: MINI-TWIST giữ chân — một chi tiết lật lại điều người xem vừa tin.\n"
+        "- ~80%: CAO TRÀO — tiết lộ lớn nhất của cuốn sách, câu trị giá cả cuốn.\n"
+        "- Sau cao trào: một cảnh dư âm, khoảnh khắc nhân vật (hoặc người đọc) ngộ ra.\n"
+        "- Cảnh cuối: BẮT BUỘC là KẾT BÀI — bài học đọng lại + mời đọc/CTA. Không được cụt."
     ),
     "finance": (
         "NICHE: TÀI CHÍNH/LÀM GIÀU/KINH DOANH.\n"
-        "BẮT BUỘC mỗi cảnh có CON SỐ/tỉ lệ/mốc thời gian cụ thể. "
-        "BẢN VẼ: Cảnh 1 = nghịch lý tiền + con số sốc (sfx 'riser', 'whip_pan', rate '+15%'). "
-        "Kế = đào sâu nỗi đau ('slide_left'). Giữa = cơ chế từng ý ('slide_right'/'wipe_right' khi so sánh, sfx 'tick' khi liệt kê). "
-        "Con số chốt = sfx 'bass_drop' + 'zoom_punch' (rate '-3%'). Nguyên tắc vàng = sfx 'impact' + 'fade_white'. "
-        "Kết = hành động cụ thể + CTA (sfx 'ding', 'fade_black')."
+        "BẮT BUỘC mỗi cảnh có CON SỐ/tỉ lệ/mốc thời gian cụ thể. Cấm đạo lý suông.\n"
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: nghịch lý tiền bạc + một con số sốc (VD 'Căn nhà bạn đang ở có thể đang âm thầm "
+        "rút cạn ví bạn mỗi tháng 12 triệu').\n"
+        "- Kế tiếp: đào sâu nỗi đau — người xem tự nhận ra mình đang mắc.\n"
+        "- Giữa: giải thích CƠ CHẾ, mỗi cảnh một ý (tài sản vs tiêu sản), có ví dụ thật hoặc so sánh 2 vế.\n"
+        "- ~70%: con số chốt hạ, cái làm người xem phải dừng lại tính nhẩm.\n"
+        "- ~85%: nguyên tắc vàng, phát biểu được thành một câu nhớ được.\n"
+        "- Cảnh cuối: một hành động cụ thể làm được ngay hôm nay + CTA."
     ),
     "history": (
         "NICHE: LỊCH SỬ/BÍ ẨN.\n"
-        "BẢN VẼ: Cảnh 1 = bí ẩn mở màn kiểu 'suốt X năm...' (sfx 'suspense', 'fade_black'). "
-        "~25% đầu = dựng bối cảnh (calm, crossfade). Giữa = chuỗi manh mối, mỗi cảnh 1 manh mối + câu hỏi "
-        "(suspense, sfx 'heartbeat' đúng 1 lần giữa chuỗi). ~70% = manh mối LẬT NGƯỢC ('wipe_down'). "
-        "~85% = TIẾT LỘ sự thật (sfx 'impact', 'zoom_punch'). Kết = ý nghĩa hiện tại + câu hỏi mở ('droplet' rồi 'fade_black', rate '-5%')."
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: bí ẩn mở màn kiểu 'Suốt 100 năm, thứ này bị xoá khỏi sách sử. Cho đến khi...'.\n"
+        "- ~25% đầu: dựng bối cảnh thời đại bằng chi tiết cụ thể (năm, địa danh, tên riêng).\n"
+        "- Giữa: chuỗi manh mối — mỗi cảnh đúng 1 manh mối, kết bằng một câu hỏi.\n"
+        "- ~70%: manh mối LẬT NGƯỢC toàn bộ giả thuyết vừa dựng.\n"
+        "- ~85%: TIẾT LỘ sự thật.\n"
+        "- Cảnh cuối: ý nghĩa với hiện tại + một câu hỏi mở cho người xem."
     ),
     "psychology": (
         "NICHE: TÂM LÝ/SELF-HELP.\n"
-        "BẢN VẼ: Cảnh 1 = insight khoét nỗi đau thầm kín (KHÔNG sfx). Kế = đồng cảm 'không phải vì bạn lười...' (rate '-5%'). "
-        "Giữa = giải thích hiện tượng CÓ TÊN GỌI (hiệu ứng X). ~70% = khoảnh khắc NGỘ RA (sfx 'shimmer', transition 'droplet', rate '-8%'). "
-        "Kế = 1 hành động nhỏ áp dụng được ngay. Kết = câu hỏi tự vấn (closing, 'fade_black'). "
-        "TRÁNH whip_pan/zoom_punch; transition chủ đạo 'crossfade' chậm."
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: insight khoét vào nỗi đau thầm kín ('Lý do bạn luôn mệt mỏi không phải vì lười').\n"
+        "- Kế tiếp: đồng cảm, gỡ cảm giác tội lỗi cho người xem.\n"
+        "- Giữa: giải thích hiện tượng và ĐẶT TÊN cho nó (hiệu ứng/hội chứng X), kèm ví dụ đời thường.\n"
+        "- ~70%: khoảnh khắc NGỘ RA — câu khiến người xem thốt lên 'đúng là mình'.\n"
+        "- Kế tiếp: đúng 1 hành động nhỏ áp dụng được ngay.\n"
+        "- Cảnh cuối: một câu hỏi tự vấn để người xem mang theo."
     ),
     "truecrime": (
-        "NICHE: TRUE CRIME/VỤ ÁN (nếu vụ án có thật: KHÔNG bịa chi tiết, không nêu tên chưa xác thực).\n"
-        "BẢN VẼ: Cảnh 1 = hiện trường/biến mất + 1 chi tiết rùng mình (sfx 'heartbeat', 'fade_black'). "
-        "Kế = dòng thời gian (suspense, crossfade). Giữa = nghi vấn → manh mối (sfx 'suspense'). "
-        "~70% = manh mối LẬT NGƯỢC (sfx 'bass_drop', 'whip_pan'). ~85% = sự thật (sfx 'impact', 'zoom_punch'). "
-        "Kết = kết cục + suy ngẫm ('droplet', rate '-5%')."
+        "NICHE: TRUE CRIME/VỤ ÁN. Nếu vụ án có thật: KHÔNG bịa chi tiết, KHÔNG nêu tên "
+        "nạn nhân/nghi phạm chưa được xác thực. Nếu là hư cấu, phải nói rõ.\n"
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: hiện trường hoặc sự biến mất + đúng 1 chi tiết rùng mình cụ thể.\n"
+        "- Kế tiếp: dòng thời gian (giờ, ngày) dựng nghi vấn.\n"
+        "- Giữa: từng nghi vấn dẫn tới từng manh mối.\n"
+        "- ~70%: manh mối LẬT NGƯỢC hướng điều tra.\n"
+        "- ~85%: sự thật.\n"
+        "- Cảnh cuối: kết cục + một suy ngẫm, không phán xét thay người xem."
     ),
     "travel": (
         "NICHE: DU LỊCH/KHÁM PHÁ.\n"
-        "BẢN VẼ: Cảnh 1 = teaser cảnh đẹp nhất + lời thách 'nơi này...' (sfx 'swoosh_soft', 'slide_up', rate '+10%'). "
-        "Kế = đường đến/không khí ('wipe_right'). Giữa = điểm độc nhất (sfx 'pop', 'zoom_through') "
-        "+ chi tiết GIÁC QUAN mùi/vị/âm thanh (sfx 'shimmer', crossfade, rate '-3%'). "
-        "Kết = chốt + rủ đi/tag bạn (sfx 'ding', 'fade_black')."
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: teaser cảnh đẹp nhất + lời thách ('Nơi này Google Maps cũng khó tìm').\n"
+        "- Kế tiếp: đường đến và không khí nơi đó.\n"
+        "- Giữa: điểm độc nhất không nơi nào có, kèm chi tiết GIÁC QUAN (mùi, vị, âm thanh) — "
+        "đây là thứ khiến video du lịch hay hơn ảnh đẹp.\n"
+        "- ~80%: trải nghiệm đắt nhất, khoảnh khắc đáng đi.\n"
+        "- Cảnh cuối: chốt chi phí/thời điểm nên đi + rủ bạn cùng đi."
     ),
     "art_masterpiece": (
         "NICHE: TRANH & TÁC PHẨM NGHỆ THUẬT KINH ĐIỂN.\n"
-        "BẢN VẼ: Cảnh 1 = zoom cận cảnh chi tiết ẩn/bí ẩn nhất của bức tranh (sfx 'riser', 'zoom_through', rate '+5%'). "
-        "Kế = bối cảnh ra đời & tâm kịch họa sĩ (calm, crossfade). "
-        "Giữa = giải mã kỹ thuật vẽ, ánh sáng chiaroscuro hoặc ẩn dụ (sfx 'shimmer' khi có phát hiện đắt giá). "
-        "~70% = MINI-TWIST bí ẩn ít ai biết về tác phẩm (sfx 'suspense', 'page_flip'). "
-        "~85% = CAO TRÀO giá trị thời đại & triết lý sống (sfx 'impact', 'zoom_punch', rate '-5%'). "
-        "Kết = dư âm chiêm nghiệm + câu hỏi mở bình luận ('droplet', 'fade_black')."
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: chi tiết ẩn/bí ẩn nhất trong bức tranh, tả cận như đang soi kính lúp.\n"
+        "- Kế tiếp: bối cảnh ra đời & bi kịch của người họa sĩ (năm, thành phố, hoàn cảnh).\n"
+        "- Giữa: giải mã kỹ thuật vẽ, ánh sáng, hoặc ẩn dụ — mỗi cảnh một phát hiện.\n"
+        "- ~70%: MINI-TWIST, bí mật ít ai biết về tác phẩm.\n"
+        "- ~85%: CAO TRÀO — vì sao bức tranh này còn sống sau hàng thế kỷ.\n"
+        "- Cảnh cuối: dư âm chiêm nghiệm + câu hỏi mở mời bình luận."
     ),
     "poetry_literature": (
         "NICHE: THƠ CA & VĂN HỌC NGHỆ THUẬT.\n"
-        "BẮT BUỘC nhịp đọc chậm rãi (-8% đến -12%), ngắt nghỉ sâu lắng giữa các vần thơ.\n"
-        "BẢN VẼ: Cảnh 1 = 2-4 câu thơ đắt giá nhất hiển thị quote mờ nghệ thuật (sfx 'shimmer', 'crossfade', rate '-10%'). "
-        "Kế = gợi mở hoàn cảnh sáng tác & hồn thơ (calm, crossfade). "
-        "Giữa = bình giải từng hình tượng thơ, nét vẽ ngôn từ (crossfade chậm). "
-        "~75% = ĐIỂM CHẠM CẢM XÚC lớn nhất của bài thơ (sfx 'droplet', rate '-12%'). "
-        "Kết = dư âm thi ca + lời nhắn chiêm nghiệm cuộc sống (closing, 'fade_black')."
+        "Lời thoại phải giữ NGUYÊN VĂN câu thơ khi trích; không diễn giải thành văn xuôi rồi "
+        "gọi đó là thơ. Chèn '...' ở chỗ cần lặng giữa các vần.\n"
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: 2-4 câu thơ đắt giá nhất.\n"
+        "- Kế tiếp: hoàn cảnh sáng tác & hồn thơ (năm, biến cố của tác giả).\n"
+        "- Giữa: bình giải từng hình tượng, chỉ ra chữ nào làm nên câu thơ.\n"
+        "- ~75%: ĐIỂM CHẠM CẢM XÚC lớn nhất của bài.\n"
+        "- Cảnh cuối: dư âm + lời nhắn chiêm nghiệm."
     ),
     "architecture_wonders": (
         "NICHE: CÔNG TRÌNH & KỲ QUAN KIẾN TRÚC.\n"
-        "BẢN VẼ: Cảnh 1 = con số kỷ lục hoặc mật mã kỹ thuật kỳ lạ (VD: '2.3 triệu khối đá không 1 giọt vữa...') (sfx 'riser', 'whip_pan', rate '+10%'). "
-        "Kế = bối cảnh lịch sử & tham vọng triều đại ('slide_left'). "
-        "Giữa = kỳ tích kỹ thuật, vật liệu độc đáo, kết cấu chịu lực (sfx 'tick' khi liệt kê số liệu). "
-        "~70% = NGUY CƠ/THÁCH THỨC suýt làm sụp đổ công trình (sfx 'suspense', 'zoom_punch'). "
-        "~85% = CAO TRÀO sự trường tồn qua hàng thế kỷ (sfx 'bass_drop', 'fade_white', rate '-5%'). "
-        "Kết = di sản thế giới + kêu gọi ghé thăm/bình luận ('ding', 'fade_black')."
+        "BẢN VẼ NỘI DUNG:\n"
+        "- Cảnh 1: con số kỷ lục hoặc mật mã kỹ thuật kỳ lạ (VD '2.3 triệu khối đá, không một "
+        "giọt vữa').\n"
+        "- Kế tiếp: bối cảnh lịch sử & tham vọng của người xây.\n"
+        "- Giữa: kỳ tích kỹ thuật — vật liệu, kết cấu chịu lực, cách họ làm được khi chưa có máy móc.\n"
+        "- ~70%: NGUY CƠ suýt làm công trình sụp đổ.\n"
+        "- ~85%: CAO TRÀO — vì sao nó trường tồn qua hàng thế kỷ.\n"
+        "- Cảnh cuối: giá trị di sản hôm nay + kêu gọi ghé thăm/bình luận."
     ),
 }
 
@@ -502,7 +753,7 @@ BASE_STORYTELLING = (
     "3. CAO TRÀO: Nút thắt lớn nhất, tình tiết bất ngờ nhất.\n"
     "4. KẾT & ĐÚC KẾT: Gỡ nút + một câu suy ngẫm đọng lại, rồi mời người xem đọc/tìm hiểu thêm.\n\n"
     "QUY TẮC VĂN KỂ (BẮT BUỘC):\n"
-    "- LỖI CHẾT NGƯỜI: {SCENE_WORD_RULE} Nếu câu dài, BẮT BUỘC tách thành nhiều cảnh liên tiếp để video đổi cảnh liên tục.\n"
+    "- LỖI CHẾT NGƯỜI: {SCENE_WORD_RULE} Nếu câu dài, BẮT BUỘC tách thành nhiều cảnh liên tiếp để video đổi cảnh liên tục. {WORD_COUNT_SELF_CHECK}\n"
     "- Mỗi cảnh kết bằng một câu tạo tò mò nhẹ (soft cliffhanger), VD: 'Nhưng điều cô không ngờ tới là...', "
     "'Câu trả lời anh nhận được nghe thật vô lý...'.\n"
     "- Văn nói tự nhiên, trầm lắng, mạch lạc. TUYỆT ĐỐI không dùng Markdown, không emoji.\n"
@@ -513,6 +764,13 @@ BASE_STORYTELLING = (
     "'lonely person walking in autumn park', 'cloudy sky at dusk'.\n"
     "- TUYỆT ĐỐI TRÁNH hình ảnh giả tưởng/anime/CGI không có thật (rồng, phép thuật, nhân vật hoạt hình) — "
     "vì sẽ không tìm được footage thật khớp.\n"
+    # Đo trên kịch bản thật (Nhà Giả Kim, 10 cảnh, tone storytelling): 3/10 image_prompt vẫn
+    # kèm 'photorealistic, 8k', 'cinematic lighting', 'stock footage style'. Base này dặn "tả
+    # cảnh quay thật" nhưng chưa CẤM tường minh các keyword đó, mà chúng chính là thứ biến câu
+    # truy vấn Pexels thành rác.
+    "- CẤM các keyword render/chất lượng trong image_prompt: '8k', 'photorealistic', "
+    "'cinematic lighting', 'stock footage style', 'Unreal Engine', 'Octane'. Chúng là từ khoá "
+    "rác khi hệ thống đi tìm video thật. Chỉ tả CHỦ THỂ và HÀNH ĐỘNG.\n"
     "- Ưu tiên: bàn tay, ánh đèn, khung cửa sổ, thư từ, đường phố, thiên nhiên, đồ vật gợi hoài niệm — "
     "khớp CẢM XÚC của lời kể hơn là minh hoạ đúng từng chữ.\n\n"
     "QUY TẮC ÂM THANH (RẤT QUAN TRỌNG): TUYỆT ĐỐI KHÔNG lạm dụng sfx. Hầu hết các cảnh PHẢI ĐỂ TRỐNG trường 'sfx' (để giá trị rỗng). Chỉ được phép chèn sfx ở Cảnh 1 và đúng 1 cảnh Cao trào.\n"
@@ -652,6 +910,191 @@ def resolve_blueprint(niche: str, tone: str, total_scenes: int) -> list[dict]:
         })
     return out
 
+def scene_word_rule_text(target_duration: str, num_scenes: int) -> str:
+    """Câu luật số từ/cảnh, quy ra cả số GIÂY đọc theo tốc độ giọng đã học được.
+
+    Tách ra khỏi generate_script để test được và để mọi đường sinh kịch bản dùng chung một
+    cách phát biểu — trước đây mỗi hàm tự viết một kiểu.
+    """
+    w_lo, w_hi = scene_word_budget(target_duration, num_scenes)
+    # Lấy tốc độ ĐÃ HỌC thay vì hằng số: nói với Gemini "12 từ ≈ 4 giây" trong khi giọng
+    # thật đọc 2.7 từ/giây (≈4.4 giây) là tự đẩy kịch bản lố ngay từ khâu sinh chữ.
+    wps = _default_wps()
+    sec_lo = w_lo / (wps + 0.2)
+    sec_hi = w_hi / max(0.5, wps - 0.4)
+    return (
+        f"Mỗi phân cảnh tuyệt đối KHÔNG ĐƯỢC VƯỢT QUÁ {w_hi} từ "
+        f"(lý tưởng {w_lo}-{w_hi} từ, tương đương {sec_lo:.1f}-{sec_hi:.1f} giây đọc)."
+    )
+
+
+# ── Master Viral Base Prompt ──
+# Đã BỎ ba mục "DYNAMIC PACING", "QUY TẮC TRANSITION" và "CẤM lạm dụng SFX" của bản cũ:
+# LLMScene không có các trường speech_rate_modifier/transition/sfx (xem class LLMScene), và
+# resolve_blueprint() ghi đè toàn bộ chúng bằng bảng % ngay sau khi parse xong. Ra lệnh cho
+# Gemini về những trường nó không thể trả về vừa vô ích vừa hút mất sự chú ý khỏi phần nó
+# THẬT SỰ điều khiển: lời thoại và image_prompt. Chỗ trống đó giờ dành cho SPECIFICITY_RULES
+# và HOOK_FORMULAS — những luật vốn chỉ nằm trong tài liệu skill.
+BASE_VIRAL = (
+    "Bạn là đạo diễn và biên kịch video ngắn HÀNG ĐẦU thế giới, chuyên tạo nội dung Triệu "
+    "View trên TikTok/Reels/Shorts.\n\n"
+    "CẤU TRÚC KỂ CHUYỆN (Curiosity Gap & PAS):\n"
+    "1. HOOK (Cảnh 1): Móc câu sắc bén, tạo một 'Curiosity Gap' (lỗ hổng tò mò). Nếu xem "
+    "xong cảnh 1 mà khán giả không muốn biết tiếp, bạn thất bại.\n"
+    "2. TENSION (các cảnh giữa): Xoáy sâu vào vấn đề bằng chi tiết cụ thể, mỗi cảnh nâng "
+    "mức căng lên một bậc. Không kể lể dài dòng.\n"
+    "3. CLIMAX (~80% thời lượng): Sự thật bất ngờ nhất (plot twist) hoặc giải pháp tột đỉnh.\n"
+    "4. CTA (cảnh cuối): Chốt lại rồi kêu gọi hành động tự nhiên.\n\n"
+    "CÔNG THỨC HOOK — chọn ĐÚNG MỘT mẫu rồi điền, không viết chung chung:\n"
+    "{HOOK_FORMULAS}\n\n"
+    "QUY TẮC CẤM KỴ (BẮT BUỘC TUÂN THỦ):\n"
+    "- LỖI CHẾT NGƯỜI: Cảnh quá dài. {SCENE_WORD_RULE} Nếu câu văn dài, BẮT BUỘC cắt thành "
+    "2-3 cảnh liên tiếp! {WORD_COUNT_SELF_CHECK}\n"
+    "{CLICHE_BAN}\n"
+    "- CẤM nói đạo lý suông, cấm từ ngữ hàn lâm. Mọi luận điểm phải kèm con số hoặc hình "
+    "ảnh so sánh thực tế.\n\n"
+    "{SPECIFICITY_RULES}\n\n"
+    "{TTS_WRITING_RULES}\n\n"
+    "{CTA_RULES}\n\n"
+    "{IMAGE_PROMPT_RULES}\n"
+)
+
+
+def build_script_system_prompt(
+    *,
+    num_scenes: int,
+    mode: str = "storyteller",
+    art_style: str = "Cinematic",
+    target_duration: str = "30s",
+    narration_tone: str = "viral",
+    content_niche: Optional[str] = None,
+    character_description: Optional[str] = None,
+    sync_characters: bool = False,
+    prefer_stock_video: bool = False,
+    batch_idx: int = 0,
+    batch_size: Optional[int] = None,
+    revision_notes: Optional[List[str]] = None,
+) -> str:
+    """Dựng TOÀN BỘ system_instruction cho generate_script — hàm THUẦN, không gọi mạng.
+
+    Trước đây khối này nằm lẫn trong thân generate_script nên không test nào chạm được, và
+    hai lỗi câm đã sống ở đó rất lâu: bản vẽ niche không bao giờ được tiêm, và mọi lô của
+    kịch bản dài đều tự viết một cái kết (xem _batch_scope_rule).
+
+    `batch_idx`/`batch_size` chỉ khác mặc định khi kịch bản dài phải chia lô; khi đó
+    `num_scenes` vẫn là TỔNG số cảnh của video, còn `batch_size` là số cảnh của lô này.
+    """
+    total_scenes = num_scenes
+    this_batch = batch_size or num_scenes
+
+    image_rules = IMAGE_PROMPT_RULES_STOCK if prefer_stock_video else IMAGE_PROMPT_RULES_AI
+
+    # Chế độ KỂ CHUYỆN long-form (tone=storytelling): base prompt riêng, style @sachhay_chondoc.
+    # Base này đã tự có luật hình ảnh footage thật nên không nối image_rules vào nữa.
+    if narration_tone == "storytelling" and mode != "quiz_listicle":
+        system_prompt = BASE_STORYTELLING + (
+            f"\nNhiệm vụ: kể câu chuyện cho chủ đề được cung cấp thành CHÍNH XÁC "
+            f"{this_batch} phân cảnh nối tiếp mạch lạc. "
+            "image_prompt viết bằng tiếng Anh (mô tả cảnh quay thật để tìm footage stock)."
+        )
+        system_prompt += f"\n\n{SPECIFICITY_RULES}\n\n{TTS_WRITING_RULES}"
+    elif mode == "quiz_listicle":
+        system_prompt = BASE_VIRAL + (
+            f"\nCHẾ ĐỘ: Quiz/Listicle — viết kịch bản gồm CHÍNH XÁC {this_batch} phân cảnh "
+            "theo dạng 'Top N' hoặc hỏi-đáp. Mỗi cảnh là 1 fact/item hoặc 1 câu hỏi+đáp thú "
+            "vị, và mỗi item phải có một chi tiết người xem chưa biết. "
+            "image_prompt viết bằng tiếng Anh, cực kỳ chi tiết. "
+            f"Phong cách hình ảnh bắt buộc (Art Style): '{get_enhanced_art_style(art_style)}'."
+        )
+    else:  # storyteller (mặc định)
+        system_prompt = BASE_VIRAL + (
+            f"\nNhiệm vụ: viết kịch bản gồm CHÍNH XÁC {this_batch} phân cảnh cho chủ đề "
+            "được cung cấp. image_prompt viết bằng tiếng Anh, mô tả cực kỳ chi tiết theo "
+            f"phong cách nghệ thuật: '{art_style}'."
+        )
+
+    # ── Bản vẽ NỘI DUNG theo niche (ưu tiên cao nhất: cụ thể hơn tone) ──
+    niche_blueprint = NICHE_BLUEPRINTS.get(content_niche or "", "")
+    if niche_blueprint:
+        system_prompt += f"\n\n{niche_blueprint}"
+
+    # ── Tone kể chuyện ──
+    tone_prompt = NARRATION_TONE_PROMPTS.get(narration_tone, "")
+    if tone_prompt:
+        system_prompt += f"\n\n{tone_prompt}"
+
+    # ── Ngân sách từ theo thời lượng mục tiêu ──
+    dur_cfg = DURATION_CONFIG.get(target_duration)
+    if dur_cfg:
+        system_prompt += (
+            f"\n\nLƯU Ý QUAN TRỌNG: Video dài ~{target_duration}. Bắt buộc: TOÀN BỘ kịch bản "
+            f"gộp lại (tổng chữ của tất cả {total_scenes} cảnh) chỉ được dài khoảng "
+            f"{dur_cfg['words']} từ."
+        )
+
+    # ── Đồng nhất nhân vật ──
+    if sync_characters and character_description:
+        system_prompt += (
+            "\n\nĐỒNG NHẤT NHÂN VẬT & PHONG CÁCH:\n"
+            "BẮT BUỘC chèn ĐÚNG ĐOẠN TEXT SAU vào đầu mọi trường 'image_prompt' của tất cả "
+            f"các cảnh:\n[{character_description}]\n"
+            "Điều này là bắt buộc để hệ thống vẽ ảnh giữ nguyên nhân vật xuyên suốt video!"
+        )
+
+    # ── Hook cấp video: ba trường riêng, rất dễ bị nhầm lẫn với nhau ──
+    # `hook_quote` trước đây không có trong schema nên chưa bao giờ được sinh tự động, dù
+    # RenderVideoRequest và video_service.build_carousel_hook() đều chờ nó.
+    system_prompt += (
+        "\n\nHOOK CẤP VIDEO (3 trường riêng, KHÔNG phải lời thoại của cảnh nào):\n"
+        "- `hook_text`: TIÊU ĐỀ giật gân dưới 10 chữ, được vẽ ĐÈ LÊN ảnh bìa. Vì bìa đã in "
+        "sẵn tên chủ đề/tên sách, hook_text lặp lại chúng là phí giây đầu tiên — hãy nêu MÂU "
+        "THUẪN hoặc LỜI HỨA khiến người xem phải ở lại.\n"
+        "- `hook_variants`: 3 biến thể hook_text thật sự KHÁC NHAU (khác cả góc tiếp cận, "
+        "không phải đổi vài chữ), để người dùng A/B test.\n"
+        "- `hook_quote`: CÂU TRÍCH đắt nhất của nội dung, viết HOA, dưới 15 từ, tốt nhất là "
+        "2 vế đối lập ('NGƯỜI NGHÈO LÀM VIỆC VÌ TIỀN. NGƯỜI GIÀU BẮT TIỀN LÀM VIỆC CHO "
+        "MÌNH.'). Đứng một mình vẫn đáng trích. Để RỖNG nếu không có câu nào thật đắt."
+    )
+
+    # ── Nguồn dẫn chứng (làm cho source_coverage có nghĩa) ──
+    # LỖI CŨ: ScriptResponse.source_coverage được tính từ `source_quote` và hiển thị như
+    # "tỷ lệ cảnh có nguồn gốc (chống bịa)", nhưng KHÔNG prompt nào từng yêu cầu điền
+    # source_quote — nên chỉ số này luôn bằng 0.0 với mọi video.
+    system_prompt += (
+        "\n\nNGUỒN DẪN CHỨNG (chống bịa): nếu chủ đề gắn với một tác phẩm, tài liệu hoặc sự "
+        "kiện THẬT mà bạn nhớ chắc chắn, hãy điền `source_quote` (nguyên văn đoạn trích) và "
+        "`source_ref` (vị trí, VD 'Chương 3'). Nếu không chắc, để RỖNG — thà trống còn hơn "
+        "bịa một câu trích không tồn tại."
+    )
+
+    # ── Phạm vi lô (chỉ có khi kịch bản dài phải sinh nhiều lần) ──
+    batch_rule = _batch_scope_rule(batch_idx, this_batch, total_scenes)
+    if batch_rule:
+        system_prompt += f"\n\n{batch_rule}"
+
+    # ── Góp ý từ lần viết trước (chỉ có ở lượt viết lại) ──
+    if revision_notes:
+        danh_sach = "\n".join(f"- {n}" for n in revision_notes)
+        system_prompt += (
+            "\n\nĐÂY LÀ LƯỢT VIẾT LẠI. Bản trước đã bị lớp biên tập đánh giá KHÔNG ĐẠT vì "
+            f"những điểm dưới đây. Hãy viết một kịch bản MỚI khắc phục đúng chúng, đừng lặp "
+            f"lại cách viết cũ:\n{danh_sach}"
+        )
+
+    # Thay các token của template (có mặt trong cả BASE_VIRAL lẫn BASE_STORYTELLING).
+    hook_formulas = HOOK_FORMULAS.get(narration_tone) or HOOK_FORMULAS["viral"]
+    return (
+        system_prompt.replace("{SCENE_WORD_RULE}", scene_word_rule_text(target_duration, total_scenes))
+        .replace("{HOOK_FORMULAS}", hook_formulas)
+        .replace("{CLICHE_BAN}", _cliche_ban_rule())
+        .replace("{SPECIFICITY_RULES}", SPECIFICITY_RULES)
+        .replace("{TTS_WRITING_RULES}", TTS_WRITING_RULES)
+        .replace("{CTA_RULES}", CTA_RULES)
+        .replace("{IMAGE_PROMPT_RULES}", image_rules)
+        .replace("{WORD_COUNT_SELF_CHECK}", WORD_COUNT_SELF_CHECK)
+    )
+
+
 async def generate_script(
     topic: str,
     variation_seed: int = 0,
@@ -664,130 +1107,57 @@ async def generate_script(
     character_description: Optional[str] = None,
     sync_characters: bool = False,
     content_niche: Optional[str] = None,
+    prefer_stock_video: bool = False,
+    revision_notes: Optional[List[str]] = None,
 ) -> List[dict]:
     """
     Gọi Gemini để sinh N phân cảnh từ 1 chủ đề (topic).
     Hỗ trợ mode: storyteller, quiz_listicle.
     Trả về list[dict] đã được validate đúng schema Scene.
+
+    `prefer_stock_video` quyết định KIỂU image_prompt: True → tả cảnh quay thật tìm được
+    trên kho stock; False → prompt cinematic cho mô hình sinh ảnh. Rẽ nhánh ở đây thay vì
+    để extract_search_keyword() gỡ lại đống thuật ngữ máy quay ở tầng sau.
+
+    `revision_notes` chỉ được truyền ở LƯỢT VIẾT LẠI (xem `regenerate_if_low_quality`): đó là
+    các nhận xét của lớp review về bản trước, được nối vào prompt để bản mới sửa đúng chỗ.
+    Nó cũng nằm trong cache key — nếu không, lượt viết lại sẽ nhận lại y nguyên bản vừa bị
+    đánh giá là kém.
     """
     num_scenes = max(MIN_SCENES, min(MAX_SCENES, num_scenes))
-
-    # Ngân sách từ MỖI CẢNH suy ra từ (tổng số từ của thời lượng ÷ số cảnh thực tế).
-    # Con số này thay cho luật cứng "15-20 từ" trước đây — xem scene_word_budget().
-    _w_lo, _w_hi = scene_word_budget(target_duration, num_scenes)
-    # Lấy tốc độ ĐÃ HỌC thay vì hằng số: nói với Gemini "12 từ ≈ 4 giây" trong khi giọng
-    # thật đọc 2.7 từ/giây (≈4.4 giây) là tự đẩy kịch bản lố ngay từ khâu sinh chữ.
-    _wps = _default_wps()
-    _sec_lo = _w_lo / (_wps + 0.2)
-    _sec_hi = _w_hi / max(0.5, _wps - 0.4)
-    scene_word_rule = (
-        f"Mỗi phân cảnh tuyệt đối KHÔNG ĐƯỢC VƯỢT QUÁ {_w_hi} từ "
-        f"(lý tưởng {_w_lo}-{_w_hi} từ, tương đương {_sec_lo:.1f}-{_sec_hi:.1f} giây đọc)."
-    )
-
-    # ── Master Storyteller Base Prompt ──
-    base_storyteller = (
-        "Bạn là đạo diễn và biên kịch video ngắn HÀNG ĐẦU thế giới, chuyên tạo nội dung Triệu View trên TikTok/Reels/Shorts.\n\n"
-        "CẤU TRÚC KỂ CHUYỆN (Curiosity Gap & PAS):\n"
-        "1. HOOK (Cảnh 1): Móc câu sắc bén. Phải tạo ra một 'Curiosity Gap' (Lỗ hổng tò mò). Nếu xem xong cảnh 1 mà khán giả không bị sốc, bạn thất bại.\n"
-        "2. TENSION (Các cảnh giữa): Xoáy sâu vào vấn đề bằng các chi tiết gây sốc. Không kể lể dài dòng.\n"
-        "3. CLIMAX (Cảnh áp chót): Đưa ra Sự thật bất ngờ nhất (Plot Twist) hoặc Giải pháp tột đỉnh.\n"
-        "4. CTA (Cảnh cuối): Kêu gọi hành động khéo léo và tự nhiên nhất có thể.\n\n"
-        "QUY TẮC CẤM KỴ (BẮT BUỘC TUÂN THỦ):\n"
-        "- LỖI CHẾT NGƯỜI: Cảnh quá dài. {SCENE_WORD_RULE} Nếu câu văn dài, BẮT BUỘC phải cắt đôi thành 2-3 cảnh liên tiếp!\n"
-        "- CẤM dùng các câu mở đầu sáo rỗng: 'Xin chào các bạn', 'Hôm nay mình sẽ chia sẻ', 'Cùng tìm hiểu nhé', 'Bạn có biết'.\n"
-        "- CẤM nói đạo lý suông, cấm dùng từ ngữ hàn lâm. Mọi luận điểm phải đính kèm hình ảnh so sánh thực tế.\n\n"
-        "QUY TẮC ĐẠO DIỄN HÌNH ẢNH (CINEMATIC CAMERA - BẮT BUỘC):\n"
-        "- BẮT BUỘC mở đầu mỗi 'image_prompt' bằng các góc máy điện ảnh chuyên nghiệp. Ví dụ: 'Extreme close-up shot of...', 'Low-angle drone shot of...', 'Over-the-shoulder shot of...', 'Wide establishing shot of...'\n"
-        "- BẮT BUỘC giữ TÍNH NHẤT QUÁN: Nếu có nhân vật, phải tả lặp lại chính xác ngoại hình (tuổi, giới tính, trang phục) xuyên suốt TẤT CẢ các cảnh.\n"
-        "- BẮT BUỘC dùng chung 1 tông màu ánh sáng cho toàn video (VD: 'cinematic teal and orange lighting, volumetric dust').\n"
-        "- Kết hợp: Góc máy + Đối tượng + Hành động + Ánh sáng + Bối cảnh + Phẩm chất nghệ thuật (8k, photorealistic, Unreal Engine 5).\n\n"
-        "QUY TẮC NHỊP ĐỘ GIỌNG ĐỌC (DYNAMIC PACING):\n"
-        "- Sử dụng 'speech_rate_modifier' để điều khiển nhịp điệu: Hook (nhanh dồn dập '+15%'), Giải thích (chậm rãi '-5%'), Climax (bình thường '0%').\n\n"
-        "KỸ THUẬT VĂN NÓI:\n"
-        "- Dùng 'bạn' trực tiếp: 'Bạn có biết...', 'Hãy tưởng tượng...'\n"
-        "- Tuyệt đối giữ 1 người kể chuyện xuyên suốt. Văn phong mạch lạc, nối tiếp.\n"
-        "- TUYỆT ĐỐI KHÔNG dùng từ ngữ hàn lâm, không dùng Markdown (*, #).\n\n"
-        "QUY TẮC TRANSITION (bắt buộc):\n"
-        "- Chuyển chủ đề/bất ngờ → 'fade_black'\n"
-        "- Liên tục/kể tiếp → 'crossfade'\n"
-        "- Cao trào/chi tiết → 'zoom_through'\n\n"
-        "- CẤM lạm dụng SFX liên tục. Đa số các cảnh phải ĐỂ TRỐNG sfx. Chỉ dùng sfx ở Cảnh 1 (Hook) và đúng 1-2 cảnh có Plot Twist hoặc Câu chốt.\n"
-    )
-
-    # Chế độ KỂ CHUYỆN long-form (tone=storytelling): dùng base prompt riêng, style @sachhay_chondoc
-    if narration_tone == "storytelling" and mode != "quiz_listicle":
-        system_prompt = (
-            BASE_STORYTELLING +
-            f"\nNhiệm vụ: kể câu chuyện cho chủ đề được cung cấp thành CHÍNH XÁC {num_scenes} phân cảnh nối tiếp mạch lạc. "
-            f"image_prompt viết bằng tiếng Anh (mô tả cảnh quay thật để tìm footage stock)."
-        )
-    elif mode == "quiz_listicle":
-        system_prompt = (
-            base_storyteller +
-            f"\nCHẾ ĐỘ: Quiz/Listicle — viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh theo dạng 'Top N' hoặc hỏi-đáp. "
-            "Mỗi cảnh là 1 fact/item hoặc 1 câu hỏi+đáp thú vị. "
-            f"image_prompt viết bằng tiếng Anh, cực kỳ chi tiết. Phong cách hình ảnh và nghệ thuật bắt buộc (Art Style): '{get_enhanced_art_style(art_style)}'. "
-            "BẮT BUỘC phải đồng bộ màu sắc, ánh sáng và hiệu ứng hình ảnh với cảm xúc (Emotion) của cảnh theo bảng chuẩn: "
-            f"{EMOTION_VISUAL_COUPLING} "
-            "phù hợp để đưa vào mô hình sinh ảnh AI."
-        )
-    else:  # storyteller (default)
-        system_prompt = (
-            base_storyteller +
-            f"\nNhiệm vụ: viết kịch bản gồm CHÍNH XÁC {num_scenes} phân cảnh cho chủ đề được cung cấp. "
-            f"image_prompt viết bằng tiếng Anh, mô tả cực kỳ chi tiết theo phong cách nghệ thuật: '{art_style}', "
-            "phù hợp để đưa vào mô hình sinh ảnh AI."
-        )
-
-    # ── Inject narration tone ──
-    tone_prompt = NARRATION_TONE_PROMPTS.get(narration_tone, "")
-    if tone_prompt:
-        system_prompt += f"\n\n{tone_prompt}"
-
-    # Palette hiệu ứng (niche blueprint ưu tiên, fallback theo tone) được resolve_blueprint()
-    # tính toán sau khi có scenes — không cần xử lý gì thêm ở đây.
-
-    # ── Thêm hướng dẫn về số lượng từ dựa trên thời lượng mục tiêu ──
-    dur_cfg = DURATION_CONFIG.get(target_duration)
-    if dur_cfg:
-        duration_guide = (
-            f"Video dài ~{target_duration}. Bắt buộc: TOÀN BỘ kịch bản gộp lại "
-            f"(tổng chữ của tất cả các cảnh) chỉ được dài khoảng {dur_cfg['words']} từ."
-        )
-        system_prompt += f"\n\nLƯU Ý QUAN TRỌNG: {duration_guide}"
-
-    # ── Inject Character Consistency (Style Guide) ──
-    if sync_characters and character_description:
-        consistency_guide = (
-            f"ĐỒNG NHẤT NHÂN VẬT & PHONG CÁCH:\n"
-            f"BẮT BUỘC chèn ĐÚNG ĐOẠN TEXT SAU vào đầu mọi trường 'image_prompt' của tất cả các cảnh:\n"
-            f"[{character_description}]\n"
-            f"Điều này là bắt buộc để hệ thống vẽ ảnh (Image AI) giữ nguyên nhân vật xuyên suốt video!"
-        )
-        system_prompt += f"\n\n{consistency_guide}"
-
-    # Thay token ngân sách từ (có mặt trong cả base_storyteller lẫn BASE_STORYTELLING).
-    system_prompt = system_prompt.replace("{SCENE_WORD_RULE}", scene_word_rule)
+    _notes_key = hashlib.md5("|".join(revision_notes or []).encode("utf-8")).hexdigest()[:8]
 
     def _call():
-        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, prompt_rev=PROMPT_REVISION)
+        cached_result = cache.get("gen_script", topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, stock=prefer_stock_video, notes=_notes_key, prompt_rev=PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for generate_script")
             return cached_result
-        client = _get_client(api_key)
         try:
             BATCH_SIZE = 12
             all_scenes = []
             global_fields = {}
-            
+
             for batch_idx in range(0, num_scenes, BATCH_SIZE):
                 current_batch_size = min(BATCH_SIZE, num_scenes - batch_idx)
-                
-                # Cập nhật số cảnh cho lô hiện tại
-                batch_prompt = system_prompt.replace(f"CHÍNH XÁC {num_scenes} phân cảnh", f"CHÍNH XÁC {current_batch_size} phân cảnh")
-                batch_prompt = batch_prompt.replace("Mỗi phân cảnh tuyệt đối", f"Bạn đang tạo Lô {batch_idx//BATCH_SIZE + 1} (Cảnh {batch_idx+1} đến {batch_idx+current_batch_size}). Mỗi phân cảnh tuyệt đối")
-                
+
+                # Prompt của lô được DỰNG LẠI với đúng phạm vi, thay vì vá chuỗi trên
+                # prompt tổng như trước (cách vá đó không thể diễn tả nổi "lô này không
+                # được có cảnh kết" — nên video 30 cảnh có tới ba cái kết).
+                batch_prompt = build_script_system_prompt(
+                    num_scenes=num_scenes,
+                    mode=mode,
+                    art_style=art_style,
+                    target_duration=target_duration,
+                    narration_tone=narration_tone,
+                    content_niche=content_niche,
+                    character_description=character_description,
+                    sync_characters=sync_characters,
+                    prefer_stock_video=prefer_stock_video,
+                    batch_idx=batch_idx,
+                    batch_size=current_batch_size,
+                    revision_notes=revision_notes,
+                )
+
                 batch_content = f"Chủ đề video: {topic}\n"
                 if batch_idx > 0:
                     prev_context = "\n".join([f"Cảnh {s.scene}: {s.text}" for s in all_scenes[-2:]])
@@ -795,33 +1165,49 @@ async def generate_script(
                     batch_content += f"\nTiếp tục viết từ cảnh {batch_idx+1} đến {batch_idx+current_batch_size}."
                 else:
                     batch_content += "\nHãy tạo phần đầu của kịch bản."
-                
-                response = client.models.generate_content(
-                    model="gemini-flash-latest",
-                    contents=batch_content,
-                    config=types.GenerateContentConfig(
-                        system_instruction=batch_prompt,
-                        response_mime_type="application/json",
-                        response_schema=LLMScriptResponse,
-                        temperature=0.9,
-                    ),
-                )
-                try:
-                    from services import quota_service
-                    quota_service.increment_quota(1)
-                except Exception:
-                    pass
-                parsed: LLMScriptResponse = response.parsed
-                
+
+                def _call_one_batch(_prompt=batch_prompt, _content=batch_content):
+                    # _get_client() LẤY LẠI mỗi lần thử (không dùng client dựng sẵn ở
+                    # ngoài): nếu _retry_sync bên dưới vừa xoay vòng key vì 429, lần thử
+                    # kế tiếp phải cầm key MỚI, không phải client cũ còn giữ key đã cạn.
+                    client = _get_client(api_key)
+                    response = client.models.generate_content(
+                        model="gemini-flash-latest",
+                        contents=_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=_prompt,
+                            response_mime_type="application/json",
+                            response_schema=LLMScriptResponse,
+                            temperature=0.9,
+                        ),
+                    )
+                    _track_quota()
+                    return _require_parsed(response, "generate_script")
+
+                # LỖI CŨ: cả hàm _call() này (bao trọn vòng lặp batch) được bọc MỘT LẦN
+                # bởi _retry_sync ở cuối hàm generate_script(). 429/503 thoáng qua ở batch
+                # CUỐI (vd batch 3/3 của kịch bản 30 cảnh) khiến TOÀN BỘ vòng lặp — kể cả
+                # các batch trước đã gọi API thành công — chạy lại TỪ ĐẦU mỗi lần retry,
+                # nhân quota tiêu tốn lên gấp nhiều lần, đúng thứ RuntimeError bên dưới
+                # đang cảnh báo user. Bọc _retry_sync ở CẤP TỪNG BATCH: batch đã xong
+                # không bao giờ bị gọi lại.
+                parsed: LLMScriptResponse = _retry_sync(_call_one_batch, key_manager=gemini_keys)
+
                 if batch_idx == 0:
                     global_fields = {
                         "sentiment": parsed.sentiment,
                         "recommended_bgm": parsed.recommended_bgm,
                         "hook_text": parsed.hook_text,
                         "hook_variants": parsed.hook_variants,
+                        "hook_quote": parsed.hook_quote,
                         "cta_text": parsed.cta_text,
                     }
-                
+                # CTA lấy từ lô CUỐI: chỉ lô cuối mới biết video kết thúc ở đâu, nên CTA của
+                # nó mới dính được vào nội dung vừa kể. Lấy từ lô 1 như trước là lấy câu chốt
+                # do một model chưa hề viết phần kết nghĩ ra.
+                if batch_idx + current_batch_size >= num_scenes and (parsed.cta_text or "").strip():
+                    global_fields["cta_text"] = parsed.cta_text
+
                 # Fix scene index just in case the LLM resets to 1
                 for i, s in enumerate(parsed.scenes):
                     s.scene = batch_idx + i + 1
@@ -865,11 +1251,12 @@ async def generate_script(
                 recommended_bgm=global_fields.get("recommended_bgm", ""),
                 hook_text=global_fields.get("hook_text", ""),
                 hook_variants=global_fields.get("hook_variants", []),
+                hook_quote=global_fields.get("hook_quote", ""),
                 cta_text=global_fields.get("cta_text", ""),
                 scenes=final_scenes
             )
             result = final_result.model_dump()
-            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, prompt_rev=PROMPT_REVISION)
+            cache.set("gen_script", result, topic=topic, num_scenes=num_scenes, mode=mode, art_style=art_style, target_duration=target_duration, narration_tone=narration_tone, niche=content_niche or "", char_desc=character_description or "", sync=sync_characters, seed=variation_seed, stock=prefer_stock_video, notes=_notes_key, prompt_rev=PROMPT_REVISION)
             return result
         except Exception as e:
             # KHÔNG trả kịch bản mock (trước đây trả video "Python" bất kể chủ đề, âm thầm
@@ -877,7 +1264,12 @@ async def generate_script(
             logger.error(f"Gemini generate_script thất bại cho chủ đề '{topic}': {e}")
             raise
 
-    return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
+    # KHÔNG bọc _call bằng _retry_sync ở đây nữa — retry đã chuyển vào cấp từng batch
+    # bên trong _call() (xem _call_one_batch). Bọc thêm một lớp retry NGOÀI nữa sẽ quay
+    # lại đúng lỗi cũ: lỗi không-retryable ở bước resolve_blueprint/Scene(...) (không
+    # phải 429/503) trước đây cũng KHÔNG được _retry_sync thử lại (is_retryable=False),
+    # nên bỏ lớp ngoài không đổi hành vi cho nhánh đó — chỉ khác ở đúng nhánh 429/503.
+    return await asyncio.to_thread(_call)
 
 
 # ---------------------------------------------------------------------------
@@ -928,10 +1320,18 @@ class NarrativeReviewResult(BaseModel):
     notes: List[NarrativeReviewNote] = Field(default_factory=list)
 
 
-def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
+def _local_review(
+    scenes: list, word_budget_hi: int, cta_text: str = ""
+) -> ScriptReviewResult:
     """
     Review LOCAL (không tốn API): phát hiện cụm từ sáo rỗng, cảnh quá dài,
     thiếu CTA ở cảnh cuối. Nhanh và miễn phí — luôn chạy.
+
+    `cta_text` là CTA cấp video (trường riêng, không thuộc cảnh nào). Phải xét tới nó vì
+    `video_service.resolve_outro_text()` đem đúng chuỗi này ra làm chữ ở đuôi video — kịch bản
+    có cta_text thì video CÓ CTA, dù không cảnh nào chứa chữ 'like/share'. Bỏ qua nó là báo
+    động sai: đo trên kịch bản thật (Nhà Giả Kim, 90 điểm) thì note 'thiếu CTA' nổ lên trong
+    khi cta_text = 'Hãy tìm đọc cuốn sách tuyệt vời này nhé!' đã sẵn sàng hiện ở outro.
     """
     notes = []
     total_score = 100
@@ -954,7 +1354,10 @@ def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
                 total_score -= 5
 
         # ── Check cảnh quá dài ──
-        if len(words) > word_budget_hi:
+        # Có biên dung sai: xem WORD_BUDGET_TOLERANCE_RATIO. Lố 1 từ không phá nhịp, nhưng
+        # bản cũ vẫn gắn 'error' + trừ 8 điểm cho nó.
+        tolerance = max(1, round(word_budget_hi * WORD_BUDGET_TOLERANCE_RATIO))
+        if len(words) > word_budget_hi + tolerance:
             notes.append(SceneReviewNote(
                 scene_index=i + 1,
                 issue_type="too_long",
@@ -966,10 +1369,20 @@ def _local_review(scenes: list, word_budget_hi: int) -> ScriptReviewResult:
 
     # ── Check CTA ở cảnh cuối ──
     if scenes:
-        last_text = (scenes[-1].get("text", "") or "").lower()
+        last_text = (scenes[-1].get("text", "") or "").strip()
+        last_lower = last_text.lower()
         cta_keywords = ["theo dõi", "subscribe", "chia sẻ", "bình luận", "comment",
-                        "like", "thích", "đăng ký", "share", "tag"]
-        has_cta = any(kw in last_text for kw in cta_keywords)
+                        "like", "thích", "đăng ký", "share", "tag", "lưu lại", "lưu ngay"]
+        # CÂU HỎI MỞ cũng là CTA hợp lệ — đây còn là kiểu CTA được chính hook-library.md
+        # khuyến nghị ('Bạn nghĩ sao về điều này?'). Đo trên kịch bản thật: cảnh cuối
+        # "Trích ngay 10% thu nhập tháng này để đầu tư. Bạn dám thử không?" bị báo THIẾU CTA
+        # chỉ vì không chứa chữ 'like/share/follow' — cảnh báo sai làm người dùng đi sửa một
+        # cảnh vốn đã đúng, và trừ oan 3 điểm.
+        has_cta = (
+            any(kw in last_lower for kw in cta_keywords)
+            or last_text.endswith("?")
+            or bool((cta_text or "").strip())
+        )
         if not has_cta:
             notes.append(SceneReviewNote(
                 scene_index=len(scenes),
@@ -1042,12 +1455,8 @@ def _gemini_narrative_review(scenes: list, api_key: str | None) -> NarrativeRevi
             temperature=0.3,
         ),
     )
-    try:
-        from services import quota_service
-        quota_service.increment_quota(1)
-    except Exception:
-        pass
-    return response.parsed
+    _track_quota()
+    return _require_parsed(response, "_gemini_narrative_review")
 
 
 async def review_script(
@@ -1066,7 +1475,9 @@ async def review_script(
     if not scenes:
         return ScriptReviewResult(quality_score=0, review_notes=[], passed=False).model_dump()
 
-    review = _local_review(scenes, word_budget_hi)
+    review = _local_review(
+        scenes, word_budget_hi, cta_text=script_result.get("cta_text", "") or ""
+    )
 
     try:
         narrative = await asyncio.to_thread(_gemini_narrative_review, scenes, api_key)
@@ -1100,10 +1511,131 @@ async def review_script(
     return review.model_dump()
 
 
+# ── Vòng VIẾT LẠI khi điểm chất lượng quá thấp ──────────────────────
+# Tài liệu dự án từng khẳng định "nếu không đạt điểm tối thiểu 60/100, kịch bản sẽ bị ép sinh
+# lại" — điều đó chưa từng đúng: điểm được tính, ghi log, trả cho UI, rồi kịch bản kém vẫn đi
+# thẳng vào bước render. Đây là phần bù lại lời hứa đó, với ba chốt an toàn:
+#   1. ĐÚNG MỘT lượt viết lại (mỗi lượt tốn thêm quota).
+#   2. Bản mới phải ĐIỂM CAO HƠN mới được nhận — viết lại có thể ra bản tệ hơn, và im lặng
+#      thay bằng bản tệ hơn thì còn hại hơn không làm gì.
+#   3. Lỗi ở lượt viết lại (quota/mạng) bị bỏ qua êm: trả về bản đầu, không làm chết request.
+REGENERATE_SCORE_THRESHOLD = 60
+
+# Chỉ những loại lỗi mà VIẾT LẠI mới sửa được thì mới đáng tốn một lượt gọi. `too_long` bị
+# loại cố ý: scene_balancer + luật số từ trong prompt đã lo, và một cảnh lố 2 từ không xứng
+# một lượt quota.
+_REGENERATE_WORTHY_ISSUES = {
+    "weak_hook", "weak_climax", "flat_emotion", "flat_pacing", "narrative_gap", "cliche",
+}
+
+
+def _revision_notes_from_review(review: dict) -> List[str]:
+    """Lọc các nhận xét đáng đưa vào lượt viết lại, gộp thành câu hành động được."""
+    ra = []
+    for n in review.get("review_notes", []):
+        if n.get("issue_type") not in _REGENERATE_WORTHY_ISSUES:
+            continue
+        cau = n.get("message", "").strip()
+        goi_y = (n.get("suggestion") or "").strip()
+        idx = n.get("scene_index") or 0
+        vi_tri = f"Cảnh {idx}: " if idx else ""
+        ra.append(f"{vi_tri}{cau}{' → ' + goi_y if goi_y else ''}")
+    return ra
+
+
+async def regenerate_if_low_quality(
+    script_result: dict,
+    review_result: dict,
+    *,
+    word_budget_hi: int,
+    gen_kwargs: dict,
+    api_key: str | None = None,
+) -> tuple[dict, dict]:
+    """Viết lại kịch bản ĐÚNG MỘT LẦN nếu điểm dưới ngưỡng, rồi giữ bản điểm cao hơn.
+
+    Trả về `(script_result, review_result)` — của bản được chọn. `review_result` của bản mới
+    có thêm khoá `regenerated` để UI nói cho người dùng biết đã viết lại, và `previous_score`
+    để họ thấy nó tốt lên bao nhiêu.
+    """
+    if review_result.get("quality_score", 0) >= REGENERATE_SCORE_THRESHOLD:
+        return script_result, review_result
+
+    notes = _revision_notes_from_review(review_result)
+    if not notes:
+        # Điểm thấp nhưng toàn lỗi mà viết lại không sửa được → đừng tốn quota.
+        logger.info("Script Review: điểm thấp nhưng không có lỗi nào viết lại sửa được.")
+        return script_result, review_result
+
+    diem_cu = review_result.get("quality_score", 0)
+    logger.info(f"Script Review: {diem_cu} < {REGENERATE_SCORE_THRESHOLD} — viết lại 1 lượt.")
+
+    try:
+        ban_moi = await generate_script(**gen_kwargs, revision_notes=notes)
+        review_moi = await review_script(
+            ban_moi, word_budget_hi=word_budget_hi, api_key=api_key
+        )
+    except Exception as e:
+        logger.warning(f"Viết lại kịch bản thất bại, giữ bản đầu — {e}")
+        return script_result, review_result
+
+    diem_moi = review_moi.get("quality_score", 0)
+    if diem_moi <= diem_cu:
+        logger.info(f"Bản viết lại không tốt hơn ({diem_moi} ≤ {diem_cu}) — giữ bản đầu.")
+        review_result = dict(review_result)
+        review_result["regenerated"] = False
+        review_result["rejected_retry_score"] = diem_moi
+        return script_result, review_result
+
+    logger.info(f"Đã nhận bản viết lại: {diem_cu} → {diem_moi} điểm.")
+    review_moi = dict(review_moi)
+    review_moi["regenerated"] = True
+    review_moi["previous_score"] = diem_cu
+    return ban_moi, review_moi
+
+
 # ---------------------------------------------------------------------------
 
 # 4. MODE: Photo Narration — Gemini multimodal phân tích ảnh
 # ---------------------------------------------------------------------------
+def build_photo_system_prompt(*, num_images: int, topic: Optional[str] = None) -> str:
+    """system_instruction cho `generate_script_from_images` — hàm THUẦN, không gọi mạng.
+
+    Tách ra cùng lý do như hai hàm build_* kia. Nhân dịp này prompt cũng được hưởng các luật
+    nội dung dùng chung (cụ thể/show-don't-tell/cấm sáo rỗng/CTA thật) mà trước đây chỉ
+    generate_script mới có — đường photo_narration vốn chỉ được dặn "viết văn nói, câu ngắn",
+    nên lời bình cho ảnh hay ra kiểu chú thích album chứ không giữ chân được người xem.
+    """
+    topic_hint = f" Chủ đề gợi ý: '{topic}'." if topic else ""
+
+    # Ngân sách từ mỗi cảnh, suy ra từ CÙNG hằng số với generate_script để hai đường
+    # sinh kịch bản không lệch nhịp đọc. Cố ý KHÔNG đặt cứng "15-20 từ": xem ghi chú
+    # ở scene_word_budget() — luật cứng đó từng đá nhau với luật tổng số từ, và Gemini
+    # chọn phá luật số từ, làm cảnh dài 8+ giây.
+    w_hi = WORDS_PER_SCENE_TARGET + 3
+    sec_hi = w_hi / _default_wps()
+
+    return (
+        "Bạn là biên kịch video chuyên nghiệp. "
+        f"Người dùng cung cấp {num_images} bức ảnh.{topic_hint} "
+        f"Nhiệm vụ: viết CHÍNH XÁC {num_images} phân cảnh (mỗi ảnh = 1 cảnh). "
+        "Phân tích nội dung từng ảnh và viết lời bình luận tiếng Việt dưới dạng 'văn nói'. "
+        "Lời bình phải nói ĐIỀU NGƯỜI XEM KHÔNG TỰ THẤY ĐƯỢC trong ảnh (bối cảnh, cảm xúc, "
+        "câu chuyện đằng sau) — nếu chỉ tả lại thứ đang hiện trên màn hình thì cảnh đó vô ích. "
+        "Kịch bản phải tuân theo cấu trúc: [Hook (3s đầu)] -> [Thân bài] -> [Bài học] -> "
+        "[Call-to-Action kết thúc bằng câu hỏi mở]. "
+        "image_prompt: viết mô tả tiếng Anh ngắn gọn về nội dung ảnh (dùng cho metadata).\n\n"
+        f"{_cliche_ban_rule().lstrip('- ')}\n\n"
+        f"{SPECIFICITY_RULES}\n\n"
+        f"{TTS_WRITING_RULES}\n\n"
+        f"{CTA_RULES}\n\n"
+        "ĐỘ DÀI LỜI THOẠI (BẮT BUỘC): đây là video DỌC 9:16, phụ đề chạy đè lên khung hình "
+        f"nên câu dài sẽ tràn ra ngoài màn hình. Mỗi phân cảnh tuyệt đối KHÔNG ĐƯỢC VƯỢT QUÁ "
+        f"{w_hi} từ (~{sec_hi:.1f} giây đọc). Câu dài phải CẮT thành nhiều phân cảnh ngắn. "
+        "TUYỆT ĐỐI không viết đoạn văn dài.\n"
+        f"{WORD_COUNT_SELF_CHECK}"
+    )
+
+
 async def generate_script_from_images(
     image_paths: List[str],
     topic: Optional[str] = None,
@@ -1116,30 +1648,7 @@ async def generate_script_from_images(
     vì sẽ dùng ảnh gốc của user).
     """
     num_images = len(image_paths)
-
-    topic_hint = f" Chủ đề gợi ý: '{topic}'." if topic else ""
-
-    # Ngân sách từ mỗi cảnh, suy ra từ CÙNG hằng số với generate_script để hai đường
-    # sinh kịch bản không lệch nhịp đọc. Cố ý KHÔNG đặt cứng "15-20 từ": xem ghi chú
-    # ở scene_word_budget() — luật cứng đó từng đá nhau với luật tổng số từ, và Gemini
-    # chọn phá luật số từ, làm cảnh dài 8+ giây.
-    _w_hi = WORDS_PER_SCENE_TARGET + 3
-    _sec_hi = _w_hi / _default_wps()
-
-    system_prompt = (
-        "Bạn là biên kịch video chuyên nghiệp. "
-        f"Người dùng cung cấp {num_images} bức ảnh.{topic_hint} "
-        f"Nhiệm vụ: viết CHÍNH XÁC {num_images} phân cảnh (mỗi ảnh = 1 cảnh). "
-        "Phân tích nội dung từng ảnh và viết lời bình luận tiếng Việt dưới dạng 'văn nói'. "
-        "Sử dụng câu ngắn, ngắt nghỉ bằng dấu phẩy hợp lý, KHÔNG dùng các ký tự Markdown (như *, **, #). "
-        "Kịch bản phải tuân theo cấu trúc: [Hook (3s đầu)] -> [Thân bài] -> [Bài học] -> [Call-to-Action kết thúc bằng câu hỏi mở]. "
-        "HÃY chủ động dùng dấu chấm lửng `...` vào phần lời thoại (text) tại những vị trí cần ngắt nghỉ, tạm dừng để tạo cảm xúc sâu lắng. "
-        "image_prompt: viết mô tả tiếng Anh ngắn gọn về nội dung ảnh (dùng cho metadata). "
-        f"\n\nĐỘ DÀI LỜI THOẠI (BẮT BUỘC): đây là video DỌC 9:16, phụ đề chạy đè lên "
-        f"khung hình nên câu dài sẽ tràn ra ngoài màn hình. Mỗi phân cảnh tuyệt đối "
-        f"KHÔNG ĐƯỢC VƯỢT QUÁ {_w_hi} từ (~{_sec_hi:.1f} giây đọc). "
-        "Câu dài phải CẮT thành nhiều phân cảnh ngắn. TUYỆT ĐỐI không viết đoạn văn dài."
-    )
+    system_prompt = build_photo_system_prompt(num_images=num_images, topic=topic)
 
     def _call():
         # Use content hashing for deterministic cache key instead of basename
@@ -1181,12 +1690,8 @@ async def generate_script_from_images(
                 temperature=0.8,
             ),
         )
-        try:
-            from services import quota_service
-            quota_service.increment_quota(1)
-        except Exception:
-            pass
-        parsed: LLMScriptResponse = response.parsed
+        _track_quota()
+        parsed: LLMScriptResponse = _require_parsed(response, "generate_script_from_images")
         resolved = resolve_blueprint("", "", len(parsed.scenes))
         final_scenes = []
         for i, scene_data in enumerate(parsed.scenes):
@@ -1212,30 +1717,22 @@ async def generate_script_from_images(
 # ---------------------------------------------------------------------------
 # 5. MODE: Script → Video — User paste script, Gemini chia cảnh + sinh image_prompt
 # ---------------------------------------------------------------------------
-async def split_script_to_scenes(
-    script_text: str,
-    num_scenes: int = 6,
+def build_split_system_prompt(
+    *,
+    num_scenes: int,
     art_style: str = "Cinematic",
-    api_key: Optional[str] = None,
-    narration_tone: str = "viral",
-    content_niche: Optional[str] = None,
-) -> dict:
-    """
-    Nhận đoạn văn dài (script viết sẵn bởi user).
-    Gemini chia thành N scenes hợp lý + sinh image_prompt cho mỗi scene.
+    prefer_stock_video: bool = False,
+) -> str:
+    """system_instruction cho `split_script_to_scenes` — hàm THUẦN, không gọi mạng.
 
-    Lời thoại LUÔN được giữ nguyên văn 100%; narration_tone/content_niche CHỈ dùng để
-    chọn hiệu ứng (sfx, transition, emotion, nhịp đọc) — xem effect_guide bên dưới.
+    Tách ra khỏi thân hàm async vì cùng lý do đã tách build_script_system_prompt(): prompt
+    nằm trong closure `_call()` thì không test nào chạm nổi, và đây chính là đường sinh kịch
+    bản có yêu cầu KHẮT KHE NHẤT (giữ nguyên văn 100% lời của người dùng) — hỏng ở đây là
+    sửa lời người ta mà không ai biết.
     """
-    # Trần 30 khớp MAX_SCENES của generate_script và slider của Frontend (max 30).
-    # LỖI CŨ: trần cứng 20 ở đây trong khi FE cho kéo tới 30 → user chọn 26 cảnh thì bị
-    # âm thầm hạ xuống 20, mỗi cảnh phải gánh gấp rưỡi số từ (~13 giây/cảnh với kịch bản
-    # 800 từ) mà không có cảnh báo nào.
-    num_scenes = max(MIN_SCENES, min(MAX_SCENES, num_scenes))
-
-    system_prompt = (
+    return (
         "Bạn là biên kịch video chuyên nghiệp. "
-        f"Người dùng cung cấp 1 đoạn văn bản/kịch bản viết sẵn. "
+        "Người dùng cung cấp 1 đoạn văn bản/kịch bản viết sẵn. "
         f"Nhiệm vụ: chia nội dung thành CHÍNH XÁC {num_scenes} phân cảnh để làm video. "
         "QUY TẮC CỰC KỲ QUAN TRỌNG VÀ BẮT BUỘC (GIỮ NGUYÊN 100% Ý NGƯỜI DÙNG): "
         "1. Nếu kịch bản gốc có phân biệt rõ các phần (như 'Voice-over:', 'Lời thoại:', 'Chuyển động:', 'Text on-screen:'), "
@@ -1252,13 +1749,47 @@ async def split_script_to_scenes(
         "6. Nếu kịch bản có dòng 'BGM:' hoặc 'CTA:' (thường ở cuối), đó là chỉ dẫn cho hệ thống, "
         "KHÔNG phải lời thoại: đưa vào `recommended_bgm` và `cta_text`, và TUYỆT ĐỐI không để lẫn "
         "vào `text` của cảnh cuối. "
-        f"image_prompt: luôn mô tả bằng tiếng Anh theo phong cách '{art_style}' nhưng phải trung thành tuyệt đối với mô tả của người dùng."
+        f"image_prompt: luôn mô tả bằng tiếng Anh theo phong cách '{art_style}' nhưng phải "
+        "trung thành tuyệt đối với mô tả của người dùng."
+        # Cùng lý do như generate_script: nếu video sẽ dựng bằng footage stock thì
+        # image_prompt chính là câu truy vấn tìm video, nên không được chứa thuật ngữ
+        # máy quay/render.
+        f"\n\n{IMAGE_PROMPT_RULES_STOCK if prefer_stock_video else IMAGE_PROMPT_RULES_AI}"
+    )
+
+
+async def split_script_to_scenes(
+    script_text: str,
+    num_scenes: int = 6,
+    art_style: str = "Cinematic",
+    api_key: Optional[str] = None,
+    narration_tone: str = "viral",
+    content_niche: Optional[str] = None,
+    prefer_stock_video: bool = False,
+) -> dict:
+    """
+    Nhận đoạn văn dài (script viết sẵn bởi user).
+    Gemini chia thành N scenes hợp lý + sinh image_prompt cho mỗi scene.
+
+    Lời thoại LUÔN được giữ nguyên văn 100%; narration_tone/content_niche CHỈ dùng để
+    chọn hiệu ứng (sfx, transition, emotion, nhịp đọc) — xem effect_guide bên dưới.
+    """
+    # Trần 30 khớp MAX_SCENES của generate_script và slider của Frontend (max 30).
+    # LỖI CŨ: trần cứng 20 ở đây trong khi FE cho kéo tới 30 → user chọn 26 cảnh thì bị
+    # âm thầm hạ xuống 20, mỗi cảnh phải gánh gấp rưỡi số từ (~13 giây/cảnh với kịch bản
+    # 800 từ) mà không có cảnh báo nào.
+    num_scenes = max(MIN_SCENES, min(MAX_SCENES, num_scenes))
+
+    system_prompt = build_split_system_prompt(
+        num_scenes=num_scenes,
+        art_style=art_style,
+        prefer_stock_video=prefer_stock_video,
     )
 
     # Bản vẽ cơ học được xử lý phía Python, không tiêm vào Prompt nữa
     def _call():
         # Trim script_text for hashing to avoid too long string issue, or hash it inside _get_key
-        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
+        cached_result = cache.get("split_script", script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", stock=prefer_stock_video, prompt_rev=SPLIT_PROMPT_REVISION)
         if cached_result:
             logger.info("Using cached result for split_script_to_scenes")
             return cached_result
@@ -1274,13 +1805,8 @@ async def split_script_to_scenes(
                 temperature=0.1,  # Cực kỳ thấp để AI bám sát 100% text gốc, không phóng tác
             ),
         )
-        try:
-            from services import quota_service
-            quota_service.increment_quota(1)
-        except Exception:
-            pass
-        
-        parsed: LLMScriptResponse = response.parsed
+        _track_quota()
+        parsed: LLMScriptResponse = _require_parsed(response, "split_script_to_scenes")
         resolved = resolve_blueprint(content_niche, narration_tone, len(parsed.scenes))
         final_scenes = []
         for i, scene_data in enumerate(parsed.scenes):
@@ -1303,12 +1829,13 @@ async def split_script_to_scenes(
             sentiment=parsed.sentiment,
             recommended_bgm=parsed.recommended_bgm,
             hook_text=parsed.hook_text,
+            hook_quote=parsed.hook_quote,
             cta_text=parsed.cta_text,
             scenes=final_scenes
         )
         
         result = final_result.model_dump()
-        cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", prompt_rev=SPLIT_PROMPT_REVISION)
+        cache.set("split_script", result, script_len=len(script_text), text_hash=hashlib.md5(script_text.encode("utf-8")).hexdigest(), num_scenes=num_scenes, art_style=art_style, tone=narration_tone, niche=content_niche or "", stock=prefer_stock_video, prompt_rev=SPLIT_PROMPT_REVISION)
         return result
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys)
@@ -1378,53 +1905,120 @@ async def generate_image(
 
     return await asyncio.to_thread(_retry_sync, _call, key_manager=gemini_keys, retries=1)
 
-async def extract_search_keyword(image_prompt: str, api_key: Optional[str] = None) -> str:
+# ── TRÍCH TỪ KHOÁ TÌM FOOTAGE ───────────────────────────────────────
+# Từ thông dụng + THUẬT NGỮ GÓC MÁY/quay phim không mang nội dung chủ thể.
+STOCK_STOPWORDS = {
+    # common
+    "a", "an", "the", "and", "or", "of", "is", "are", "his", "her", "its", "their",
+    # chất lượng / render
+    "cinematic", "style", "lighting", "photo", "image", "picture", "realistic",
+    "photorealistic", "4k", "8k", "uhd", "hdr", "detailed", "highly", "quality",
+    "unreal", "engine", "octane", "render", "volumetric", "dust", "film", "grain",
+    "teal", "orange", "dramatic", "moody", "epic", "professional",
+    # Đo trên kịch bản thật: Gemini hay chốt image_prompt bằng "stock footage style".
+    # Không lọc thì query gửi Pexels là "stock footage" — tức đi tìm video về CHÍNH KHÁI
+    # NIỆM video stock, trả về đủ thứ ngẫu nhiên.
+    "stock", "footage", "shot's", "breath-taking", "breathtaking", "serene", "feeling",
+    # góc máy / camera jargon
+    "shot", "close-up", "closeup", "close", "up", "extreme", "wide", "medium",
+    "full", "establishing", "low-angle", "high-angle", "angle", "low", "high",
+    "drone", "aerial", "over-the-shoulder", "over", "shoulder", "tracking",
+    "dolly", "pan", "panning", "zoom", "pov", "macro", "portrait", "landscape",
+    "view", "scene", "frame", "camera", "lens", "depth", "field", "bokeh",
+}
+
+# Giới từ MỞ RA MỆNH ĐỀ BỐI CẢNH: chủ thể luôn nằm TRƯỚC chúng.
+# "a vintage leather book lying ON a dark wooden table NEAR a warm lantern"
+#                                ^ cắt ở đây, phần sau chỉ là bối cảnh phụ.
+_BACKGROUND_PREPS = {
+    "in", "on", "at", "under", "near", "beside", "behind", "next", "against", "among",
+    "amid", "amidst", "through", "throughout", "across", "onto", "inside", "outside",
+    "atop", "below", "beneath", "underneath", "above", "during", "while", "from", "by",
+    "towards", "toward", "around", "to", "between", "beyond", "within", "opposite",
+    "before", "after", "past",
+}
+
+# Giới từ CHÈN GIỮA cụm động từ — bỏ chính nó nhưng GIỮ tân ngữ đằng sau:
+# "hands digging INTO soft soil" → "digging soft soil" (không được cắt mất "soil").
+_FILLER_PREPS = {"into", "for", "with", "about", "along"}
+
+
+def stock_query_from_prompt(image_prompt: str) -> str:
+    """Từ khoá tìm footage, trích OFFLINE từ image_prompt (không tốn quota Gemini).
+
+    THUẬT TOÁN CŨ SAI Ở ĐÂU: nó lọc stopword rồi lấy **3 từ ĐẦU**. Nhưng tiếng Anh đặt
+    danh từ chính ở CUỐI cụm danh từ, nên 3 từ đầu thường chỉ là chuỗi tính từ. Đo trên
+    13 image_prompt Gemini thật thì 4 trong số đó MẤT HẲN chủ thể:
+
+        "a vintage closed leather book lying on a dark wooden table"
+            cũ  → "vintage closed leather"   (không còn chữ "book"!)
+        "hands cleaning delicate crystal glasses in a rustic shop"
+            cũ  → "hands cleaning delicate"  (mất "crystal glasses")
+        "close up of hands digging into soft soil under an old tree"
+            cũ  → "hands digging into"       (kết bằng giới từ, mất "soil")
+        "a lonely person looking up at the starry night sky"
+            cũ  → "lonely person looking"    (looking cái gì?)
+
+    Đây là lý do footage "hơi đúng mà không đúng chủ đề".
+
+    BỐN BƯỚC MỚI:
+      1. Bỏ tiền tố góc máy ("Extreme close-up shot of ...").
+      2. CẮT ở giới từ mở mệnh đề bối cảnh — giữ lại đúng cụm chủ thể.
+      3. Bỏ phân từ/giới từ LỦNG LẲNG ở cuối ("looking", "lying", "stretching") khi còn
+         đủ từ mang nghĩa — chúng mất tân ngữ nên chỉ làm loãng truy vấn.
+      4. Lấy 3 từ CUỐI của cụm (head-final), tức luôn giữ được danh từ chính.
     """
-    Trích xuất từ khóa ngắn (2-4 từ) từ image_prompt dài để tìm kiếm trên Pexels/Pixabay
-    (Offline, không dùng Gemini để tiết kiệm Quota).
+    lower_prompt = (image_prompt or "").lower()
 
-    Lưu ý: prompt template BẮT BUỘC mở đầu bằng góc máy ("Extreme close-up shot of...",
-    "Low-angle drone shot of..."), nên phải loại bỏ toàn bộ thuật ngữ quay phim trước khi
-    trích chủ thể — nếu không Pexels sẽ nhận từ khóa rác kiểu "extreme close-up" và trả
-    video ngẫu nhiên không đúng chủ đề.
-    """
-    # Từ thông dụng + THUẬT NGỮ GÓC MÁY/quay phim không mang nội dung chủ thể
-    stopwords = {
-        # common
-        "a", "an", "the", "in", "on", "at", "with", "and", "or", "of", "to", "for",
-        "is", "are", "his", "her", "its", "their",
-        # chất lượng / render
-        "cinematic", "style", "lighting", "photo", "image", "picture", "realistic",
-        "photorealistic", "4k", "8k", "uhd", "hdr", "detailed", "highly", "quality",
-        "unreal", "engine", "octane", "render", "volumetric", "dust", "film", "grain",
-        "teal", "orange", "dramatic", "moody", "epic", "professional",
-        # góc máy / camera jargon
-        "shot", "close-up", "closeup", "close", "up", "extreme", "wide", "medium",
-        "full", "establishing", "low-angle", "high-angle", "angle", "low", "high",
-        "drone", "aerial", "over-the-shoulder", "over", "shoulder", "tracking",
-        "dolly", "pan", "panning", "zoom", "pov", "macro", "portrait", "landscape",
-        "view", "scene", "frame", "camera", "lens", "depth", "field", "bokeh",
-    }
-
-    lower_prompt = image_prompt.lower()
-
-    # Ưu tiên phần SAU cụm " of " đầu tiên: "Extreme close-up shot of a lion roaring..."
+    # (1) Ưu tiên phần SAU cụm " of " đầu tiên: "Extreme close-up shot of a lion roaring..."
     # → chủ thể thật nằm sau "of". Chỉ áp dụng khi phần đầu đúng là cụm góc máy.
     if " of " in lower_prompt:
         prefix, _, subject_part = lower_prompt.partition(" of ")
         prefix_words = [w.strip(",.!?") for w in prefix.split()]
-        if prefix_words and all(w in stopwords for w in prefix_words):
+        if prefix_words and all(w in STOCK_STOPWORDS for w in prefix_words):
             lower_prompt = subject_part
 
-    # Chuẩn hóa chuỗi, bỏ dấu câu cơ bản
-    clean_prompt = lower_prompt.replace(",", " ").replace(".", " ").replace("!", " ").replace("?", " ")
-    words = [w for w in clean_prompt.split() if w]
+    clean = re.sub(r"[,.!?;:]", " ", lower_prompt)
+    words = [w for w in clean.split() if w]
 
-    # Lọc stopwords
-    filtered_words = [w for w in words if w not in stopwords]
+    # (2) Cắt ở giới từ bối cảnh đầu tiên (bỏ qua vị trí 0 để không cắt sạch câu).
+    for i, w in enumerate(words):
+        if i > 0 and w in _BACKGROUND_PREPS:
+            words = words[:i]
+            break
 
-    # Lấy tối đa 3 từ đầu mang nghĩa (chủ thể + hành động/bối cảnh)
-    if filtered_words:
-        return " ".join(filtered_words[:3])
-    # Fallback an toàn
+    core = [w for w in words if w not in STOCK_STOPWORDS and w not in _FILLER_PREPS]
+
+    # (3) Gọt phân từ/giới từ lủng lẳng ở cuối. Giữ tối thiểu 2 từ: với cụm ngắn như
+    # "hooded figure walking" thì hành động chính là thứ đáng tìm.
+    while len(core) > 2 and (core[-1].endswith("ing") or core[-1] in _BACKGROUND_PREPS):
+        core.pop()
+
+    # (4) Head-final: 3 từ CUỐI mới là chủ thể + phẩm chất sát nó nhất.
+    if core:
+        return " ".join(core[-3:])
     return "nature"
+
+
+def build_stock_queries(image_prompt: str) -> List[str]:
+    """BẬC THANG truy vấn, từ cụ thể nhất tới rộng nhất.
+
+    Trước đây chỉ có ĐÚNG MỘT truy vấn: Pexels trả 0 kết quả là rơi thẳng về ảnh AI, dù
+    chỉ cần bỏ một tính từ là tìm thấy. Bậc thang giữ được chế độ footage thật thay vì
+    âm thầm đổi nguồn hình giữa video (khiến vài cảnh là video, vài cảnh là ảnh tĩnh).
+    """
+    full = stock_query_from_prompt(image_prompt)
+    tu = full.split()
+    ladder = [full]
+    if len(tu) >= 3:
+        ladder.append(" ".join(tu[-2:]))
+    if len(tu) >= 2:
+        ladder.append(tu[-1])  # chỉ còn danh từ chính
+    # Bỏ trùng, giữ nguyên thứ tự
+    thay = set()
+    return [q for q in ladder if q and not (q in thay or thay.add(q))]
+
+
+async def extract_search_keyword(image_prompt: str, api_key: Optional[str] = None) -> str:
+    """Giữ nguyên chữ ký async cũ cho các chỗ đang gọi. Lõi là `stock_query_from_prompt`."""
+    return stock_query_from_prompt(image_prompt)

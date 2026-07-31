@@ -31,11 +31,21 @@ def get_project_file_path(job_id: str) -> str:
     return os.path.join(PROJECTS_DIR, f"{safe_job_id(job_id)}.json")
 
 def save_project_state(job_id: str, data: Dict[str, Any]) -> str:
-    """Lưu toàn bộ trạng thái dự án vào tệp JSON checkpoint."""
+    """Lưu toàn bộ trạng thái dự án vào tệp JSON checkpoint.
+
+    Ghi qua file tạm rồi os.replace (cùng pattern config.write_env_value /
+    cache_service.set_media): checkpoint này được ghi lại MỖI CẢNH trong lúc render
+    (có thể chạy hàng chục phút). Ghi thẳng vào file_path mà process bị kill giữa
+    chừng (crash, huỷ render, mất điện) để lại JSON cụt — lần load sau
+    `json.load` ném exception, bị nuốt ở load_project_state và mất luôn tiến độ
+    dự án. os.replace là atomic trên cả Windows/POSIX nên không có trạng thái dở.
+    """
     file_path = get_project_file_path(job_id)
+    tmp_path = file_path + ".tmp"
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, file_path)
         logger.info(f"💾 Đã lưu project checkpoint: {file_path}")
         return file_path
     except Exception as e:

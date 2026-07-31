@@ -47,7 +47,6 @@ AI-VIDEO-MAKER/
 │   │   ├── ffmpeg_assembler.py   # Đường nhanh: dựng cả timeline bằng MỘT lệnh FFmpeg (xfade + NVENC).
 │   │   ├── audio_mix_service.py  # FFmpeg Mastering Engine: Xử lý BGM Auto-ducking, EQ, Loudnorm & ASS Burn-in.
 │   │   ├── render_worker.py      # Chạy MoviePy/FFmpeg trong process con (multiprocessing).
-│   │   ├── render_export.py      # Bước export cuối bằng ffmpeg trực tiếp (NVENC).
 │   │   ├── hook_engine.py        # 4 hiệu ứng mở màn (Slot Machine, Blackout, Typewriter, Vignette).
 │   │   ├── beat_sync.py          # Phân tích Audio peak tạo điểm nhấn hình ảnh.
 │   │   ├── motion_effects.py     # Source of Truth cho Timeline, Zoom, Ken Burns, Transitions.

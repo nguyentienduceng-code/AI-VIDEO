@@ -17,8 +17,15 @@ export default function RenderProgress() {
     setStep: s.setStep,
     setErrorMsg: s.setErrorMsg,
     setStatus: s.setStatus,
+    ratio: s.ratio,
   })));
   const [elapsed, setElapsed] = useState(0);
+
+  const getRatioValue = (r) => {
+    if (r === '9:16') return 9/16;
+    if (r === '1:1') return 1;
+    return 16/9;
+  };
 
   useEffect(() => {
     let interval;
@@ -39,7 +46,7 @@ export default function RenderProgress() {
   if (ctx.step === 'done') {
     return (
       <div className="done-panel">
-        <div className="done-video-wrap">
+        <div className="done-video-wrap" style={{ aspectRatio: getRatioValue(ctx.ratio), margin: '0 auto' }}>
           <video src={ctx.videoUrl} controls autoPlay style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 12 }} />
         </div>
         <div className="done-actions">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Smartphone, Monitor, Square, Play, Mic, Music, Loader } from 'lucide-react';
+import { Smartphone, Monitor, Square, Play, Mic, Music, Loader, Sparkles, Pencil, Wrench } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, needsUpload as needsUploadFor } from '../store';
 import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, NICHE_OPTIONS, API_BASE } from '../constants';
@@ -21,6 +21,7 @@ export default function ConfigSection() {
     bgmVolume: s.bgmVolume, setBgmVolume: s.setBgmVolume,
     playPreview: s.playPreview,
     playMixPreview: s.playMixPreview,
+    stopAllAudio: s.stopAllAudio,
   })));
   const needsUpload = needsUploadFor(ctx.activeMode);
   // Trần 30 (khớp MAX_SCENES của backend): trần 20 cũ khiến video từ 3 phút trở lên
@@ -31,7 +32,10 @@ export default function ConfigSection() {
   // ── Voice Cloning: danh sách giọng clone cá nhân + upload mẫu ──
   const [customVoices, setCustomVoices] = useState([]);
   const [cloneBusy, setCloneBusy] = useState(false);
+  const [clonePreviewBusy, setClonePreviewBusy] = useState(false);
   const cloneInputRef = useRef(null);
+  const clonePreviewAudioRef = useRef(null);
+  const clonePreviewUrlRef = useRef(null);
 
   const loadCustomVoices = useCallback(() => {
     fetch(`${API_BASE}/api/voices`)
@@ -42,6 +46,136 @@ export default function ConfigSection() {
 
   useEffect(() => { loadCustomVoices(); }, [loadCustomVoices]);
 
+  // Giọng AI (clone cá nhân hoặc preset OmniVoice) sinh ra bằng GPU, không nghe thử
+  // được qua /api/preview/voice/{id} như giọng Edge-TTS: file .mp3 mẫu ở đó là bản ghi
+  // âm GỐC user tải lên, không phải giọng AI đã tổng hợp. Muốn biết bản clone đọc ra
+  // sao thì phải thật sự cho nó đọc một câu.
+  const isAiVoice = (ctx.voice || '').startsWith('omnivoice_');
+  const selectedClone = customVoices.find(v => v.id === ctx.voice);
+
+  const stopClonePreview = useCallback(() => {
+    if (clonePreviewAudioRef.current) {
+      clonePreviewAudioRef.current.pause();
+      clonePreviewAudioRef.current = null;
+    }
+    if (clonePreviewUrlRef.current) {
+      URL.revokeObjectURL(clonePreviewUrlRef.current);   // không thu hồi thì blob rò rỉ trong tab
+      clonePreviewUrlRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopClonePreview, [stopClonePreview]);
+
+  const CLONE_PREVIEW_TEXT =
+    'Xin chào, đây là giọng đọc AI được nhân bản từ mẫu ghi âm của bạn. ' +
+    'Bạn thấy chất lượng và ngữ điệu thế nào?';
+
+  const previewCloneVoice = async () => {
+    stopClonePreview();
+    ctx.stopAllAudio();
+    setClonePreviewBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/preview-scene-voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: CLONE_PREVIEW_TEXT, voice: ctx.voice }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Không nghe thử được giọng AI.');
+      }
+      // Backend báo về đây khi OmniVoice hỏng và đã đọc bằng giọng tiêu chuẩn thay thế
+      // — không hiện ra thì user tưởng bản clone nghe y hệt giọng mặc định.
+      const warn = res.headers.get('X-TTS-Warning');
+      const url = URL.createObjectURL(await res.blob());
+      clonePreviewUrlRef.current = url;
+      const audio = new Audio(url);
+      clonePreviewAudioRef.current = audio;
+      audio.addEventListener('ended', stopClonePreview);
+      await audio.play();
+      if (warn) alert(decodeURIComponent(warn));
+    } catch (err) {
+      stopClonePreview();
+      alert('Lỗi nghe thử giọng AI: ' + err.message);
+    } finally {
+      setClonePreviewBusy(false);
+    }
+  };
+
+  // Chạy lại toàn bộ khâu xử lý mẫu cho giọng đã tạo từ trước khi có bộ lọc: lọc nhiễu,
+  // chuẩn hoá độ to, cắt về 10 giây, chép lại lời mẫu. Giọng cũ không có cách nào khác
+  // để hưởng các bản vá này ngoài việc xoá đi tải lên lại — mà file gốc thì user
+  // thường đã không còn giữ.
+  const [repairing, setRepairing] = useState(false);
+
+  const repairCloneVoice = async () => {
+    if (!selectedClone) return;
+    if (!window.confirm(
+      `Sửa lại giọng "${selectedClone.raw_name}"?\n\n` +
+      'Hệ thống sẽ lọc nhiễu, chuẩn hoá độ to, cắt mẫu về 10 giây và chép lại lời mẫu ' +
+      'từ chính file ghi âm. Dùng khi giọng được tạo từ lâu hoặc đọc ra nghe chưa chuẩn.'
+    )) return;
+    setRepairing(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/voice-clone/${selectedClone.id}/repair`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Sửa thất bại');
+      loadCustomVoices();
+      alert(
+        `✅ ${data.message}\n\n` +
+        `Lời mẫu mới:\n"${data.after.ref_text}"\n\n` +
+        'Hãy bấm ✨ nghe thử. Nếu lời mẫu trên có chữ sai so với file bạn thu, ' +
+        'bấm ✏️ sửa lại cho đúng — càng khớp thì giọng đọc càng chuẩn.'
+      );
+    } catch (err) {
+      alert('Lỗi sửa giọng clone: ' + err.message);
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  // Sửa tên hiển thị + văn bản đọc mẫu. Transcript sai (whisper hay nhầm dấu tiếng Việt)
+  // làm giọng clone phát âm lệch, nên đây là thứ đáng sửa nhất sau khi nghe thử.
+  const editCloneVoice = async () => {
+    if (!selectedClone) return;
+    const newName = window.prompt('Tên hiển thị của giọng clone:', selectedClone.raw_name || '');
+    if (newName === null) return;
+    const newTranscript = window.prompt(
+      'Văn bản đọc mẫu (transcript) — phải khớp ĐÚNG lời trong file ghi âm bạn đã tải lên.\n' +
+      'Để TRỐNG rồi bấm OK: hệ thống nghe lại file và tự chép lời (dùng khi giọng đọc ra vô nghĩa).',
+      selectedClone.ref_text || ''
+    );
+    if (newTranscript === null) return;
+
+    const put = (body) => fetch(`${API_BASE}/api/voice-clone/${selectedClone.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    try {
+      const body = newTranscript.trim()
+        ? { name: newName, transcript: newTranscript.trim() }
+        : { name: newName, retranscribe: true };   // để trống = nhờ máy chép lại
+      let res = await put(body);
+      let data = await res.json();
+      if (res.status === 409) {
+        const dungBanChep = window.confirm(
+          data.detail + '\n\n[OK] = dùng lời hệ thống chép được (khuyên dùng)\n[Cancel] = giữ nguyên lời bạn nhập'
+        );
+        res = await put(dungBanChep
+          ? { name: newName, retranscribe: true }
+          : { name: newName, transcript: newTranscript.trim(), force_transcript: true });
+        data = await res.json();
+      }
+      if (!res.ok) throw new Error(data.detail || 'Cập nhật thất bại');
+      loadCustomVoices();
+      alert(`✅ ${data.message}` + (data.voice?.ref_text ? `\n\nLời mẫu hiện tại:\n"${data.voice.ref_text}"` : ''));
+    } catch (err) {
+      alert('Lỗi cập nhật giọng clone: ' + err.message);
+    }
+  };
+
   const handleCloneUpload = async (e) => {
     const f = e.target.files?.[0];
     const defaultName = f.name.replace(/\.[^.]+$/, '');
@@ -51,17 +185,57 @@ export default function ConfigSection() {
       return;
     }
     
+    // Transcript phải khớp ĐÚNG lời trong file — backend đối chiếu bằng whisper và từ
+    // chối nếu lệch. Bỏ trống là an toàn nhất: hệ thống tự chép lời từ chính file đó.
+    const transcript = window.prompt(
+      'Văn bản đọc mẫu — nhập ĐÚNG từng chữ mà bạn nói trong file ghi âm.\n' +
+      '(Để trống thì hệ thống tự chép lời. Nhập sai lời sẽ làm giọng AI đọc ra tiếng Việt vô nghĩa.)',
+      ''
+    );
+    if (transcript === null) {
+      if (cloneInputRef.current) cloneInputRef.current.value = '';
+      return;
+    }
+
     setCloneBusy(true);
     try {
       const fd = new FormData();
       fd.append('file', f);
       fd.append('name', cloneName.trim());
+      if (transcript.trim()) fd.append('transcript', transcript.trim());
       const res = await fetch(`${API_BASE}/api/voice-clone`, { method: 'POST', body: fd });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Upload thất bại');
+      // 409 = transcript lệch nội dung file. Cho user chọn: dùng bản máy chép lại (an
+      // toàn), hay giữ nguyên bản mình nhập (nếu họ chắc chắn whisper nghe sai).
+      if (res.status === 409) {
+        const dungBanChep = window.confirm(
+          data.detail + '\n\n[OK] = dùng lời hệ thống chép được (khuyên dùng)\n[Cancel] = giữ nguyên lời bạn nhập'
+        );
+        const fd2 = new FormData();
+        fd2.append('file', f);
+        fd2.append('name', cloneName.trim());
+        if (dungBanChep) {
+          // không gửi transcript → backend tự chép lời từ file
+        } else {
+          fd2.append('transcript', transcript.trim());
+          fd2.append('force_transcript', 'true');
+        }
+        const res2 = await fetch(`${API_BASE}/api/voice-clone`, { method: 'POST', body: fd2 });
+        const data2 = await res2.json();
+        if (!res2.ok) throw new Error(data2.detail || 'Upload thất bại');
+        Object.assign(data, data2);
+      } else if (!res.ok) {
+        throw new Error(data.detail || 'Upload thất bại');
+      }
       loadCustomVoices();
       ctx.setVoice(data.voice_id);
-      alert(`✅ Đã tạo giọng clone "${data.name}"!\n\nTranscript nhận dạng: "${data.ref_text}"\n\nGiọng đã được chọn sẵn trong danh sách.`);
+      alert(
+        `✅ Đã tạo giọng clone "${data.name}" (${data.gender})!\n\n` +
+        `Mẫu sau khi lọc nhiễu & gọt lặng: ${data.speech_seconds}s tiếng nói.\n` +
+        `Transcript nhận dạng: "${data.ref_text}"\n\n` +
+        `Giọng đã được chọn sẵn. Bấm nút ✨ để nghe thử giọng AI đọc thật, ` +
+        `và nút ✏️ nếu cần sửa lại transcript cho khớp lời trong file.`
+      );
     } catch (err) {
       alert('Lỗi tạo giọng clone: ' + err.message);
     } finally {
@@ -74,8 +248,11 @@ export default function ConfigSection() {
   const builtInFemale = VOICES.filter(v => v.label.includes('Nữ -') || v.label.includes('Nữ ('));
   const builtInOther = VOICES.filter(v => !builtInMale.includes(v) && !builtInFemale.includes(v));
 
-  const customMale = customVoices.filter(v => v.name.toLowerCase().includes('nam'));
-  const customFemale = customVoices.filter(v => v.name.toLowerCase().includes('nữ') || v.name.toLowerCase().includes('nu'));
+  // Xếp nhóm theo trường `gender` do backend trả về, KHÔNG dò chữ trong tên nữa: đó
+  // cũng chính là giới tính backend dùng để chọn giọng đọc thay thế khi OmniVoice hỏng,
+  // nên nhóm hiện trên màn hình và giọng nghe được lúc lỗi luôn khớp nhau.
+  const customMale = customVoices.filter(v => v.gender === 'Nam');
+  const customFemale = customVoices.filter(v => v.gender === 'Nữ');
   const customOther = customVoices.filter(v => !customMale.includes(v) && !customFemale.includes(v));
 
   const BGMOptions = (
@@ -245,6 +422,35 @@ export default function ConfigSection() {
               )}
             </select>
             <button className="btn-icon" onClick={() => ctx.playPreview('voice', ctx.voice)} title="Nghe thử"><Play size={18} /></button>
+            {isAiVoice && (
+              <button
+                className="btn-icon"
+                onClick={previewCloneVoice}
+                disabled={clonePreviewBusy}
+                title="Nghe thử AI Clone: cho giọng AI đọc thật một câu tiếng Việt để kiểm tra chất lượng (nút ▶ bên cạnh chỉ phát lại file ghi âm gốc bạn đã tải lên)"
+              >
+                {clonePreviewBusy ? <Loader size={18} className="animate-spin" /> : <Sparkles size={18} />}
+              </button>
+            )}
+            {selectedClone && (
+              <button
+                className="btn-icon"
+                onClick={editCloneVoice}
+                title="Sửa tên hiển thị & văn bản đọc mẫu của giọng clone này"
+              >
+                <Pencil size={18} />
+              </button>
+            )}
+            {selectedClone && (
+              <button
+                className="btn-icon"
+                onClick={repairCloneVoice}
+                disabled={repairing}
+                title="Sửa lại mẫu giọng: lọc nhiễu, chuẩn hoá độ to, cắt về 10 giây và chép lại lời mẫu. Dùng cho giọng tạo từ lâu hoặc đọc ra nghe chưa chuẩn."
+              >
+                {repairing ? <Loader size={18} className="animate-spin" /> : <Wrench size={18} />}
+              </button>
+            )}
             <button
               className="btn-icon"
               onClick={() => cloneInputRef.current?.click()}

@@ -7,6 +7,7 @@ import InputSection from './InputSection';
 import ConfigSection from './ConfigSection';
 import AdvancedSettings from './AdvancedSettings';
 import StorageSettings from './StorageSettings';
+import ApiKeySettings from './ApiKeySettings';
 
 export default function SettingsPanel() {
   const ctx = useAppStore(useShallow((s) => ({
@@ -30,6 +31,11 @@ export default function SettingsPanel() {
     setEstimatedDurationS: s.setEstimatedDurationS,
     voice: s.voice,
     speechRate: s.speechRate,
+    preferStockVideo: s.preferStockVideo,
+    visualSource: s.visualSource,
+    hookQuote: s.hookQuote,
+    setHookQuote: s.setHookQuote,
+    autoRetryLowQuality: s.autoRetryLowQuality,
     setScriptNotice: s.setScriptNotice,
     bgm: s.bgm,
     setBgm: s.setBgm,
@@ -74,6 +80,13 @@ export default function SettingsPanel() {
         // Giọng + tốc độ để backend ước lượng thời lượng bằng ĐÚNG giọng sẽ đọc, khi
         // cân lại nhịp các cảnh (mode Script → Video).
         voice: ctx.voice, speech_rate: ctx.speechRate,
+        // Nguồn hình phải gửi NGAY TỪ BƯỚC SINH KỊCH BẢN, không chờ tới lúc render:
+        // image_prompt cho footage stock và cho ảnh AI là hai kiểu viết khác hẳn nhau
+        // (backend: IMAGE_PROMPT_RULES_STOCK vs _AI). Gửi muộn thì kịch bản đã mang sẵn
+        // "8k, Unreal Engine" và tìm Pexels ra video sai chủ đề.
+        prefer_stock_video: ctx.preferStockVideo,
+        visual_source: ctx.visualSource,
+        auto_retry_low_quality: ctx.autoRetryLowQuality,
       };
       const res = await fetch(`${API_BASE}/api/generate-script`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -105,6 +118,12 @@ export default function SettingsPanel() {
       if (data.hook_text && !ctx.hookText?.trim()) {
         ctx.setHookText(data.hook_text);
       }
+      // Câu quote đắt nhất cho các hiệu ứng mở màn dạng quote (carousel_quote,
+      // typewriter_quote, blackout_question). Backend trước đây KHÔNG sinh trường này dù
+      // hiệu ứng đã chờ nó sẵn, nên ai muốn dùng đều phải tự gõ câu quote.
+      if (data.hook_quote && !ctx.hookQuote?.trim()) {
+        ctx.setHookQuote(data.hook_quote);
+      }
       // Lưu hook_variants cho A/B Hook Selector (B3)
       if (data.hook_variants && data.hook_variants.length > 0) {
         ctx.setHookVariants(data.hook_variants);
@@ -114,6 +133,14 @@ export default function SettingsPanel() {
       // Lưu kết quả Script Review (B2)
       if (data.review) {
         ctx.setScriptReview(data.review);
+        // Nói rõ khi backend đã tự viết lại kịch bản: người dùng bấm 1 lần mà nhận về bản
+        // thứ hai thì phải được biết, nếu không họ tưởng AI ngẫu nhiên ra kết quả khác.
+        if (data.review.regenerated) {
+          ctx.setScriptNotice(
+            `Bản đầu bị chấm ${data.review.previous_score}/100 nên hệ thống đã tự viết lại: ` +
+            `giờ ${data.review.quality_score}/100. Tắt ở Cài đặt nâng cao nếu muốn tiết kiệm quota.`,
+          );
+        }
       } else {
         ctx.setScriptReview(null);
       }
@@ -158,7 +185,12 @@ export default function SettingsPanel() {
         <div className="tab-content" style={{ flex: 1 }}>
           {activeTab === 'basic' && <ConfigSection />}
           {activeTab === 'advanced' && <AdvancedSettings />}
-          {activeTab === 'system' && <StorageSettings />}
+          {activeTab === 'system' && (
+            <>
+              <ApiKeySettings />
+              <StorageSettings />
+            </>
+          )}
         </div>
       </div>
 

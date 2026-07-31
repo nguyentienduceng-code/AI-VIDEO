@@ -291,18 +291,29 @@ def test_render_worker_khong_doc_khoa_master_kwargs_khong_ai_set():
 def test_hai_duong_master_truyen_cung_bo_tham_so_hieu_ung():
     """Đường worker và nhánh inline phải truyền CÙNG các tham số hiệu ứng.
 
-    Hai nhánh này gọi cùng một hàm nhưng dựng tham số ở hai chỗ tách rời; lệch nhau
-    nghĩa là bật/tắt FastAssembly lại ra hai video khác nhau.
+    Hai nhánh gọi cùng một hàm master_audio_and_export(). Nhánh inline dùng
+    `**master_kwargs` (đã dựng sẵn cho đường worker ngay phía trên) thay vì gõ tay lại
+    từng tham số — nên KHÔNG THỂ lệch nhau nữa (thay vì chỉ được test này bắt lỗi nếu ai
+    đó lệch). Test vẫn phải canh: khoá nào bị loại khỏi unpack (dành riêng cho
+    generate_ass_file ở đường worker) không được vô tình nuốt mất một tham số hiệu ứng
+    thật — nếu không, tương đương lỗi cũ mà test này sinh ra để bắt.
     """
     src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"))
     i = src.index("master_audio_and_export,")
     inline = src[i:src.index("\n                )", i)]
 
+    assert "**{k: v for k, v in master_kwargs.items()" in inline, (
+        "nhánh inline không còn unpack master_kwargs — có nguy cơ lệch tham số với đường "
+        "worker giống lỗi cũ mà test này sinh ra để bắt."
+    )
+    m = re.search(r"if k not in \(([^)]*)\)", inline)
+    loai_bo = set(re.findall(r'"([a-zA-Z_]+)"', m.group(1))) if m else set()
+
     o_main = _khoa_master_kwargs_trong_main()
     for ten in ("narration_tone", "use_pattern_interrupt", "hook_duration",
                 "bgm_volume_segments", "use_audio_ducking"):
         assert ten in o_main, f"master_kwargs (đường worker) thiếu {ten}"
-        assert f"{ten}=" in inline, f"nhánh inline gọi master_audio_and_export thiếu {ten}"
+        assert ten not in loai_bo, f"nhánh inline loại {ten} khỏi unpack master_kwargs — mất tham số hiệu ứng"
 
 
 def test_master_audio_and_export_nhan_moi_khoa_duoc_truyen():
