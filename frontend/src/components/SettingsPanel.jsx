@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Sparkles, Settings2, Zap, HardDrive } from 'lucide-react';
+import { AlertTriangle, Sparkles, Settings2, Zap, HardDrive, CheckCircle } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { API_BASE, MODE_MAP } from '../constants';
 import { useAppStore, needsUpload as needsUploadFor, needsScript as needsScriptFor, needsTopic as needsTopicFor } from '../store';
+import { toast } from '../lib/toast.jsx';
 import InputSection from './InputSection';
 import ConfigSection from './ConfigSection';
 import AdvancedSettings from './AdvancedSettings';
@@ -13,6 +14,7 @@ export default function SettingsPanel() {
   const ctx = useAppStore(useShallow((s) => ({
     activeMode: s.activeMode,
     numScenes: s.numScenes,
+    scenes: s.scenes,
     setScenes: s.setScenes,
     setStep: s.setStep,
     topic: s.topic,
@@ -199,6 +201,37 @@ export default function SettingsPanel() {
         <InputSection />
         
         <div style={{ marginTop: 'auto', paddingTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {ctx.scenes && ctx.scenes.length > 0 && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button 
+                className="btn-generate" 
+                onClick={() => ctx.setStep('editor')}
+                style={{ flex: 1, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: '0 4px 15px rgba(16, 185, 129, 0.3)' }}
+              >
+                <CheckCircle size={18} /> Đã Nạp Kịch Bản ({ctx.scenes.length} cảnh) → Vào Bước 2
+              </button>
+              <button
+                className="btn-outline"
+                onClick={() => {
+                  if (window.confirm("Bạn có chắc chắn muốn xóa kịch bản hiện tại trong bộ nhớ để nạp lại kịch bản mới?")) {
+                    ctx.setScenes([]);
+                    ctx.setHookText('');
+                    ctx.setHookQuote('');
+                    ctx.setCtaText('');
+                    ctx.setOutroText('');
+                    ctx.setEstimatedDurationS(0);
+                    ctx.setScriptText('');
+                    toast("Đã xóa kịch bản cũ! Bạn có thể nạp kịch bản JSON mới.", { type: 'info' });
+                  }
+                }}
+                style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', cursor: 'pointer' }}
+                title="Xóa kịch bản cũ trong bộ nhớ để nạp kịch bản mới"
+              >
+                🗑️ Xóa & Nạp lại
+              </button>
+            </div>
+          )}
+
           <button className="btn-generate" onClick={handleGenerateScript} disabled={ctx.scriptLoading}>
             {ctx.scriptLoading ? <span className="btn-loading"><div className="spinner" /> Đang xử lý...</span> : <><Sparkles size={18} /> Sinh Kịch Bản Bằng AI (Bước 2)</>}
           </button>

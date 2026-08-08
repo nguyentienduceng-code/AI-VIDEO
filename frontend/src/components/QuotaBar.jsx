@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { API_BASE } from '../constants';
 import { Server, AlertTriangle } from 'lucide-react';
+import { toast } from '../lib/toast.jsx';
 
 export default function QuotaBar() {
   const [quota, setQuota] = useState(null);
@@ -14,7 +15,7 @@ export default function QuotaBar() {
         setQuota(data);
       }
     } catch (e) {
-      console.error("Lỗi lấy quota:", e);
+      toast("Lỗi lấy quota: " + e.message, { type: 'error' });
     } finally {
       setLoading(false);
     }

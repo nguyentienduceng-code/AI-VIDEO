@@ -168,6 +168,39 @@ def test_mot_canh_khong_hook_khong_outro_van_dung():
     assert max(_referenced_indices(cmd)) == 1
 
 
+# ── Slack cho xfade (bug đứng hình 01/08) ────────────────────────────────────
+def test_moi_canh_ngoai_canh_cuoi_co_du_khung_cho_xfade():
+    """LỖI CŨ: trim mỗi cảnh đúng khít `duration`, offset của xfade cũng đúng bằng
+    ngần đó — 0 giây dư cho xfade hoà trộn. Với clip tổng hợp FFmpeg vẫn chạy được,
+    nhưng với clip thật (stock/Ken Burns) nó lặng lẽ drop gần hết khung hình sau đó
+    (rc=0, không exception) — video ra đúng độ dài (audio ép container) nhưng hình
+    đứng im từ ngay transition đầu tiên. Đo trực tiếp bằng cách render tay: nhân bản
+    khung cuối cảnh thêm đúng crossfade_dur giây thì lỗi biến mất.
+
+    Test này khẳng định MỌI cảnh trừ cảnh cuối đều được tpad thêm đúng crossfade_dur
+    giây (nhân bản khung cuối) trước khi vào chuỗi xfade — cảnh cuối thì không cần,
+    nó không phải vế "đầu vào" của xfade nào.
+    """
+    for n in (2, 5):
+        cmd = _build_cmd(n_scenes=n, crossfade_dur=0.4)
+        fg = cmd[cmd.index("-filter_complex") + 1]
+        chains = fg.split(";")
+        for i in range(n):
+            chain = next(c for c in chains if c.endswith(f"[s{i}]"))
+            has_pad = "tpad=stop_duration=0.400:stop_mode=clone" in chain
+            if i < n - 1:
+                assert has_pad, f"cảnh {i}/{n} thiếu tpad — xfade sẽ hết khung để hoà trộn"
+            else:
+                assert not has_pad, f"cảnh cuối {i}/{n} không cần tpad (không phải vế xfade nào)"
+
+
+def test_mot_canh_duy_nhat_khong_can_tpad():
+    """Chỉ 1 cảnh thì không có xfade nào cả — tpad chỉ tổ tốn thời gian encode."""
+    cmd = _build_cmd(n_scenes=1)
+    fg = cmd[cmd.index("-filter_complex") + 1]
+    assert "tpad" not in fg
+
+
 if __name__ == "__main__":
     from services.log_setup import force_utf8_streams
     force_utf8_streams()

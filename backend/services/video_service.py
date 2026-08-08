@@ -321,7 +321,7 @@ HOOK_SFX_CEILING = 1.6
 def hook_sfx_level(reel_key: str, user_volume: float) -> float:
     """Âm lượng cuối của một tiếng hiệu ứng = cân bằng đo được × mức người dùng chỉnh."""
     return min(HOOK_SFX_CEILING, float(user_volume) * HOOK_SFX_GAIN.get(reel_key, 1.0))
-SFX_MIX_GAIN = 0.6             # hệ số giảm âm lượng SFX chung (tránh SFX thô/to lấn giọng đọc)
+SFX_MIX_GAIN = 10.0            # Bù lại do giao diện gửi sfx_volume mặc định 10% (0.1) nhưng SCENE_SFX_GAIN đã chuẩn hoá về -22dB
 
 # Cân bằng âm lượng cho 13 SFX PER-SCENE (whoosh/pop/tick/ding/bell/shimmer/riser/
 # bass_drop/impact/suspense/heartbeat/laugh/swoosh_soft) — CÙNG MỘT LỚP LỖI với
@@ -998,6 +998,8 @@ RENDER_KWARG_KEYS = frozenset({
     "cta_text",
     "use_fast_assembly",
     "use_gpu_encode",
+    "use_breathing",    # ghép breath.wav 1 lần vào đầu audio (thay vì mỗi scene)
+    "use_veo_ambient_audio",  # ambient sound cho scene Veo
 })
 
 
@@ -1011,6 +1013,8 @@ def render_final_video(
     master_audio_path: Optional[str] = None,
     use_sfx: bool = True,
     sfx_volume: float = 0.5,
+    use_breathing: bool = False,
+    use_veo_ambient_audio: bool = True,
     progress_logger="bar",
     # Được gọi khi đường nhanh (FFmpeg) hỏng và phải quay về MoviePy. Tiêm TẠI CHỖ ở
     # tiến trình con giống progress_logger — hàm không pickle được nên không đi qua
@@ -1048,6 +1052,35 @@ def render_final_video(
     voice_placements = []
     final_duration = 0.0
 
+    # ── Breathing Effect (1 lần duy nhất ở đầu video) ─────────────────────────
+    # Trước đây: breath.wav được ghép vào MỖI scene trong tts_service.synthesize_speech().
+    # Hậu quả: 10 cảnh = 10 tiếng thở ~3-4s/lần → nghe như "quoẹt" lặp đều.
+    # Fix: ghép 1 lần DUY NHẤT vào audio_placements[0]. Giọng nói cũng tự động
+    # nhận sidechain từ breath vì nó nằm trong voice_placements → BGM đúng cách.
+    if use_breathing:
+        breath_path = os.path.join(SFX_DIR, "breath.wav")
+        if os.path.isfile(breath_path):
+            audio_placements.append((breath_path, 0.0, 1.0, 0.0))
+            voice_placements.append((breath_path, 0.0, 1.0, 0.0))
+
+    # ── Veo Ambient Audio ─────────────────────────────────────────────────────
+    # Khi user bật Veo 3 để sinh video clip động, các clip đó không có âm thanh gốc.
+    # Nếu không có ambient, scene Veo sẽ IM LẶNG trong khoảng thời gian đó,
+    # tạo cảm giác "rỗng" khi chuyển từ cảnh có âm thanh thật sang cảnh Veo.
+    # Fix: gắn SFX ambient nhẹ vào TỪNG scene Veo, volume thấp để không đè giọng đọc.
+    if use_veo_ambient_audio:
+        # Các file ambient phù hợp: chọn ngẫu nhiên 1 trong 3 để đỡ đơn điệu
+        import random as _rand
+        _ambient_candidates = ["ambient_mystic.wav", "cinematic_swell.wav", "heartbeat.wav"]
+        _chosen_ambient = _rand.choice(_ambient_candidates)
+        _ambient_path = os.path.join(SFX_DIR, _chosen_ambient)
+        if os.path.isfile(_ambient_path):
+            _ambient_gain = 0.25  # ~25% volume — đủ nghe thấy nhưng không lấn giọng
+            for _asset in scene_assets:
+                if _asset.get("is_veo_scene"):
+                    _vstart = _asset.get("start_time", 0.0)
+                    audio_placements.append((_ambient_path, _vstart, _ambient_gain, 0.0))
+
     # ── Hook Engine (Overlay clip carousel_quote lên đầu video) ──
     hook_clip_overlay = None
     hook_type = kwargs.get("hook_effect")
@@ -1068,6 +1101,11 @@ def render_final_video(
     # cảnh 1 — sửa luôn điều kiện đó bên dưới để loại trừ MỌI hook do Hook Engine quản.
     hook_quote = kwargs.get("hook_quote", "")
     hook_text = kwargs.get("hook_text", "") or ""
+    
+    # FALLBACK: Nếu project cũ (hoặc Gemini) lỡ sinh text vào hook_quote thay vì hook_text
+    if hook_type in ("typewriter_quote", "blackout_question") and not hook_text.strip() and hook_quote.strip():
+        hook_text = hook_quote
+
     hook_sfx_volume = kwargs.get("hook_sfx_volume", 1.0)
     # MỘT nguồn duy nhất cho cả chuỗi if/elif bên dưới. Không cần mặc định riêng từng
     # nhánh nữa: resolve_effect_sfx() đã tự kéo mọi khoá lạ/khoá của hiệu ứng khác về

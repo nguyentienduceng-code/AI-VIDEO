@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, Trash2, Plus, Film, Volume2, Code, Upload, X, Pause, Music, Headphones, Square, Settings, CheckCircle, Zap } from 'lucide-react';
+import { RotateCcw, PenLine, Play, AlertTriangle, ChevronUp, ChevronDown, ChevronRight, Trash2, Plus, Film, Volume2, Code, Upload, X, Pause, Music, Headphones, Square, Settings, CheckCircle, Zap, Clipboard } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
 import { API_BASE, MODE_MAP, TRANSITIONS, SFX_OPTIONS, DURATION_OPTIONS } from '../constants';
+import { validateImportPayload, normalizeImportPayload } from '../lib/sharedSchema';
+import { toast } from '../lib/toast.jsx';
 
 // Chờ user ngừng gõ rồi mới hỏi backend. Gõ một câu dài mà không có độ trễ này thì
 // mỗi phím là một request quét cả thư mục cache.
@@ -120,8 +122,13 @@ export default function ScriptEditor() {
   const [expandedAdvanced, setExpandedAdvanced] = useState(new Set());
   const [collapsedScenes, setCollapsedScenes] = useState(new Set());
   
+  const validCollapsedCount = [...collapsedScenes].filter(i => i < ctx.scenes.length).length;
+  const isAllCollapsed = ctx.scenes.length > 0 && validCollapsedCount === ctx.scenes.length;
+
+  const [isDragging, setIsDragging] = useState(false);
+
   const toggleCollapseAll = () => {
-    if (collapsedScenes.size === ctx.scenes.length) {
+    if (isAllCollapsed) {
       setCollapsedScenes(new Set());
     } else {
       setCollapsedScenes(new Set(ctx.scenes.map((_, i) => i)));
@@ -143,13 +150,13 @@ export default function ScriptEditor() {
     fetch(`${API_BASE}/api/sfx-list`)
       .then(res => res.json())
       .then(data => setCustomSfxList(data.sfx_list || []))
-      .catch(err => console.error("Failed to load custom SFX", err));
+      .catch(err => toast("Không tải được danh sách SFX: " + err.message, { type: 'error' }));
   }, []);
 
   const handleUploadSfx = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024) return alert("File quá lớn! Tối đa 10MB.");
+    if (file.size > 10 * 1024 * 1024) return toast("File quá lớn! Tối đa 10MB.", { type: 'error' });
     
     const formData = new FormData();
     formData.append('file', file);
@@ -162,12 +169,12 @@ export default function ScriptEditor() {
       const data = await res.json();
       if (res.ok) {
         setCustomSfxList(prev => [...prev, { value: data.filename, label: data.label }]);
-        alert("Upload thành công!");
+        toast("Upload thành công!", { type: 'success' });
       } else {
-        alert(data.detail || "Upload thất bại.");
+        toast(data.detail || "Upload thất bại.", { type: 'error' });
       }
     } catch (err) {
-      alert("Lỗi kết nối: " + err.message);
+      toast("Lỗi kết nối: " + err.message, { type: 'error' });
     }
     e.target.value = '';
   };
@@ -227,6 +234,7 @@ export default function ScriptEditor() {
         outro_text: ctx.outroText,
         outro_reel_sfx: ctx.outroReelSfx,
         outro_sfx_volume: ctx.outroSfxVolume / 100,
+        use_fast_assembly: ctx.useFastAssembly,
       };
 
       const res = await fetch(`${API_BASE}/api/render-video`, {
@@ -517,31 +525,130 @@ export default function ScriptEditor() {
     }
   }, [ctx]);
 
+  const fileInputRef = useRef(null);
+
   const handleImportJson = () => {
-    let jsonStr = prompt('Dán mã JSON kịch bản (từ AI) vào đây:');
-    if (!jsonStr) return;
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  // Dán JSON trực tiếp từ clipboard — bỏ qua bước Save As → Open File → chọn.
+  // Lý do: user thường copy JSON từ BookTok bằng nút "Copy JSON", không cần lưu
+  // file trung gian. Nếu browser chặn clipboard API (HTTP không secure context),
+  // fallback về prompt() nhập tay.
+  const handlePasteJson = async () => {
+    try {
+      let text = '';
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        text = await navigator.clipboard.readText();
+      } else {
+        text = window.prompt('Dán JSON vào đây:') || '';
+      }
+      if (!text || !text.trim()) {
+        toast('Clipboard trống hoặc bạn chưa dán nội dung.', { type: 'warning' });
+        return;
+      }
+      processJsonString(text);
+    } catch (err) {
+      // Fallback khi clipboard API fail (ví dụ trang không phải HTTPS)
+      const text = window.prompt('Không đọc được clipboard. Dán JSON thủ công vào đây:');
+      if (text && text.trim()) processJsonString(text);
+    }
+  };
+
+  // Xử lý chuỗi JSON (text) — dùng cho cả file paste lẫn file tải lên. Tách ra để
+  // 2 nguồn vào dùng chung logic validate + normalize, tránh lệch nhau.
+  const processJsonString = (jsonStr) => {
     try {
       // Auto-repair JSON từ LLM
       jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/i, '').trim();
       jsonStr = jsonStr.replace(/,\s*([\]}])/g, '$1'); // Fix trailing commas
-      
+
       const data = JSON.parse(jsonStr);
+
+      // Validate + normalize TRƯỚC khi setScenes. Trước đây chỗ này setScenes thẳng
+      // — JSON từ BookTok có 30+ scenes thiếu image_prompt (vì nằm trong imagePrompts[]
+      // rời) vẫn được nhận, nhưng render thành ảnh đen vì search_keyword cũng trống.
       if (data.scenes && Array.isArray(data.scenes)) {
-        ctx.setScenes(data.scenes);
-        if (data.estimated_duration_s !== undefined) ctx.setEstimatedDurationS(data.estimated_duration_s);
+        const normalized = normalizeImportPayload(data);
+        const warnings = validateImportPayload(data);
+
+        if (warnings.length > 0) {
+          const proceed = window.confirm(
+            `Có ${warnings.length} cảnh báo khi nhập JSON:\n\n${warnings.slice(0, 8).join('\n')}` +
+            (warnings.length > 8 ? `\n... và ${warnings.length - 8} cảnh báo khác.` : '') +
+            `\n\nBấm OK để tiếp tục (một số cảnh có thể render không như ý), hoặc Cancel để hủy.`
+          );
+          if (!proceed) return;
+        }
+
+        ctx.setScenes(normalized.scenes);
+        if (normalized.estimated_duration_s !== undefined) ctx.setEstimatedDurationS(normalized.estimated_duration_s);
         if (data.hook_text !== undefined) ctx.setHookText(data.hook_text);
         if (data.hook_quote !== undefined) ctx.setHookQuote(data.hook_quote);
         if (data.cta_text !== undefined) ctx.setCtaText(data.cta_text);
         if (data.recommended_bgm) ctx.setBgm(data.recommended_bgm);
-        alert('Nhập JSON thành công! Cảnh đã được dàn trang.');
+        if (data.outro_text !== undefined) ctx.setOutroText(data.outro_text);
+        toast(`Nhập JSON thành công! ${normalized.scenes.length} cảnh đã được dàn trang.`, { type: 'success' });
       } else if (Array.isArray(data)) {
-        ctx.setScenes(data);
-        alert('Nhập mảng JSON thành công! Cảnh đã được dàn trang.');
+        const normalized = normalizeImportPayload(data);
+        const warnings = validateImportPayload({ scenes: normalized.scenes });
+        if (warnings.length > 0) {
+          const proceed = window.confirm(
+            `Có ${warnings.length} cảnh báo khi nhập JSON:\n\n${warnings.slice(0, 8).join('\n')}\n\nTiếp tục?`
+          );
+          if (!proceed) return;
+        }
+        ctx.setScenes(normalized.scenes);
+        toast(`Nhập mảng JSON thành công! ${normalized.scenes.length} cảnh.`, { type: 'success' });
       } else {
-        alert('Lỗi: Cấu trúc JSON không hợp lệ (không tìm thấy scenes).');
+        toast('Lỗi: Cấu trúc JSON không hợp lệ (không tìm thấy scenes).', { type: 'error' });
       }
-    } catch (e) {
-      alert('Lỗi parse JSON: ' + e.message);
+    } catch (err) {
+      toast('Lỗi parse JSON: ' + err.message, { type: 'error' });
+    }
+  };
+
+  const processJsonFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => processJsonString(event.target.result);
+    reader.readAsText(file);
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      processJsonFile(file);
+      // Reset input để cho phép chọn lại cùng một file nếu cần
+      e.target.value = null;
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file && (file.type === "application/json" || file.name.endsWith(".json"))) {
+      processJsonFile(file);
+    } else if (file) {
+      toast("Vui lòng thả file JSON hợp lệ.", { type: 'warning' });
     }
   };
 
@@ -755,7 +862,34 @@ export default function ScriptEditor() {
     : null;
 
   return (
-    <div className="editor-layout">
+    <div 
+      className="editor-layout"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{ position: 'relative' }}
+    >
+      {isDragging && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(34, 197, 94, 0.1)',
+          border: '2px dashed var(--green)',
+          zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(2px)',
+          borderRadius: 8,
+          pointerEvents: 'none'
+        }}>
+          <div style={{ 
+            background: 'var(--surface)', padding: '24px 48px', 
+            borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+            color: 'var(--green)', fontSize: 24, fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 12
+          }}>
+            <Code size={32} /> Thả file JSON vào đây để nạp kịch bản
+          </div>
+        </div>
+      )}
       <div className="editor-toolbar">
         <button className="btn-outline" onClick={() => ctx.setStep('config')}><RotateCcw size={14} /> Quay lại cài đặt</button>
         <div className="editor-toolbar-info" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
@@ -813,6 +947,7 @@ export default function ScriptEditor() {
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
+            type="button"
             className="btn-outline"
             style={{ borderColor: 'var(--green, #22c55e)', color: 'var(--green, #22c55e)', padding: '10px 16px' }}
             onClick={fullMode ? closeFullMode : openFullMode}
@@ -821,13 +956,29 @@ export default function ScriptEditor() {
           >
             <PenLine size={16} /> {fullMode ? 'Đóng chế độ toàn bài' : 'Sửa toàn bộ kịch bản'}
           </button>
-          <button className="btn-outline" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', padding: '10px 16px' }} onClick={handleImportJson}>
+          <input
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+          />
+          <button
+            type="button"
+            className="btn-outline"
+            style={{ borderColor: 'var(--purple, #a78bfa)', color: 'var(--purple, #a78bfa)', padding: '10px 16px' }}
+            onClick={handlePasteJson}
+            title="Dán JSON trực tiếp từ clipboard — nhanh hơn so với lưu file rồi mở"
+          >
+            <Clipboard size={16} /> Dán JSON
+          </button>
+          <button type="button" className="btn-outline" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', padding: '10px 16px' }} onClick={handleImportJson}>
             <Code size={16} /> Import JSON
           </button>
-          <button className="btn-outline" style={{ padding: '10px 16px' }} onClick={toggleCollapseAll} disabled={!ctx.scenes.length}>
-            {collapsedScenes.size === ctx.scenes.length ? <ChevronDown size={16} /> : <ChevronUp size={16} />} {collapsedScenes.size === ctx.scenes.length ? 'Mở rộng tất cả' : 'Thu gọn tất cả'}
+          <button type="button" className="btn-outline" style={{ padding: '10px 16px' }} onClick={toggleCollapseAll} disabled={!ctx.scenes.length}>
+            {isAllCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />} {isAllCollapsed ? 'Mở rộng tất cả' : 'Thu gọn tất cả'}
           </button>
-          <button className="btn-generate" style={{ width: 'auto', padding: '10px 24px', marginTop: 0 }} onClick={handleRenderVideo}>
+          <button type="button" className="btn-generate" style={{ width: 'auto', padding: '10px 24px', marginTop: 0 }} onClick={handleRenderVideo}>
             <Play size={16} /> Render Video (Bước 2)
           </button>
         </div>
@@ -1330,7 +1481,7 @@ export default function ScriptEditor() {
                                 const audio = new Audio(`${API_BASE}/api/preview/sfx/${val}`);
                                 const vol = scene.sfxVolume !== undefined ? scene.sfxVolume : 100;
                                 audio.volume = (ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5) * (vol / 100);
-                                audio.play().catch(err => console.error("SFX preview error:", err));
+                                audio.play().catch(() => {});
                               }
                             }}
                             style={{ flex: 1, minWidth: 0 }}
@@ -1358,7 +1509,7 @@ export default function ScriptEditor() {
                                 if (scene.sfx) {
                                   const audio = new Audio(`${API_BASE}/api/preview/sfx/${scene.sfx}`);
                                   audio.volume = (ctx.sfxVolume ? (ctx.sfxVolume / 100) : 0.5) * (vol / 100);
-                                  audio.play().catch(err => console.error("SFX preview error:", err));
+                                  audio.play().catch(() => {});
                                 }
                               }}
                               style={{ flex: 1, minWidth: 0 }}

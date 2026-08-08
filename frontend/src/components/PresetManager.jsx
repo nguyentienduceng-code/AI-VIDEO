@@ -3,6 +3,7 @@ import { Bookmark, Save, Trash2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
 import { API_BASE } from '../constants';
+import { toast } from '../lib/toast.jsx';
 
 export default function PresetManager() {
   const ctx = useAppStore(useShallow((s) => ({
@@ -56,7 +57,7 @@ export default function PresetManager() {
         setPresets(data.presets || []);
       }
     } catch (e) {
-      console.error("Failed to fetch presets:", e);
+      toast("Không tải được presets: " + e.message, { type: 'error' });
     }
   };
 
@@ -74,7 +75,7 @@ export default function PresetManager() {
   };
 
   const handleSavePreset = async () => {
-    if (!newPresetName.trim()) return alert("Vui lòng nhập tên cho Preset!");
+    if (!newPresetName.trim()) return toast("Vui lòng nhập tên cho Preset!", { type: 'warning' });
     setLoading(true);
     try {
       const payload = {
@@ -101,7 +102,7 @@ export default function PresetManager() {
         // (ScriptEditor.jsx). Xem chú thích đơn vị tại PresetRequest trong main.py.
         hook_sfx_volume: ctx.hookSfxVolume,
         use_sfx: ctx.useSfx,
-        sfx_volume: 8,
+        sfx_volume: ctx.sfxVolume,
         use_audio_ducking: ctx.useAudioDucking,
         use_ken_burns: ctx.useKenBurns,
         hook_zoom_boost: ctx.hookZoomBoost,
@@ -132,10 +133,10 @@ export default function PresetManager() {
         setShowSaveModal(false);
         setNewPresetName('');
       } else {
-        alert("Lỗi khi lưu Preset!");
+        toast("Lỗi khi lưu Preset!", { type: 'error' });
       }
     } catch (e) {
-      alert("Lỗi kết nối: " + e.message);
+      toast("Lỗi kết nối: " + e.message, { type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -145,7 +146,7 @@ export default function PresetManager() {
     if (!selectedPresetId) return;
     const found = presets.find(p => p.id === selectedPresetId);
     if (!found || found.is_default) {
-      return alert("Không thể xóa Preset mặc định!");
+      return toast("Không thể xóa Preset mặc định!", { type: 'warning' });
     }
 
     if (!window.confirm(`Bạn có chắc muốn xóa Preset "${found.name}"?`)) return;
@@ -158,10 +159,10 @@ export default function PresetManager() {
         setSelectedPresetId('');
         await fetchPresets();
       } else {
-        alert("Lỗi khi xóa Preset!");
+        toast("Lỗi khi xóa Preset!", { type: 'error' });
       }
     } catch (e) {
-      alert("Lỗi kết nối: " + e.message);
+      toast("Lỗi kết nối: " + e.message, { type: 'error' });
     }
   };
 

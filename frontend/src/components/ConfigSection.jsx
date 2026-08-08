@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, needsUpload as needsUploadFor } from '../store';
 import { STYLES, VOICES, NARRATION_TONES, DURATION_OPTIONS, NICHE_OPTIONS, API_BASE } from '../constants';
 import PresetManager from './PresetManager';
+import { toast } from '../lib/toast.jsx';
 
 export default function ConfigSection() {
   const ctx = useAppStore(useShallow((s) => ({
@@ -24,9 +25,8 @@ export default function ConfigSection() {
     stopAllAudio: s.stopAllAudio,
   })));
   const needsUpload = needsUploadFor(ctx.activeMode);
-  // Trần 30 (khớp MAX_SCENES của backend): trần 20 cũ khiến video từ 3 phút trở lên
-  // buộc mỗi cảnh phải gánh 25-40 từ, tức 8-13 giây/cảnh.
-  const minScenes = 4, maxScenes = 30;
+  // Trần 75 (khớp MAX_SCENES mở rộng của backend dành cho Podcast / Kể chuyện dài):
+  const minScenes = 4, maxScenes = 75;
   const sliderPercent = ((ctx.numScenes - minScenes) / (maxScenes - minScenes)) * 100;
 
   // ── Voice Cloning: danh sách giọng clone cá nhân + upload mẫu ──
@@ -93,10 +93,10 @@ export default function ConfigSection() {
       clonePreviewAudioRef.current = audio;
       audio.addEventListener('ended', stopClonePreview);
       await audio.play();
-      if (warn) alert(decodeURIComponent(warn));
+      if (warn) toast(decodeURIComponent(warn), { type: 'warning' });
     } catch (err) {
       stopClonePreview();
-      alert('Lỗi nghe thử giọng AI: ' + err.message);
+      toast('Lỗi nghe thử giọng AI: ' + err.message, { type: 'error' });
     } finally {
       setClonePreviewBusy(false);
     }
@@ -121,14 +121,11 @@ export default function ConfigSection() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Sửa thất bại');
       loadCustomVoices();
-      alert(
-        `✅ ${data.message}\n\n` +
-        `Lời mẫu mới:\n"${data.after.ref_text}"\n\n` +
-        'Hãy bấm ✨ nghe thử. Nếu lời mẫu trên có chữ sai so với file bạn thu, ' +
-        'bấm ✏️ sửa lại cho đúng — càng khớp thì giọng đọc càng chuẩn.'
+      toast(
+        `Sửa giọng clone thành công! Lời mẫu mới: "${data.after.ref_text}"`, { type: 'success' }
       );
     } catch (err) {
-      alert('Lỗi sửa giọng clone: ' + err.message);
+      toast('Lỗi sửa giọng clone: ' + err.message, { type: 'error' });
     } finally {
       setRepairing(false);
     }
@@ -170,9 +167,9 @@ export default function ConfigSection() {
       }
       if (!res.ok) throw new Error(data.detail || 'Cập nhật thất bại');
       loadCustomVoices();
-      alert(`✅ ${data.message}` + (data.voice?.ref_text ? `\n\nLời mẫu hiện tại:\n"${data.voice.ref_text}"` : ''));
+      toast(`Cập nhật thành công! ${data.message}`, { type: 'success' });
     } catch (err) {
-      alert('Lỗi cập nhật giọng clone: ' + err.message);
+      toast('Lỗi cập nhật giọng clone: ' + err.message, { type: 'error' });
     }
   };
 
@@ -229,15 +226,11 @@ export default function ConfigSection() {
       }
       loadCustomVoices();
       ctx.setVoice(data.voice_id);
-      alert(
-        `✅ Đã tạo giọng clone "${data.name}" (${data.gender})!\n\n` +
-        `Mẫu sau khi lọc nhiễu & gọt lặng: ${data.speech_seconds}s tiếng nói.\n` +
-        `Transcript nhận dạng: "${data.ref_text}"\n\n` +
-        `Giọng đã được chọn sẵn. Bấm nút ✨ để nghe thử giọng AI đọc thật, ` +
-        `và nút ✏️ nếu cần sửa lại transcript cho khớp lời trong file.`
+      toast(
+        `Đã tạo giọng clone "${data.name}" (${data.gender})! Mẫu ${data.speech_seconds}s, transcript: "${data.ref_text}"`, { type: 'success' }
       );
     } catch (err) {
-      alert('Lỗi tạo giọng clone: ' + err.message);
+      toast('Lỗi tạo giọng clone: ' + err.message, { type: 'error' });
     } finally {
       setCloneBusy(false);
       if (cloneInputRef.current) cloneInputRef.current.value = '';

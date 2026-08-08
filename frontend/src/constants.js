@@ -1,4 +1,6 @@
 export const API_BASE = 'http://localhost:8000';
+// BookTok AI App server — dùng để nạp kịch bản JSON đã export.
+export const BOOKTOK_API_BASE = 'http://localhost:3005';
 
 export const MODE_MAP = {
   storyteller: 'storyteller',
@@ -79,8 +81,11 @@ export const DURATION_OPTIONS = [
   { value: '90s',  label: '90s',  scenes: 19 },
   { value: '120s', label: '2 min', scenes: 25 },
   { value: '180s', label: '3 min', scenes: 30 },
-  { value: '240s', label: '4 min', scenes: 30 },
-  { value: '300s', label: '5 min', scenes: 30 },
+  { value: '240s', label: '4 min', scenes: 35 },
+  { value: '300s', label: '5 min', scenes: 40 },
+  { value: '480s', label: '8 min', scenes: 45 },
+  { value: '600s', label: '10m Podcast', scenes: 60 },
+  { value: '900s', label: '15m Podcast', scenes: 75 },
 ];
 
 export const SUBTITLE_STYLES = [

@@ -6,6 +6,7 @@ import ScriptEditor from './components/ScriptEditor';
 import RenderProgress from './components/RenderProgress';
 import ModeSelector from './components/ModeSelector';
 import QuotaBar from './components/QuotaBar';
+import { ToastContainer } from './lib/toast.jsx';
 
 export default function App() {
   const step = useAppStore((s) => s.step);
@@ -36,6 +37,7 @@ export default function App() {
       {step === 'config' && <SettingsPanel />}
       {step === 'editor' && <ScriptEditor />}
       {(step === 'rendering' || step === 'done') && <RenderProgress />}
+      <ToastContainer />
     </div>
   );
 }

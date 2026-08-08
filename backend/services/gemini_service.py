@@ -168,7 +168,8 @@ class LLMScriptResponse(BaseModel):
     hook_text: str = Field(
         default="",
         description=(
-            "Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video. "
+            "Tiêu đề giật gân, cực ngắn (dưới 10 chữ) hiển thị to ở đầu video, HOẶC câu "
+            "trích dẫn dùng cho hiệu ứng Gõ chữ (typewriter_quote) và Màn đen (blackout_question). "
             "TUYỆT ĐỐI KHÔNG lặp lại tên sách/tên tác giả/chủ đề — chữ này hiện ĐÈ LÊN "
             "ảnh bìa vốn đã in sẵn những thứ đó, lặp lại là phí giây đầu tiên. "
             "Hãy nêu MÂU THUẪN hoặc LỜI HỨA khiến người xem phải ở lại (câu hỏi nhức "
@@ -177,8 +178,8 @@ class LLMScriptResponse(BaseModel):
     )
     hook_variants: List[str] = Field(default_factory=list, description="3 biến thể hook_text khác nhau để người dùng lựa chọn (A/B testing). Cùng ràng buộc như hook_text: không nhắc lại tên sách.")
     # KHÁC hook_text: hook_text là TIÊU ĐỀ giật gân vẽ đè lên ảnh bìa (hiệu ứng word_by_word,
-    # full_shake); hook_quote là CÂU TRÍCH dùng cho carousel_quote / typewriter_quote /
-    # blackout_question — bìa thu nhỏ vào giữa rồi câu này hiện ra 2.5 giây.
+    # full_shake, blackout_question, typewriter_quote); hook_quote là CÂU TRÍCH dùng cho 
+    # carousel_quote — bìa thu nhỏ vào giữa rồi câu này hiện ra 2.5 giây.
     # LỖI CŨ: RenderVideoRequest có field `hook_quote`, video_service có
     # build_carousel_hook(cover, hook_quote, ...), tài liệu skill coi nó là BẮT BUỘC cho niche
     # sách — nhưng schema Gemini không có trường này, nên nó chưa bao giờ được sinh tự động.
@@ -186,8 +187,8 @@ class LLMScriptResponse(BaseModel):
     hook_quote: str = Field(
         default="",
         description=(
-            "Câu trích ĐẮT NHẤT của nội dung, dùng cho hiệu ứng mở màn dạng quote "
-            "(carousel_quote/typewriter_quote). Viết HOA, dưới 15 từ, tốt nhất là 2 vế đối "
+            "Câu trích ĐẮT NHẤT của nội dung, dùng cho hiệu ứng mở màn dạng carousel_quote "
+            "(hiện bìa sách rồi nảy ra quote). Viết HOA, dưới 15 từ, tốt nhất là 2 vế đối "
             "lập hoặc một sự thật lật ngược — VD 'NGƯỜI NGHÈO LÀM VIỆC VÌ TIỀN. NGƯỜI GIÀU "
             "BẮT TIỀN LÀM VIỆC CHO MÌNH.'. Phải là mệnh đề CỤ THỂ, đứng một mình vẫn đáng "
             "trích; KHÔNG chung chung ('sách rất hay', 'bài học sâu sắc') và KHÔNG chỉ là "
@@ -352,9 +353,9 @@ def _estimate_script_duration(scenes) -> float:
 VIETNAMESE_WORDS_PER_SECOND = 3.0
 WORDS_PER_SCENE_TARGET = 12   # ≈ 4 giây/cảnh
 
-# Trần số cảnh. Nâng 20 → 30 vì video dài (từ 180s) bị trần 20 ép mỗi cảnh phải gánh
-# 25-40 từ, tức 8-13 giây/cảnh — chậm lê thê dù prompt có nói gì đi nữa.
-MAX_SCENES = 30
+# Trần số cảnh. Nâng 30 → 75 cho phép tạo kịch bản Podcast / Kể chuyện dài (lên tới 15 phút)
+# giữ đúng nhịp 12-18 từ/cảnh (≈ 4-6 giây/cảnh).
+MAX_SCENES = 75
 MIN_SCENES = 4
 
 DURATION_CONFIG = {
@@ -364,8 +365,11 @@ DURATION_CONFIG = {
     "90s":  {"words": "210-240"},
     "120s": {"words": "280-320"},
     "180s": {"words": "420-480"},
-    "240s": {"words": "560-640"},   # Long-form kể chuyện
-    "300s": {"words": "700-800"},   # Long-form kể chuyện
+    "240s": {"words": "560-640"},   # Long-form kể chuyện (4 min)
+    "300s": {"words": "700-800"},   # Long-form kể chuyện (5 min)
+    "480s": {"words": "1100-1300"}, # Long-form Podcast (8 min)
+    "600s": {"words": "1400-1600"}, # Long-form Podcast (10 min)
+    "900s": {"words": "2100-2400"}, # Long-form Podcast (15 min)
 }
 
 

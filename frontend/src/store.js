@@ -44,7 +44,7 @@ const INITIAL_STATE = {
   hookZoomBoost: true,
   usePatternInterrupt: true,
   useSfx: true,
-  sfxVolume: 8,
+  sfxVolume: 6.4,
   subtitleStyle: 'karaoke_bold',
   colorGrading: 'warm_cinematic',
   useAudioDucking: true,
@@ -67,11 +67,12 @@ const INITIAL_STATE = {
   preferStockVideo: false,
   visualSource: 'auto',
   useSinglePassNarration: false,
+  useFastAssembly: true,
   hookReelSfx: 'tick_wood',
-  hookSfxVolume: 100,
+  hookSfxVolume: 80,
   outroEffect: 'cta_card',
   outroReelSfx: 'none',
-  outroSfxVolume: 100,
+  outroSfxVolume: 80,
 
   scenes: [],
   estimatedDurationS: 0,
@@ -90,7 +91,7 @@ const INITIAL_STATE = {
   activeJobId: null,
 };
 
-const capitalize = (s) => s[0].toUpperCase() + s.slice(1);
+const capitalize = (s) => s ? s[0].toUpperCase() + s.slice(1) : '';
 // Mọi setX hỗ trợ cả giá trị trực tiếp lẫn updater dạng hàm (prev => next), giữ đúng
 // cách gọi cũ kiểu setScenes(prev => prev.map(...)) từ AppContext.
 const resolveValue = (value, current) => (typeof value === 'function' ? value(current) : value);
@@ -102,6 +103,10 @@ const resolveValue = (value, current) => (typeof value === 'function' ? value(cu
 // hook_reel_sfx) không khớp nhau, vd hook "Màn đen" nhưng sfx "Máy đếm tiền" (chỉ hợp
 // lệ cho Carousel) — backend vẫn resolve ra file thật (HOOK_REEL_SOUNDS là 1 dict
 // phẳng dùng chung mọi hook) nên phát NHẦM tiếng mà không có lỗi/cảnh báo nào.
+
+// HOOK_REEL_SOUNDS ở constants.js là MẢNG [{value, label}] cho dropdown UI.
+// Backend (video_service.py) giữ bản dict {value → filename} cho việc resolve file SFX.
+// Frontend chỉ dùng mảng cho UI — không cần chuyển đổi.
 const resolveValidHookSfx = (hookEffect, currentSfx) => {
   const options = HOOK_SFX_OPTIONS[hookEffect] || [];
   if (options.length > 0 && !options.some((o) => o.value === currentSfx)) {
@@ -163,7 +168,9 @@ export const useAppStore = create((set, get) => {
     } else {
       voiceAudioEl = audio;
     }
-    audio.play().catch(e => alert("Lỗi phát audio: " + e.message + "\n(Vui lòng tương tác với trang web trước khi nghe hoặc kiểm tra kết nối tới Backend)"));
+    audio.play().catch(() => {
+      // Autoplay blocked until user interaction — browser policy, not a code bug.
+    });
   };
 
   const playMixPreview = (voiceId, bgmId) => {
@@ -330,8 +337,8 @@ export const useAppStore = create((set, get) => {
     if (!jobId) return;
     try {
       await fetch(`${API_BASE}/api/jobs/${jobId}`, { method: 'DELETE' });
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Non-critical — job may already be done.
     }
   };
 

@@ -1785,39 +1785,10 @@ async def synthesize_speech(
     else:
         dur, wbs = await _synthesize_speech_internal(text, output_path, voice, rate, pitch, mode, emotion, warning_callback)
 
-    if use_breathing and os.path.exists(output_path):
-        breath_path = os.path.join(SFX_DIR, "breath.wav")
-        if os.path.exists(breath_path):
-            from moviepy.audio.io.AudioFileClip import AudioFileClip
-            from moviepy.audio.AudioClip import concatenate_audioclips
-            
-            try:
-                breath_clip = AudioFileClip(breath_path)
-                speech_clip = AudioFileClip(output_path)
-                
-                final_clip = concatenate_audioclips([breath_clip, speech_clip])
-                
-                # Cần ghi đè lại output_path
-                _fd, temp_out = tempfile.mkstemp(suffix=".wav")
-                os.close(_fd)
-                # moviepy 2.1.2 không hỗ trợ `await final_clip.write_audiofile_async`, ta chạy đồng bộ trên thread
-                def _write():
-                    final_clip.write_audiofile(temp_out, fps=24000, logger=None)
-                    breath_clip.close()
-                    speech_clip.close()
-                    final_clip.close()
-                await asyncio.to_thread(_write)
-                
-                shutil.move(temp_out, output_path)
-                
-                # Shift word boundaries
-                breath_dur = breath_clip.duration
-                dur += breath_dur
-                for wb in wbs:
-                    wb["offset"] += breath_dur
-                    
-            except Exception as e:
-                logger.warning(f"[Breathing] Error applying breathing effect: {e}")
+    # Breathing đã DI CHUYỂN sang video_service.render_final_video (1 lần ở đầu video).
+    # Ở đây chỉ sinh giọng thuần, không can thiệp audio.
+    # Lý do: breathe ghép vào MỖI scene gây tiếng thở lặp ~3-4s/lần — nghe như "quoẹt".
+    # Fix: ghép 1 lần DUY NHẤT vào audio_placements[0] ở video_service.
 
     # Lưu cache (file audio + metadata duration/word_boundaries) cho lần render sau
     try:

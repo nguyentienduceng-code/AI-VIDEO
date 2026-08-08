@@ -104,8 +104,8 @@ def test_don_vi_hai_thang_do_khong_bi_lan():
     Nếu ai đó 'thống nhất' hai mặc định này thành một số, âm lượng sẽ lệch 100 lần."""
     from main import PresetRequest
 
-    assert RenderVideoRequest.model_fields["hook_sfx_volume"].default == 1.0
-    assert PresetRequest.model_fields["hook_sfx_volume"].default == 100
+    assert RenderVideoRequest.model_fields["hook_sfx_volume"].default == 0.8
+    assert PresetRequest.model_fields["hook_sfx_volume"].default == 80
 
 
 def test_bien_gia_tri_hop_le_duoc_chan_o_tang_api():

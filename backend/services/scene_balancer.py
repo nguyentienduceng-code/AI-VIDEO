@@ -42,7 +42,7 @@ IDEAL_SHOT_S = 4.5
 # không vô hạn — vô hạn thì bài toán vô nghiệm ở kịch bản có câu dài bất khả phân.
 _PENALTY = 25.0
 
-MAX_SCENES = 30  # khớp gemini_service.MAX_SCENES
+MAX_SCENES = 75  # khớp gemini_service.MAX_SCENES (Podcast / Long-form)
 
 # Khi một cảnh gốc bị tách làm nhiều cảnh, tất cả đều thừa kế CÙNG một image_prompt —
 # và ba ảnh sinh từ cùng một mô tả thì nhìn như nhau, người xem tưởng video bị đứng

@@ -271,7 +271,7 @@ class RenderVideoRequest(BaseModel):
     cover_image_session_id: Optional[str] = None
     cover_image_position: str = "start"  # "start", "end", "both"
     use_sfx: bool = True
-    sfx_volume: float = 0.08
+    sfx_volume: float = 0.064
     use_audio_ducking: bool = True
     color_grading: str = "warm_cinematic"
     topic: Optional[str] = None
@@ -285,7 +285,7 @@ class RenderVideoRequest(BaseModel):
     # nên đừng bao giờ gán thẳng giá trị từ preset sang đây: chênh nhau đúng 100 lần.
     # ge/le: chốt chặn ở tầng API để client quên chia 100 thì bị 422 ngay, thay vì lọt
     # xuống video_service rồi dựa vào các min() rải rác trong hook engine đỡ hộ.
-    hook_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
+    hook_sfx_volume: float = Field(0.8, ge=0.0, le=2.0)
     # "none" từng là mặc định — khiến toàn bộ 7 hiệu ứng outro (kể cả cta_card, thiết
     # kế riêng cho outro) không bao giờ xuất hiện trừ khi user tự vào đổi. cta_card
     # ngắn (2.4s), tự ẩn dòng CTA nếu outro_text rỗng (build_cta_card_hook), an toàn
@@ -293,7 +293,7 @@ class RenderVideoRequest(BaseModel):
     outro_effect: str = "cta_card"
     outro_text: Optional[str] = None
     outro_reel_sfx: str = "none"
-    outro_sfx_volume: float = Field(1.0, ge=0.0, le=2.0)
+    outro_sfx_volume: float = Field(0.8, ge=0.0, le=2.0)
     # Nhạc mở màn, chuyển sang bgm_track chính bằng crossfade. None/"" = không dùng.
     #
     # LỖI CŨ: hai field này bị QUÊN ở model trong khi _run_render_pipeline đọc
@@ -348,9 +348,9 @@ class PresetRequest(BaseModel):
     # ĐƠN VỊ: PHẦN TRĂM (100 = 100%) — preset lưu đúng con số hiện trên thanh trượt UI,
     # giống bgm_volume/sfx_volume ngay trong model này. Đổi sang hệ số ở ranh giới gửi
     # render (ScriptEditor.jsx chia 100), KHÔNG đổi ở đây.
-    hook_sfx_volume: float = Field(100, ge=0, le=200)
+    hook_sfx_volume: float = Field(80, ge=0, le=200)
     use_sfx: bool = True
-    sfx_volume: float = 8
+    sfx_volume: float = 6.4
     use_audio_ducking: bool = True
     # Tên PHẢI trùng RenderVideoRequest.intro_bgm_track. Nhạc chính đã dùng `bgm_track` ở
     # cả hai model; để riêng chỗ này là `intro_bgm` thì mỗi lần đọc code lại phải nhớ
@@ -393,6 +393,8 @@ VALID_ASPECT_RATIOS = {"9:16", "16:9", "1:1"}
 RENDER_PASSTHROUGH_FIELDS = (
     "hook_text",
     "use_sfx",
+    "use_breathing",    # ghép breath.wav 1 lần vào đầu audio (video_service)
+    "use_veo_ambient_audio",  # ambient sound cho scene Veo (video_service)
     "hook_effect",      # để render_final_video dựng hook carousel_quote
     "hook_quote",
     "hook_reel_sfx",
@@ -1051,6 +1053,8 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
                             use_fast_model=True, negative_prompt=req.negative_prompt or ""
                         )
                         _mark("veo")
+                        # Đánh dấu scene dùng Veo → audio_service biết scene nào cần ambient
+                        vis_meta["is_veo_scene"] = True
                         return video_path
                     except Exception as veo_err:
                         err_str = str(veo_err)
@@ -1110,6 +1114,7 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
             # Nguồn hình thật + truy vấn stock đã dùng: lưu vào scene để nó đi cả vào
             # project state, log tổng kết và (sau này) badge trên UI.
             scene["visual_source_used"] = vis_meta.get("source", "unknown")
+            scene["is_veo_scene"] = vis_meta.get("is_veo_scene", False)
             if vis_meta.get("query"):
                 scene["stock_query_used"] = vis_meta["query"]
             # computed_duration sẽ được tính lại chính xác hơn trong build_scene_timeline (motion_effects)
@@ -1171,6 +1176,11 @@ async def _run_render_pipeline(job_id: str, req: RenderVideoRequest):
         # thật sự cho 2 hiệu ứng này là "TIÊU ĐỀ HOOK CHỮ" (hook_text); hook_quote là
         # "TRÍCH DẪN HOOK BÌA SÁCH", chỉ áp dụng carousel_quote. User điền đúng ô theo
         # nhãn UI (hook_text) vẫn bị coi là rỗng vì code kiểm tra sai field.
+        # FALLBACK: Nếu project cũ (hoặc Gemini) lỡ sinh text vào hook_quote thay vì hook_text
+        if req.hook_effect in {"typewriter_quote", "blackout_question"}:
+            if not (req.hook_text or "").strip() and (req.hook_quote or "").strip():
+                req.hook_text = req.hook_quote
+
         HOOK_TEXT_REQUIRED = {"blackout_question", "typewriter_quote"}
         if req.hook_effect in HOOK_TEXT_REQUIRED and not (req.hook_text or "").strip():
             logger.info(f"[Hook] '{req.hook_effect}' rỗng chữ — bỏ qua hook (hook_effect=none).")

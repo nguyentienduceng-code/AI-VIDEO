@@ -233,6 +233,23 @@ def assemble(
         chain = (f"[{i}:v]trim=duration={dur:.3f},setpts=PTS-STARTPTS,"
                  f"fps={fps},format=yuv420p")
 
+        # LỖI CŨ: `xfade` ở bước 2 đặt offset đúng bằng độ dài cảnh (0 giây dư) — cảnh
+        # nào cũng vừa khít đúng điểm chuyển, không còn khung nào cho xfade hoà trộn.
+        # Với input tổng hợp FFmpeg vẫn chạy được, nhưng với clip thật (stock/Ken Burns)
+        # nó lặng lẽ drop gần hết khung hình PHÍA SAU, rc=0 không báo lỗi gì — video ra
+        # vẫn đúng độ dài (audio dài hơn ép container giữ nguyên tổng thời lượng) nhưng
+        # hình đứng im từ ngay transition đầu tiên. Đo trực tiếp: nhân bản khung cuối
+        # thêm đúng `crossfade_dur` giây thì lỗi biến mất, độ dài video ra không đổi (xem
+        # vì sao ở dưới). Chỉ cảnh KHÔNG PHẢI cảnh cuối mới cần — cảnh cuối không phải vế
+        # "đầu vào" của xfade nào.
+        #
+        # KHÔNG làm video dài thêm: xfade tính độ dài ra = offset + độ dài input thứ hai,
+        # bất kể input thứ nhất dư bao nhiêu khung phía sau offset+crossfade_dur — phần dư
+        # đó bị xfade bỏ hẳn khi chuyển hẳn sang input thứ hai. Khung nhân bản chỉ tồn tại
+        # để xfade CÓ CÁI MÀ hoà trộn, không bao giờ lọt ra ngoài.
+        if n > 1 and i < n - 1:
+            chain += f",tpad=stop_duration={crossfade_dur:.3f}:stop_mode=clone"
+
         hl = (a.get("highlight_text") or "").strip()
         if hl and i in _hl_plan:
             hl_start = _hl_plan[i]

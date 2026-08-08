@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Key, Check, AlertCircle, Eye, EyeOff, Save, ShieldCheck, Image, Video, Sparkles } from 'lucide-react';
 import { API_BASE } from '../constants';
+import { toast } from '../lib/toast.jsx';
 
 export default function ApiKeySettings() {
   const [geminiKeysText, setGeminiKeysText] = useState('');
@@ -38,7 +39,7 @@ export default function ApiKeySettings() {
         }
       }
     } catch (err) {
-      console.error('Không thể tải cấu hình Key API:', err);
+      toast('Không thể tải cấu hình Key API: ' + err.message, { type: 'error' });
     } finally {
       setLoading(false);
       setRevealed(false);
@@ -64,7 +65,7 @@ export default function ApiKeySettings() {
         setRevealed(true);
       }
     } catch (err) {
-      console.error('Không thể lấy key nguyên văn:', err);
+      toast('Không thể lấy key nguyên văn: ' + err.message, { type: 'error' });
     } finally {
       setRevealing(false);
     }
