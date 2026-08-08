@@ -1,15 +1,15 @@
 import React from 'react';
 import { Film } from 'lucide-react';
-import { useAppContext } from './AppContext';
+import { useAppStore } from './store';
 import SettingsPanel from './components/SettingsPanel';
 import ScriptEditor from './components/ScriptEditor';
 import RenderProgress from './components/RenderProgress';
 import ModeSelector from './components/ModeSelector';
 import QuotaBar from './components/QuotaBar';
+import { ToastContainer } from './lib/toast.jsx';
 
 export default function App() {
-  const ctx = useAppContext();
-  const { step } = ctx;
+  const step = useAppStore((s) => s.step);
 
   return (
     <div className="app-container">
@@ -37,6 +37,7 @@ export default function App() {
       {step === 'config' && <SettingsPanel />}
       {step === 'editor' && <ScriptEditor />}
       {(step === 'rendering' || step === 'done') && <RenderProgress />}
+      <ToastContainer />
     </div>
   );
 }

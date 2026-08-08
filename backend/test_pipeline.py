@@ -63,6 +63,12 @@ async def main():
     from services.motion_effects import build_scene_timeline, pick_pan_direction
     scenes = build_scene_timeline(scenes)
     
+    # Thêm Beat Sync
+    bgm_path = "assets/bgm/hype_drill.mp3"
+    print(f"Applying Beat Sync with {bgm_path}...")
+    from services.beat_sync import apply_beat_sync_to_timeline
+    scenes = await asyncio.to_thread(apply_beat_sync_to_timeline, scenes, bgm_path)
+    
     scene_assets = []
     from services.motion_effects import apply_ken_burns
     for i, s in enumerate(scenes):
@@ -88,7 +94,8 @@ async def main():
             "sfx": s.get("sfx", ""),
             "visual_effect": default_effect,
             "word_boundaries": s.get("word_boundaries", []),
-            "transition": s.get("transition", "crossfade")
+            "transition": s.get("transition", "crossfade"),
+            "highlight_text": s.get("highlight_text", ""),
         })
 
     # 4. Render Video
@@ -112,7 +119,7 @@ async def main():
         master_audio_and_export(
             input_video_path=raw_video,
             output_path=final_output,
-            bgm_path=None,
+            bgm_path=bgm_path,
             use_gpu=False
         )
         print(f"✅ Final Video rendered successfully at: {final_output}")

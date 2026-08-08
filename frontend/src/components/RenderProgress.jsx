@@ -1,14 +1,52 @@
-import React from 'react';
-import { AlertTriangle, RotateCcw, Check, Download, PenLine } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import React, { useState, useEffect } from 'react';
+import { AlertTriangle, RotateCcw, Check, Download, PenLine, Clock, XCircle } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
 
 export default function RenderProgress() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    step: s.step,
+    errorMsg: s.errorMsg,
+    videoUrl: s.videoUrl,
+    srtUrl: s.srtUrl,
+    progress: s.progress,
+    jobMessage: s.jobMessage,
+    progressLog: s.progressLog,
+    handleReset: s.handleReset,
+    handleCancelRender: s.handleCancelRender,
+    setStep: s.setStep,
+    setErrorMsg: s.setErrorMsg,
+    setStatus: s.setStatus,
+    ratio: s.ratio,
+  })));
+  const [elapsed, setElapsed] = useState(0);
+
+  const getRatioValue = (r) => {
+    if (r === '9:16') return 9/16;
+    if (r === '1:1') return 1;
+    return 16/9;
+  };
+
+  useEffect(() => {
+    let interval;
+    if (ctx.step === 'rendering' && !ctx.errorMsg) {
+      interval = setInterval(() => {
+        setElapsed(prev => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [ctx.step, ctx.errorMsg]);
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
 
   if (ctx.step === 'done') {
     return (
       <div className="done-panel">
-        <div className="done-video-wrap">
+        <div className="done-video-wrap" style={{ aspectRatio: getRatioValue(ctx.ratio), margin: '0 auto' }}>
           <video src={ctx.videoUrl} controls autoPlay style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 12 }} />
         </div>
         <div className="done-actions">
@@ -27,6 +65,10 @@ export default function RenderProgress() {
             <PenLine size={14} /> Chỉnh sửa & Render lại
           </button>
         </div>
+        <div style={{ textAlign: 'center', marginTop: 16, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+          <Clock size={14} style={{verticalAlign: 'text-bottom', marginRight: 4}} />
+          Thời gian hoàn thành: <strong>{formatTime(elapsed)}</strong>
+        </div>
       </div>
     );
   }
@@ -41,7 +83,27 @@ export default function RenderProgress() {
         <div className="progress-bar-container">
           <div className="progress-bar-fill" style={{ width: `${ctx.progress}%` }} />
         </div>
-        <div className="progress-percent">{ctx.progress}%</div>
+        <div style={{ width: '100%', maxWidth: 400, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <div className="progress-percent" style={{ marginTop: 0 }}>{ctx.progress}%</div>
+          <div style={{ fontSize: '1.05rem', color: 'var(--amber)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(245, 158, 11, 0.1)', padding: '2px 8px', borderRadius: 12 }}>
+            <Clock size={14} />
+            {formatTime(elapsed)}
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+          <button 
+            className="btn-outline" 
+            style={{ color: 'var(--red)', borderColor: 'var(--red)' }}
+            onClick={() => {
+              if (window.confirm("Bạn có chắc chắn muốn hủy quá trình render này không?")) {
+                ctx.handleCancelRender();
+              }
+            }}
+          >
+            <XCircle size={14} style={{ marginRight: 6 }} /> Hủy Render
+          </button>
+        </div>
 
         <div className="progress-log">
           {ctx.progressLog.map((msg, i) => (

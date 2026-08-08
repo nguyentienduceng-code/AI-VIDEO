@@ -13,3 +13,22 @@ ffmpeg-python>=0.2.0
 librosa>=0.10.2
 soundfile>=0.12.1
 numpy>=1.26.0
+stable-ts>=2.19.0
+
+# ── Thiếu sót cũ: được import nhưng chưa từng khai báo ──
+# requests — image_router.py dùng ở ĐƯỜNG CHÍNH (tải ảnh Pollinations, tải video
+#   Pexels), không phải nhánh dự phòng. Thiếu nó thì server dựng lên bình thường,
+#   Gemini chạy bình thường, rồi chết đúng lúc sinh hình.
+requests>=2.32.0
+# psutil — render_worker.cancel_render() giết CẢ CÂY tiến trình con (ffmpeg đang encode).
+#   Có except ImportError đỡ, nhưng khi rơi vào nhánh đó thì Huỷ chỉ giết tiến trình cha,
+#   FFmpeg vẫn chạy nền ăn CPU cho tới khi xong.
+psutil>=6.0.0
+# gtts, pyttsx3 — tầng 3 và 4 của chuỗi fallback TTS (tts_service.py).
+#   Thiếu thì chuỗi dự phòng đứt đúng lúc cần nó nhất: khi OmniVoice và Edge-TTS đã hỏng.
+gtts>=2.5.0
+pyttsx3>=2.90
+
+# ── Dev / kiểm tra chất lượng mã (không cần cho runtime, nhưng start.bat có gọi) ──
+ruff>=0.14.0
+pytest>=8.0.0

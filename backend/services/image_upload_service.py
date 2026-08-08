@@ -14,6 +14,7 @@ Hỗ trợ các mode: photo_narration, photo_slideshow.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 import shutil
 from typing import List, Tuple
@@ -28,8 +29,20 @@ MAX_DIMENSION = 3840  # Resize nếu cạnh dài nhất vượt quá
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPLOADS_DIR = os.path.join(BASE_DIR, "assets", "uploads")
+# session_id đi thẳng từ client (upload_session_id trong RenderVideoRequest) vào
+# os.path.join rồi shutil.rmtree trong cleanup_upload(). Không lọc thì
+# "../../../..." thoát khỏi UPLOADS_DIR và xoá thư mục bất kỳ trên đĩa — cùng lớp
+# lỗi mà project_service.safe_job_id() đã vá cho job_id, áp lại ở đây.
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _safe_session_id(session_id: str) -> str:
+    candidate = os.path.basename(str(session_id or "").strip())
+    if candidate in ("", ".", "..") or not _SAFE_SESSION_ID.fullmatch(candidate):
+        raise ValueError(f"session_id không hợp lệ: {session_id!r}")
+    return candidate
+
+from config import BASE_DIR, UPLOADS_DIR  # noqa: F401
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 
@@ -49,7 +62,7 @@ async def process_uploaded_images(
     if len(files) > MAX_TOTAL_FILES:
         raise ValueError(f"Tối đa {MAX_TOTAL_FILES} ảnh mỗi lần upload.")
 
-    sid = session_id or str(uuid.uuid4())
+    sid = _safe_session_id(session_id) if session_id else str(uuid.uuid4())
     session_dir = os.path.join(UPLOADS_DIR, sid)
     os.makedirs(session_dir, exist_ok=True)
 
@@ -117,7 +130,10 @@ async def process_uploaded_images(
 
 def get_upload_paths(session_id: str) -> List[str]:
     """Lấy lại danh sách đường dẫn ảnh đã upload theo session_id."""
-    session_dir = os.path.join(UPLOADS_DIR, session_id)
+    try:
+        session_dir = os.path.join(UPLOADS_DIR, _safe_session_id(session_id))
+    except ValueError:
+        return []
     if not os.path.isdir(session_dir):
         return []
 
@@ -130,5 +146,8 @@ def get_upload_paths(session_id: str) -> List[str]:
 
 def cleanup_upload(session_id: str):
     """Xóa toàn bộ ảnh upload của 1 session."""
-    session_dir = os.path.join(UPLOADS_DIR, session_id)
+    try:
+        session_dir = os.path.join(UPLOADS_DIR, _safe_session_id(session_id))
+    except ValueError:
+        return
     shutil.rmtree(session_dir, ignore_errors=True)

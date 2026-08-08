@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import logging
 import os
 import time
 import traceback
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cấu hình
@@ -31,9 +34,7 @@ from typing import Any, Dict, Optional
 MAX_CONCURRENT_RENDERS = 2  # Số lượng render đồng thời tối đa
 _active_processes: Dict[str, multiprocessing.Process] = {}
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATUS_DIR = os.path.join(BASE_DIR, "assets", "render_status")
-os.makedirs(STATUS_DIR, exist_ok=True)
+from config import BASE_DIR, RENDER_STATUS_DIR as STATUS_DIR  # noqa: F401
 
 
 def _status_path(job_id: str) -> str:
@@ -85,6 +86,41 @@ def cleanup_status(job_id: str):
 # ---------------------------------------------------------------------------
 # Worker function — chạy trong process con
 # ---------------------------------------------------------------------------
+def _make_progress_logger(job_id: str, total_frames: int):
+    """
+    Logger tương thích proglog để MoviePy báo tiến độ thật ra file status.
+    Ánh xạ số khung đã ghi vào dải 80-88% (phần còn lại dành cho phụ đề + master).
+    Trả về "bar" nếu không có proglog (không làm chết render vì một cái thanh tiến độ).
+    """
+    try:
+        from proglog import ProgressBarLogger
+    except Exception:
+        return "bar"
+
+    class _StatusLogger(ProgressBarLogger):
+        def __init__(self):
+            super().__init__()
+            self._last_pct = -1
+            self._last_write = 0.0
+
+        def bars_callback(self, bar, attr, value, old_value=None):
+            if attr != "index" or not total_frames:
+                return
+            pct = 80 + int(min(value / total_frames, 1.0) * 8)
+            now = time.time()
+            # Ghi tối đa 1 lần/giây và chỉ khi % đổi — tránh spam I/O
+            if pct != self._last_pct and now - self._last_write > 1.0:
+                self._last_pct = pct
+                self._last_write = now
+                eta = ""
+                write_status(
+                    job_id, status="rendering", progress=pct,
+                    message=f"[Worker] Đang dựng khung hình {value}/{total_frames}{eta}",
+                )
+
+    return _StatusLogger()
+
+
 def _worker_main(
     job_id: str,
     scene_assets: list,
@@ -100,11 +136,39 @@ def _worker_main(
       2. FFmpeg Audio Mastering & Subtitle Burn
       3. Dọn file thô
     """
+    # Windows spawn process con MỚI TINH: stdout/stderr của nó không thừa hưởng cấu
+    # hình UTF-8 của tiến trình cha. Không gọi lại ở đây thì mọi dòng log tiếng Việt
+    # trong worker sẽ giết job khi output bị chuyển hướng. Xem services/log_setup.py.
+    # log_name riêng: RotatingFileHandler không an toàn đa tiến trình trên Windows
+    # (xoay vòng = đổi tên file, mà file đang bị tiến trình cha mở thì Windows cấm).
+    from services.log_setup import set_job_id, setup_logging
+    setup_logging(log_name="render_worker")
+
+    # ContextVar KHÔNG vượt qua ranh giới tiến trình (spawn dựng interpreter mới),
+    # nên phải gắn lại job_id ở đây — nếu không, toàn bộ log của khâu render/mastering
+    # (khâu chạy lâu và hay chết nhất) sẽ nằm trơ không biết thuộc job nào.
+    set_job_id(job_id)
+
     try:
         write_status(job_id, status="rendering", progress=80, message="[Worker] Đang render video...")
 
         # ── Phase 1: MoviePy render RAW ──
+        # Tiến độ THẬT: trước đây progress bị đặt cứng 80 trước khi render và 85 sau khi
+        # xong, nên với video dài người dùng nhìn "80%" đứng yên hàng chục phút mà không
+        # biết máy còn sống hay đã treo. Giờ bám theo số khung hình MoviePy đã ghi.
+        total_frames = 0
+        for a in scene_assets:
+            total_frames = max(total_frames, int((a.get("start_time", 0.0) + a.get("duration", 0.0)) * 30))
+
         from services.video_service import render_final_video
+        render_kwargs = dict(render_kwargs)
+        render_kwargs["progress_logger"] = _make_progress_logger(job_id, total_frames)
+        # Đẩy cảnh báo "đang chạy đường chậm" lên tận giao diện. Tiêm ở đây chứ không
+        # nhét vào render_kwargs từ main.py: closure không pickle được nên không qua nổi
+        # ranh giới tiến trình — cùng lý do với progress_logger ngay trên.
+        render_kwargs["on_fallback"] = lambda msg: write_status(
+            job_id, status="rendering", message=msg
+        )
         render_final_video(scene_assets, raw_video_path, **render_kwargs)
 
         write_status(job_id, progress=85, message="[Worker] Render RAW hoàn tất. Đang tạo phụ đề...")
@@ -112,12 +176,16 @@ def _worker_main(
         # ── Phase 1b: Tạo ASS subtitle ──
         mode = render_kwargs.get("mode", "storyteller")
         if mode != "photo_slideshow" and os.path.exists(raw_video_path):
-            from services.video_service import generate_ass_file
+            from services.video_service import generate_ass_file, ASPECT_RATIO_SIZES
+            # Phụ đề phải được căn theo ĐÚNG khung hình sẽ burn lên, nếu không libass
+            # co giãn lệch tỉ lệ và chữ méo (xem generate_ass_file).
+            _vw, _vh = ASPECT_RATIO_SIZES.get(render_kwargs.get("aspect_ratio"), (1080, 1920))
             generate_ass_file(
                 scene_assets, output_srt_path, mode,
                 subtitle_style=master_kwargs.get("subtitle_style", "karaoke_bold"),
                 hook_text=render_kwargs.get("hook_text"),
                 hook_effect=master_kwargs.get("hook_effect", "word_by_word"),
+                video_width=_vw, video_height=_vh,
             )
 
         # ── Phase 2: FFmpeg Audio Mastering & Burn Subtitle ──
@@ -125,18 +193,45 @@ def _worker_main(
         from services.audio_mix_service import master_audio_and_export
         
         ass_path = output_srt_path if os.path.isfile(output_srt_path) else None
-        master_audio_and_export(
-            input_video_path=raw_video_path,
-            output_path=output_video_path,
-            bgm_path=master_kwargs.get("bgm_path"),
-            ass_subtitle_path=ass_path,
-            use_gpu=master_kwargs.get("use_gpu", True),
-            bgm_volume=master_kwargs.get("bgm_volume", 0.15),
-            watermark_text=master_kwargs.get("watermark_text"),
-            color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
-        )
+        # Track chỉ-giọng cho ducking: render_final_video ghi nó cạnh video thô theo quy
+        # ước hậu tố cố định, nên không cần thêm một kênh truyền tham số nữa.
+        from services.video_service import VOICE_SIDECHAIN_SUFFIX
+        sidechain = raw_video_path + VOICE_SIDECHAIN_SUFFIX
+        if not os.path.isfile(sidechain):
+            sidechain = None
 
-        # Dọn file thô
+        try:
+            master_audio_and_export(
+                sidechain_audio_path=sidechain,
+                input_video_path=raw_video_path,
+                output_path=output_video_path,
+                bgm_path=master_kwargs.get("bgm_path"),
+                ass_subtitle_path=ass_path,
+                use_gpu=master_kwargs.get("use_gpu", True),
+                bgm_volume=master_kwargs.get("bgm_volume", 0.15),
+                watermark_text=master_kwargs.get("watermark_text"),
+                watermark_logo=master_kwargs.get("watermark_logo"),
+                color_grading=master_kwargs.get("color_grading", "warm_cinematic"),
+                add_vignette=master_kwargs.get("add_vignette", True),
+                progress_bar=master_kwargs.get("progress_bar", True),
+                total_duration=master_kwargs.get("total_duration", 0.0),
+                bgm_volume_segments=master_kwargs.get("bgm_volume_segments"),
+                use_audio_ducking=master_kwargs.get("use_audio_ducking", False),
+                use_pattern_interrupt=master_kwargs.get("use_pattern_interrupt", True),
+                narration_tone=master_kwargs.get("narration_tone", "viral"),
+                # Để Pattern Interrupt không chớp đè lên hook — xem chú thích ở audio_mix_service.
+                hook_duration=master_kwargs.get("hook_duration", 0.0),
+            )
+        finally:
+            # LỖI CŨ: cleanup sidechain nằm SAU lệnh gọi master_audio_and_export, nên khi
+            # bước mastering lỗi (nhánh fail phổ biến nhất — rơi thẳng vào `except
+            # Exception` của cả hàm) dòng xoá này không bao giờ chạy tới, để lại file
+            # .voice.wav rác vĩnh viễn mỗi lần render lỗi. finally chạy dù thành công hay không.
+            if sidechain and os.path.isfile(sidechain):
+                os.remove(sidechain)
+
+        # Dọn file thô — chỉ khi mastering đã THÀNH CÔNG. Nếu lỗi, nhánh `except` bên
+        # dưới cần raw_video_path còn nguyên để fallback os.replace() sang output.
         if os.path.isfile(raw_video_path):
             os.remove(raw_video_path)
 
@@ -149,12 +244,18 @@ def _worker_main(
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[RenderWorker] Error for job {job_id}: {e}\n{tb}")
+        logger.error(f"[RenderWorker] Error for job {job_id}: {e}\n{tb}")
         
         # Fallback: nếu FFmpeg lỗi nhưng RAW video tồn tại → dùng RAW
-        if os.path.isfile(raw_video_path) and not os.path.isfile(output_video_path):
+        if os.path.isfile(raw_video_path):
             try:
-                os.rename(raw_video_path, output_video_path)
+                import time
+                for _ in range(3):
+                    try:
+                        os.replace(raw_video_path, output_video_path)
+                        break
+                    except PermissionError:
+                        time.sleep(1)
             except OSError:
                 pass
 
@@ -188,6 +289,15 @@ def spawn_render(
         _active_processes[jid].join(timeout=1)
         del _active_processes[jid]
 
+    # LỖI CŨ: chỉ đếm TỔNG SỐ process đang chạy, không check riêng job_id này đã có
+    # worker sống chưa. Request trùng (double-click Render, hoặc client tự động retry
+    # khi timeout) spawn 2 process con cùng ghi vào MỘT raw_video_path/output_video_path
+    # — file bị 2 tiến trình MoviePy/FFmpeg ghi chồng lẫn nhau.
+    existing = _active_processes.get(job_id)
+    if existing is not None and existing.is_alive():
+        logger.warning(f"[RenderWorker] Job {job_id} đã có worker đang chạy — bỏ qua request trùng.")
+        return False
+
     if len(_active_processes) >= MAX_CONCURRENT_RENDERS:
         return False
 
@@ -219,3 +329,53 @@ def get_active_render_count() -> int:
         _active_processes[jid].join(timeout=1)
         del _active_processes[jid]
     return len(_active_processes)
+
+
+def cancel_render(job_id: str) -> bool:
+    """Hủy một render worker đang chạy."""
+    p = _active_processes.get(job_id)
+    if p is None or not p.is_alive():
+        return False
+        
+    children = []  # tham chiếu được ở nhánh except chung bên dưới kể cả khi psutil.Process() thất bại
+    try:
+        import psutil
+        parent = psutil.Process(p.pid)
+        children = parent.children(recursive=True)
+        # Kill child processes (ffmpeg, moviepy, etc)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+
+        # Wait for children to terminate
+        psutil.wait_procs(children, timeout=3)
+
+        # Kill the main worker process
+        parent.terminate()
+        parent.wait(timeout=3)
+    except ImportError:
+        logger.warning("psutil not installed, falling back to process.terminate()")
+        p.terminate()
+    except psutil.NoSuchProcess:
+        pass
+    except Exception as e:
+        logger.error(f"[Cancel] Error killing process tree for job {job_id}: {e}")
+        # LỖI CŨ: fallback này chỉ p.kill() process CHA. Nếu `children` (ffmpeg,
+        # MoviePy) đã liệt kê được ở trên nhưng bước terminate/wait phía sau lỗi vì lý
+        # do khác (AccessDenied, timeout...), chúng bị bỏ quên — mồ côi, vẫn giữ session
+        # NVENC — dù UI đã báo "đã huỷ". Kill nốt từng child còn sống trước khi kill cha.
+        for child in children:
+            try:
+                child.kill()
+            except Exception:
+                pass
+        p.kill() # fallback
+        
+    p.join(timeout=2)
+    if job_id in _active_processes:
+        del _active_processes[job_id]
+        
+    write_status(job_id, status="error", progress=0, message="Đã huỷ theo yêu cầu của người dùng.", error="Cancelled by user")
+    return True

@@ -1,6 +1,6 @@
-# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.0)
+# KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.3+)
 
-Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.0 - Đã tích hợp các tính năng điện ảnh nâng cao).
+Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.3+ - Đã tích hợp các tính năng điện ảnh nâng cao, router 4 tầng và cache thông minh).
 
 ---
 
@@ -26,13 +26,12 @@ Quy trình từ ý tưởng thành video hoàn chỉnh diễn ra hoàn toàn t�
 - Hệ thống phân tích chủ đề và trả về các phân cảnh chi tiết (lời thoại, mô tả hình ảnh).
 
 ### Bước 3: Tạo Âm thanh & Hình ảnh tĩnh/động (TTS & AI Generation)
-- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.2** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) nếu GPU quá tải.
-- **Images:** `image_router.py` gọi **Google Imagen 3** để sinh ảnh minh hoạ có độ nhất quán cao dựa trên mô tả nhân vật.
-- **Video (Tuỳ chọn):** `veo_service.py` gọi **Google Veo 3.1** để biến ảnh tĩnh thành video clip ngắn chuyển động chân thực.
+- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.3** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) và TTS Cache. Hỗ trợ Voice Cloning qua API chuyên biệt.
+- **Images/Video Router 4 Tầng:** `image_router.py` quản lý luồng fallback: **Veo 3.1** (ưu tiên nếu bật) $\rightarrow$ **Pexels Stock Video** (video thật) $\rightarrow$ **Google Imagen 3** (ảnh AI chất lượng cao) $\rightarrow$ **Pollinations AI** (ảnh AI siêu tốc). Hỗ trợ chế độ `prefer_stock_video` ép dùng video stock cho 100% cảnh.
 
 ### Bước 4: Render Video (Video Service)
 - Dịch vụ `video_service.py` sử dụng thư viện **MoviePy v2.x**.
-- **Hiệu ứng & Chuyển cảnh:** Áp dụng Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining (chuyển cảnh mượt), và Beat Sync (giật theo nhịp nhạc nền).
+- **Hiệu ứng & Chuyển cảnh:** Áp dụng Transition Engine 10 kiểu (slide, whip_pan, page_flip...), Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining, và Beat Sync. Hỗ trợ thay đổi từng cảnh.
 - **Subtitles & BGM:** Tự động Auto-ducking nhạc nền khi có giọng đọc, render phụ đề động (Karaoke effect).
 - Xuất file `.mp4` (hỗ trợ tăng tốc GPU NVENC) ở định dạng khung hình dọc (Tiktok/Reels) về thư mục `assets/output`.
 
@@ -56,13 +55,31 @@ AI-VIDEO-MAKER/
 │   │   ├── audio_mix_service.py  # Xử lý Smart Audio Mixing (Auto-ducking)
 │   │   ├── beat_sync.py          # Logic đồng bộ hình ảnh/video theo nhịp bass (Beat Sync)
 │   │   ├── motion_effects.py     # Hiệu ứng chuyển động (Ken Burns, Zoom Boost)
+│   │   ├── preset_service.py     # Quản lý cấu hình lưu sẵn của người dùng
+│   │   ├── project_service.py    # Quản lý Checkpoint Smart Resume
 │   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
+│   │   ├── render_worker.py      # Chạy MoviePy/FFmpeg trong process con
+│   │   ├── hook_engine.py        # 4 hiệu ứng mở màn (Slot/Blackout/Typewriter/Vignette)
+│   │   ├── log_setup.py          # UTF-8 streams + log ra file + nhãn [job_id] (mục 6)
 │   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
+│   ├── scripts/check_imports.py  # Cổng chất lượng chống UnboundLocalError (mục 6)
+│   ├── logs/                     # backend.log, render_worker.log (xoay vòng 10MB×5)
+│   ├── tests/                    # lớp 4 của cổng chất lượng (mục 6.3) — chạy ~2 giây
+│   │                               Phần lớn là test HỢP ĐỒNG, xem mục 6.3.
+│   ├── config.py                 # NGUỒN SỰ THẬT DUY NHẤT cho mọi đường dẫn file
 │   ├── assets/                   # Nơi lưu trữ tài nguyên
-│   │   ├── audio/, images/, bgm/, output/, voices_preview/
-│   └── .env                      # Lưu API Keys
-├── start.bat, stop.bat           # Script khởi chạy và dọn dẹp tiến trình
-└── export_context.py             # Script tự động trích xuất mã nguồn cho AI
+│   │   ├── bgm/, sfx/, slot_covers/, fonts/   # ĐI KÈM MÃ NGUỒN — không di dời
+│   │   ├── audio/, images/, output/, cache/, projects/, uploads/, overrides/,
+│   │   │   custom_sfx/           # ↑ tiếng động NGƯỜI DÙNG tự nạp — tách khỏi
+│   │   │                           assets/sfx/ (đi kèm mã nguồn, được git track)
+│   │   │                         # ↑ dữ liệu sinh ra — chuyển sang ổ khác được
+│   │   │                           qua CUSTOM_ASSETS_DIR trong .env
+│   └── .env                      # Lưu API Keys + CUSTOM_ASSETS_DIR
+├── start.bat, stop.bat           # Khởi chạy trực tiếp (uvicorn) và dọn tiến trình
+├── start-pm2.bat                 # Khởi chạy qua PM2 (autorestart + log bền) — NÊN DÙNG
+├── setup-pm2-autostart.bat       # Đăng ký Scheduled Task tự chạy cùng Windows
+├── ecosystem.config.js           # Cấu hình PM2
+└── scripts/export_context.py     # Trích xuất mã nguồn ra AI_CONTEXT.md (tiện ích rời)
 ```
 
 ---
@@ -70,12 +87,26 @@ AI-VIDEO-MAKER/
 ## 4. Các tính năng Nâng cao (Advanced Features)
 
 Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiên tiến:
-1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường).
-2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence dựa trên ngữ cảnh câu), và Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác. Emotion Profiles V2 kích hoạt pitch_delta ±3-5Hz cho giọng Edge-TTS diễn cảm hơn.
+1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường). Tự động cảnh báo UI khi hết quota billing.
+2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence), Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác, và kho giọng custom.
 3. **Beat Sync & Audio Mixing:** Phân tích Peak âm thanh của BGM để giật hình/chuyển cảnh khớp nhịp nhạc (Hype Drill, Phonk).
-4. **Motion Dynamics:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video để giữ chân người xem).
-5. **Hardware Acceleration:** Hỗ trợ render tốc độ cao qua GPU NVENC.
-6. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
+4. **Motion Dynamics & Transitions:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video), và Transition Engine 10 kiểu.
+5. **Stock Video Router & Prefer Stock Mode:** Xử lý luồng tải video stock thông minh, tự động lọc từ khóa, kèm toggle ép dùng footage thực tế tạo sự chân thực.
+6. **Smart Resume Checkpoints:** Khôi phục render dang dở không cần tốn API chạy lại các bước TTS/Hình ảnh đã xong.
+7. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
+8. **Hook & Outro Engine:** 7 hiệu ứng mở màn (Máy Xèng, Màn đen, Đánh máy, Vignette thở, Chụp ảnh, Nhiễu số, Cháy phim) và phần đuôi video dùng chung bộ dựng đó. Thời lượng lấy từ `resolve_hook_timing()` / `resolve_outro_timing()` — **nguồn chân lý duy nhất**, để `main.py` (dời timeline, tính tổng thời lượng) và `video_service` (dựng clip) không bao giờ tính ra hai con số khác nhau.
+9. **Dynamic BGM:** Nhạc mở màn riêng cho N giây đầu rồi chuyển êm sang nhạc chính bằng `acrossfade` (không phải `afade`+`amix` — xem mục 4.1).
+10. **Sidechain Ducking:** Nhạc nền tự chìm khi có giọng đọc, dùng track **chỉ-giọng** làm tín hiệu điều khiển (xem mục 4.1).
+
+### 4.1. Vì sao filtergraph âm thanh trông như vậy
+
+Ba quyết định dễ bị "sửa cho gọn" thành sai, nên ghi lại lý do:
+
+- **`acrossfade`, không phải `afade` + `amix`.** `amix` mặc định `normalize=1` → chia biên độ cho số input, nên bật nhạc mở màn làm nhạc nền cả video tụt 6dB so với khi tắt. `loudnorm` phía sau chuẩn hoá tổng nên không lộ ở âm lượng chung, chỉ **tỉ lệ nhạc/giọng** đổi — nghe ra nhưng gần như không lần ra nguyên nhân. Ngoài ra hai `afade` độc lập tạo một chỗ trũng ngay giữa điểm chuyển, và `afade=t=in` chỉ *bịt tiếng* nhạc chính chứ không giữ nó lại nên bài hát trôi mất T giây đầu. `atrim` + `acrossfade` giải quyết cả ba.
+- **Mọi `amix` đều phải có `normalize=0`.** Cùng lý do trên.
+- **Sidechain lấy track chỉ-giọng, không lấy `[0:a]`.** `[0:a]` là audio của video thô, đã trộn sẵn giọng + **toàn bộ SFX**. Dùng nó làm tín hiệu điều khiển thì mỗi tiếng whoosh/impact/máy xèng đều dìm nhạc nền y như giọng nói — SFX là *nội dung*, không phải *tín hiệu điều khiển*. `video_service.write_voice_sidechain()` ghi riêng track đó (ở cả đường nhanh lẫn đường chậm).
+
+Bộ `tests/test_audio_filtergraph.py` canh cả ba: nó chặn `subprocess.run` và khẳng định trên chuỗi `-filter_complex` thật, thay vì phải render vài phút rồi ngồi nghe.
 
 ---
 
@@ -83,12 +114,87 @@ Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiê
 
 Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đứt gãy Event Loop, HTTP Timeout, rò rỉ bộ nhớ), vẫn còn một số điểm cần tối ưu:
 
-### ✅ Đã xử lý (v2.1 — 2026-07-23):
+### ✅ Đã xử lý (v2.3+ — 2026-07-24):
 1. **~~Tách Component Frontend~~:** `App.jsx` đã được tái cấu trúc thành 9 components riêng biệt + `AppContext.jsx` quản lý state tập trung.
-2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con. FastAPI poll file status JSON để broadcast WebSocket, không bị block event loop. Fallback inline nếu đạt giới hạn worker.
-3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt. Tích hợp vào `image_router.py` và `veo_service.py`. Auto-cleanup khi cache > 5GB.
+2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con.
+3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt.
+4. **~~Smart Resume & Preset System~~:** Đã bổ sung cơ chế lưu file project tự động để nối tiếp render nếu lỗi, cùng hệ thống preset.
+
+### ✅ Đã xử lý (2026-07-28 — Vận hành & Chẩn đoán):
+1. **~~Mất dấu vết khi crash~~:** Log ghi ra file, có traceback đầy đủ và nhãn `[job_id]`. Xem mục 6.
+2. **~~Lỗi lọt mọi lớp kiểm tra~~:** `scripts/check_imports.py` bắt `UnboundLocalError` do import cục bộ.
+3. **~~Không có autorestart~~:** Chạy qua PM2 bằng `start-pm2.bat`.
+
+### ✅ Đã xử lý (2026-07-29 — Độ tin cậy & hợp đồng giữa các tầng):
+1. **~~Job treo vĩnh viễn~~:** Vòng poll worker giờ thoát được khi worker chết đột ngột (`is_render_active`) hoặc treo quá lâu (mốc `updated_at`).
+2. **~~Render lỗi xoá sạch asset~~:** Ảnh/giọng đọc được giữ lại khi render hỏng, để lần chạy lại không tốn quota API.
+3. **~~Ngưỡng cache 5GB không có tác dụng~~:** `_auto_cleanup` thêm pha LRU thứ hai; bản cũ chỉ xoá file > 7 ngày nên cache toàn file mới thì không dọn nổi một byte.
+4. **~~Tra cache O(N)~~:** `_find_cached()` thử thẳng đuôi đã biết thay vì liệt kê cả thư mục (đo trên cache thật: 0.115ms → 0.012ms mỗi lần tra).
+5. **~~Mất dấu job sau restart~~:** `_restore_jobs_from_disk()` dựng lại `JOBS` từ `render_status/` và `output/` lúc khởi động.
+6. **~~Path traversal qua `job_id`~~:** `project_service.safe_job_id()` dùng ở cả `PROJECTS_DIR` lẫn `IMAGES_DIR`.
+7. **~~Đường render nhanh hỏng câm~~:** Index input FFmpeg lệch +1 làm FastAssembly hỏng hoàn toàn trong khi job vẫn báo "Hoàn tất!" (chỉ chậm ~100 lần). Nay có `tests/test_ffmpeg_assembler.py` và fallback báo lên tận giao diện.
 
 ### 🟢 Định hướng tiếp theo:
 1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.
 2. **Distributed Cache:** Cache hiện tại lưu trên disk local. Cần chuyển sang Redis/Memcached khi deploy multi-server.
 3. **Auto-publish:** Tích hợp API đăng video tự động lên TikTok/YouTube Shorts.
+4. **Log tập trung:** Khi chạy nhiều render worker song song, `RotatingFileHandler` mỗi tiến trình một file sẽ không đủ — cần `QueueHandler` + một tiến trình ghi log duy nhất.
+
+---
+
+## 6. Vận hành & Chẩn đoán (Operations & Diagnostics)
+
+*Bổ sung 2026-07-28, sinh ra từ một sự cố thật: 11/07 backend chết ngầm giữa job render với `UnboundLocalError`, nhưng vì log không được ghi ra file nên mãi 17 ngày sau mới truy được nguyên nhân.*
+
+### 6.1. Khởi chạy
+
+| Cách | Lệnh | Đặc điểm |
+|---|---|---|
+| PM2 (khuyến nghị) | `start-pm2.bat` | Autorestart khi crash, log bền, chạy nền |
+| Trực tiếp | `start.bat` | Xem log cuộn trực tiếp trong cmd |
+| Tự chạy khi boot | `setup-pm2-autostart.bat` | Scheduled Task gọi `pm2 resurrect` lúc đăng nhập |
+
+`pm2 startup` **không hỗ trợ Windows** — đó là lý do cần script riêng. `ecosystem.config.js` cố ý để `watch: false`: MoviePy/FFmpeg ghi file tạm trong cây dự án, bật watch sẽ restart server **giữa lúc đang render**.
+
+### 6.2. Hệ thống Log (`services/log_setup.py`)
+
+- `backend/logs/backend.log` — tiến trình FastAPI chính.
+- `backend/logs/render_worker.log` — process con (MoviePy, FFmpeg mastering).
+- Xoay vòng **10MB × 5**, encoding UTF-8 (mặc định cp1252 sẽ làm vỡ mọi dòng log tiếng Việt).
+
+**Nhãn `[job_id]` trên mọi dòng** — cài bằng `ContextVar` + `logging.Filter` ở tầng handler, nên phủ cả log của `services/` lẫn thư viện ngoài (`httpx`, `google_genai`) mà không phải sửa dòng nào trong các module đó. Đây là lý do không dùng `LoggerAdapter`: adapter chỉ gắn nhãn cho lời gọi qua chính nó, tức chỉ `main.py`.
+
+`ContextVar` không vượt qua ranh giới tiến trình, nên `render_worker._worker_main()` phải gọi lại `set_job_id()` cho riêng nó.
+
+**Mọi `logger.error` đều có `exc_info=True`** → traceback chỉ đúng file/dòng. Các `logger.warning` cố ý KHÔNG có, vì đó là những nhánh fallback đã biết trước nguyên nhân (Veo hết quota, Pexels 403) — thêm traceback chỉ làm loãng log.
+
+### 6.3. Cổng chất lượng
+
+Bốn lớp chạy tự động ở `start.bat`, `start-pm2.bat` và git pre-commit hook:
+
+| Lớp | Bắt được |
+|---|---|
+| `compileall` | Lỗi cú pháp |
+| `ruff --select F821,F811,E9` | Tên chưa import, định nghĩa trùng |
+| `scripts/check_imports.py` | `UnboundLocalError` do import cục bộ che module import |
+| `pytest tests` | Sai **hành vi**: cú pháp đúng, tên đủ, nhưng logic lệch |
+
+Lớp thứ ba tồn tại vì hai lớp trên **đều bỏ lọt** loại lỗi này — cú pháp hợp lệ, tên vẫn có import, chỉ sai thứ tự thực thi nên chỉ nổ lúc runtime ở nhánh hiếm chạy.
+
+Lớp thứ tư tồn tại vì cả ba lớp trên đều mù trước lỗi logic. Ba sự cố thật đã lọt qua chúng:
+`hook_sfx_volume` có trong model, frontend gửi đều, video_service đọc đúng tên — nhưng
+`main.py` quên nhét vào `render_kwargs` nên thanh trượt vô hiệu suốt nhiều bản render;
+`req.intro_bgm_track` được đọc mà model không khai báo nên **mọi** job render chết ở
+`pending`; và index input của FastAssembly lệch +1 khiến đường render nhanh hỏng hoàn toàn
+trong khi job vẫn báo "Hoàn tất!". Bộ test chạy hết trong ~2 giây.
+
+**Loại test quan trọng nhất ở đây là test HỢP ĐỒNG**, không phải test đơn vị: chúng đối
+chiếu hai danh sách phải luôn khớp nhau (model ↔ passthrough ↔ kwargs thật; selector
+zustand ↔ khoá được đọc; PresetRequest ↔ RenderVideoRequest; index FFmpeg ↔ số input
+thật). Đó là chỗ **kwargs và selector im lặng ở cả hai chiều — thiếu thì dùng mặc định,
+thừa thì bỏ qua, không lỗi nào cả.
+
+### 6.4. Bẫy đã gặp
+
+- **Log PM2 cũ có thể đánh lừa.** Sự cố 11/07 nằm trong `~/.pm2/logs/` nhưng file đó đóng băng vì backend thực tế chạy qua `start.bat`. Các file cũ đã đổi tên thành `*.2026-07-11.log`. Luôn kiểm tra `mtime` và đối chiếu tên hàm trong traceback với code hiện tại trước khi kết luận.
+- **File `.bat` phải dùng CRLF** — `cmd.exe` xử lý sai khối `if (...)` nhiều dòng nếu file là LF.

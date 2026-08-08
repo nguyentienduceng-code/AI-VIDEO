@@ -1,10 +1,48 @@
 import React, { useState, useEffect } from 'react';
 import { Bookmark, Save, Trash2 } from 'lucide-react';
-import { useAppContext } from '../AppContext';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../store';
 import { API_BASE } from '../constants';
+import { toast } from '../lib/toast.jsx';
 
 export default function PresetManager() {
-  const ctx = useAppContext();
+  const ctx = useAppStore(useShallow((s) => ({
+    applyPreset: s.applyPreset,
+    ratio: s.ratio,
+    voice: s.voice,
+    style: s.style,
+    bgm: s.bgm,
+    targetDuration: s.targetDuration,
+    narrationTone: s.narrationTone,
+    speechRate: s.speechRate,
+    speechPitch: s.speechPitch,
+    bgmVolume: s.bgmVolume,
+    hookSfxVolume: s.hookSfxVolume,   // payload lưu preset đọc giá trị này
+    subtitleStyle: s.subtitleStyle,
+    colorGrading: s.colorGrading,
+    preferStockVideo: s.preferStockVideo,
+    visualSource: s.visualSource,
+    useSinglePassNarration: s.useSinglePassNarration,
+    hookReelSfx: s.hookReelSfx,
+    useSfx: s.useSfx,
+    useKenBurns: s.useKenBurns,
+    hookZoomBoost: s.hookZoomBoost,
+    useBreathing: s.useBreathing,
+    useFrameChaining: s.useFrameChaining,
+    useBeatSync: s.useBeatSync,
+    hookEffect: s.hookEffect,
+    // Thiếu 6 dòng này thì payload lưu preset gửi lên `undefined` cho từng khoá, Pydantic
+    // lặng lẽ thay bằng giá trị mặc định — người dùng lưu preset xong nạp lại thấy Outro
+    // và nhạc mở màn biến mất, không có lỗi nào.
+    introBgm: s.introBgm,
+    introBgmDuration: s.introBgmDuration,
+    useAudioDucking: s.useAudioDucking,
+    outroEffect: s.outroEffect,
+    outroReelSfx: s.outroReelSfx,
+    outroSfxVolume: s.outroSfxVolume,
+    // Chỉ logo, KHÔNG kèm watermarkText: chữ đóng dấu là nội dung riêng từng video.
+    watermarkLogo: s.watermarkLogo,
+  })));
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -19,7 +57,7 @@ export default function PresetManager() {
         setPresets(data.presets || []);
       }
     } catch (e) {
-      console.error("Failed to fetch presets:", e);
+      toast("Không tải được presets: " + e.message, { type: 'error' });
     }
   };
 
@@ -37,7 +75,7 @@ export default function PresetManager() {
   };
 
   const handleSavePreset = async () => {
-    if (!newPresetName.trim()) return alert("Vui lòng nhập tên cho Preset!");
+    if (!newPresetName.trim()) return toast("Vui lòng nhập tên cho Preset!", { type: 'warning' });
     setLoading(true);
     try {
       const payload = {
@@ -46,6 +84,8 @@ export default function PresetManager() {
         voice: ctx.voice,
         art_style: ctx.style,
         bgm_track: ctx.bgm === 'none' ? null : ctx.bgm,
+        intro_bgm_track: ctx.introBgm === 'none' ? null : ctx.introBgm,
+        intro_bgm_duration: ctx.introBgmDuration,
         target_duration: ctx.targetDuration,
         narration_tone: ctx.narrationTone,
         speech_rate: ctx.speechRate,
@@ -53,8 +93,29 @@ export default function PresetManager() {
         bgm_volume: ctx.bgmVolume,
         subtitle_style: ctx.subtitleStyle,
         color_grading: ctx.colorGrading,
+        prefer_stock_video: ctx.preferStockVideo,
+        visual_source: ctx.visualSource,
+        use_single_pass_narration: ctx.useSinglePassNarration,
+        hook_reel_sfx: ctx.hookReelSfx,
+        // Lưu nguyên con số trên thanh trượt (thang %, giống bgm_volume/sfx_volume).
+        // KHÔNG chia 100 ở đây: việc đổi sang hệ số chỉ xảy ra ở payload render
+        // (ScriptEditor.jsx). Xem chú thích đơn vị tại PresetRequest trong main.py.
+        hook_sfx_volume: ctx.hookSfxVolume,
         use_sfx: ctx.useSfx,
-        sfx_volume: ctx.sfxVolume
+        sfx_volume: ctx.sfxVolume,
+        use_audio_ducking: ctx.useAudioDucking,
+        use_ken_burns: ctx.useKenBurns,
+        hook_zoom_boost: ctx.hookZoomBoost,
+        use_breathing: ctx.useBreathing,
+        use_frame_chaining: ctx.useFrameChaining,
+        use_beat_sync: ctx.useBeatSync,
+        hook_effect: ctx.hookEffect,
+        outro_effect: ctx.outroEffect,
+        outro_reel_sfx: ctx.outroReelSfx,
+        outro_sfx_volume: ctx.outroSfxVolume,
+        // Store giữ BOOLEAN (một ô tick), backend giữ TÊN FILE logo. Quy đổi đúng ở
+        // ranh giới này — cùng quy ước với payload render trong ScriptEditor.jsx.
+        watermark_logo: ctx.watermarkLogo ? 'logo_ntd' : null
       };
 
       const res = await fetch(`${API_BASE}/api/presets`, {
@@ -72,10 +133,10 @@ export default function PresetManager() {
         setShowSaveModal(false);
         setNewPresetName('');
       } else {
-        alert("Lỗi khi lưu Preset!");
+        toast("Lỗi khi lưu Preset!", { type: 'error' });
       }
     } catch (e) {
-      alert("Lỗi kết nối: " + e.message);
+      toast("Lỗi kết nối: " + e.message, { type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -85,7 +146,7 @@ export default function PresetManager() {
     if (!selectedPresetId) return;
     const found = presets.find(p => p.id === selectedPresetId);
     if (!found || found.is_default) {
-      return alert("Không thể xóa Preset mặc định!");
+      return toast("Không thể xóa Preset mặc định!", { type: 'warning' });
     }
 
     if (!window.confirm(`Bạn có chắc muốn xóa Preset "${found.name}"?`)) return;
@@ -98,10 +159,10 @@ export default function PresetManager() {
         setSelectedPresetId('');
         await fetchPresets();
       } else {
-        alert("Lỗi khi xóa Preset!");
+        toast("Lỗi khi xóa Preset!", { type: 'error' });
       }
     } catch (e) {
-      alert("Lỗi kết nối: " + e.message);
+      toast("Lỗi kết nối: " + e.message, { type: 'error' });
     }
   };
 
@@ -120,11 +181,31 @@ export default function PresetManager() {
             style={{ flex: 1 }}
           >
             <option value="">-- Chọn Preset lưu sẵn --</option>
-            {presets.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name} {p.is_default ? '(Mặc định)' : ''}
-              </option>
-            ))}
+            {(() => {
+              const groups = {};
+              presets.forEach(p => {
+                const niche = p.content_niche || 'Khác';
+                const nicheName = niche === 'book' ? '📚 Sách & Kể chuyện' : 
+                                  niche === 'finance' ? '💰 Tài chính & Kinh doanh' :
+                                  niche === 'history' ? '🏛️ Lịch sử & Khám phá' :
+                                  niche === 'psychology' ? '🧠 Tâm lý & Đời sống' :
+                                  niche === 'truecrime' ? '🔪 Vụ án & Kỳ bí' :
+                                  niche === 'travel' ? '🌍 Du lịch & Phong cảnh' : 
+                                  niche === 'Khác' ? '✨ Khác' : niche;
+                if (!groups[nicheName]) groups[nicheName] = [];
+                groups[nicheName].push(p);
+              });
+              
+              return Object.entries(groups).map(([groupName, items]) => (
+                <optgroup key={groupName} label={groupName}>
+                  {items.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name.replace(/^[\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF]\s?/, '')} {p.is_default ? '(Mặc định)' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ));
+            })()}
           </select>
         </div>
 
