@@ -49,6 +49,8 @@ export default function SettingsPanel() {
     setScriptReview: s.setScriptReview,
     ctaText: s.ctaText,
     setCtaText: s.setCtaText,
+    setOutroText: s.setOutroText,
+    setScriptText: s.setScriptText,
   })));
   const needsUpload = needsUploadFor(ctx.activeMode);
   const needsScript = needsScriptFor(ctx.activeMode);

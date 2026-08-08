@@ -42,6 +42,7 @@ export default function PresetManager() {
     outroSfxVolume: s.outroSfxVolume,
     // Chỉ logo, KHÔNG kèm watermarkText: chữ đóng dấu là nội dung riêng từng video.
     watermarkLogo: s.watermarkLogo,
+    sfxVolume: s.sfxVolume,
   })));
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');

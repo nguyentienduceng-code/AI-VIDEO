@@ -114,6 +114,7 @@ export default function ScriptEditor() {
     // Interrupt ở tone Storytelling/Emotional" (B4) không bao giờ nhận đúng tone người
     // dùng đã chọn — Pattern Interrupt chớp sáng ở MỌI video bất kể tone.
     hookVariants: s.hookVariants, scriptReview: s.scriptReview, narrationTone: s.narrationTone,
+    useFastAssembly: s.useFastAssembly,
   })));
 
   // Trạng thái bộ nhớ đệm từng cảnh: null = chưa biết, [] = mảng theo chỉ số cảnh.

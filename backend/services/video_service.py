@@ -998,8 +998,6 @@ RENDER_KWARG_KEYS = frozenset({
     "cta_text",
     "use_fast_assembly",
     "use_gpu_encode",
-    "use_breathing",    # ghép breath.wav 1 lần vào đầu audio (thay vì mỗi scene)
-    "use_veo_ambient_audio",  # ambient sound cho scene Veo
 })
 
 
