@@ -42,23 +42,62 @@ def _status_path(job_id: str) -> str:
 
 
 def write_status(job_id: str, **kwargs):
-    """Ghi trạng thái render vào file JSON (gọi từ worker process)."""
+    """Ghi trạng thái render vào file JSON (gọi từ worker process).
+
+    A21 FIX: Sử dụng file lock riêng để serialize đọc-ghi tránh race condition
+    khi nhiều process ghi đồng thời vào cùng job_id status file.
+    """
     path = _status_path(job_id)
-    data = {"job_id": job_id, "updated_at": time.time()}
-    # Đọc data cũ nếu có
-    if os.path.exists(path):
+    # Atomic lock: tạo lock file rồi rename — rename là atomic trên cùng filesystem.
+    # Giữ lock trong try-finally để đảm bảo giải phóng ngay cả khi crash.
+    import uuid
+    lock_id = str(uuid.uuid4())
+    lock_path = path + f".lock_{lock_id}"
+    max_wait = 10.0  # seconds
+    wait_interval = 0.05  # seconds
+
+    def _acquire_lock():
+        elapsed = 0.0
+        while elapsed < max_wait:
+            try:
+                # Tạo lock file bằng exclusive create — atomic trên Windows/Unix
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.close(fd)
+                return True
+            except FileExistsError:
+                pass
+            except OSError:
+                pass
+            import time as _t
+            _t.sleep(wait_interval)
+            elapsed += wait_interval
+        return False
+
+    def _release_lock():
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
+            os.remove(lock_path)
+        except OSError:
             pass
-    data.update(kwargs)
-    data["updated_at"] = time.time()
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    # Atomic rename để tránh đọc file đang ghi dở
-    os.replace(tmp_path, path)
+
+    if not _acquire_lock():
+        logger.warning("[write_status] Could not acquire lock for %s — skipping write.", job_id)
+        return
+    try:
+        data = {"job_id": job_id, "updated_at": time.time()}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass  # Corrupt/empty file — start fresh
+        data.update(kwargs)
+        data["updated_at"] = time.time()
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    finally:
+        _release_lock()
 
 
 def read_status(job_id: str) -> Optional[Dict[str, Any]]:

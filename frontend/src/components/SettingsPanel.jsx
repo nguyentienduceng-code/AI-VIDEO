@@ -123,7 +123,7 @@ export default function SettingsPanel() {
         ctx.setHookText(data.hook_text);
       }
       // Câu quote đắt nhất cho các hiệu ứng mở màn dạng quote (carousel_quote,
-      // typewriter_quote, blackout_question). Backend trước đây KHÔNG sinh trường này dù
+      // typewriter_quote). Backend trước đây KHÔNG sinh trường này dù
       // hiệu ứng đã chờ nó sẵn, nên ai muốn dùng đều phải tự gõ câu quote.
       if (data.hook_quote && !ctx.hookQuote?.trim()) {
         ctx.setHookQuote(data.hook_quote);

@@ -67,6 +67,9 @@ def _retry_sync(func_factory, retries=MAX_RETRIES, base_delay=BASE_DELAY, key_ma
                 raise
                 
             delay = base_delay * (2 ** attempt)
+            # A25 fix: Thêm jitter ±25% để tránh thundering herd khi API hồi phục.
+            import random
+            delay *= (0.75 + random.random() * 0.5)  # ±25% random spread
             
             # Xử lý riêng cho Quota/Rate Limit (429)
             if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
@@ -103,7 +106,7 @@ def _track_quota() -> None:
         from services import quota_service
         quota_service.increment_quota(1)
     except Exception:
-        pass
+        logger.warning("[Quota] Không ghi nhận được quota call. Kiểm tra quota_service.")
 
 
 def _require_parsed(response, where: str):

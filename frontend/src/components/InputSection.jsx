@@ -36,6 +36,7 @@ export default function InputSection() {
   const jsonInputRef = useRef(null);
   const [booktokFiles, setBooktokFiles] = useState([]);
   const [loadingBooktok, setLoadingBooktok] = useState(false);
+  const [booktokOffline, setBooktokOffline] = useState(false);
   const [isDraggingJson, setIsDraggingJson] = useState(false);
   const [showPasteArea, setShowPasteArea] = useState(false);
   const [pastedJsonText, setPastedJsonText] = useState('');
@@ -98,10 +99,15 @@ export default function InputSection() {
       .then(res => res.json())
       .then(data => {
         if (data.files && Array.isArray(data.files)) {
-          setBooktokFiles(data.files.slice(0, 8));
+          setBooktokFiles(data.files.slice(0, 20)); // tăng từ 8 lên 20 file
+          setBooktokOffline(false);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // BookTok App chưa chạy hoặc chưa sẵn sàng — không crash, chỉ ghi log
+        console.info('[InputSection] BookTok App (port 3005) chưa phản hồi — dropdown nạp kịch bản ẩn.');
+        setBooktokOffline(true);
+      });
   }, []);
 
   const processImportedJsonString = (jsonStr) => {
@@ -128,10 +134,16 @@ export default function InputSection() {
       if (data.recommended_bgm) ctx.setBgm(data.recommended_bgm);
       if (data.outro_text !== undefined) ctx.setOutroText(data.outro_text);
 
+      // ── BookTok import: set content_niche từ normalized payload ──────────────────
+      // normalizeImportPayload() trả content_niche = mapped từ niche_category (BookTok key
+      // hoặc UI label) → AI Video Maker content_niche. Dùng normalized.content_niche
+      // (đã map) thay vì data.metadata.niche_category (sai vị trí).
+      if (normalized.content_niche) {
+        ctx.setContentNiche(normalized.content_niche);
+      }
       if (data.metadata) {
         if (data.metadata.visual_style_preset) ctx.setStyle(data.metadata.visual_style_preset);
         if (data.metadata.recommended_voice) ctx.setVoice(data.metadata.recommended_voice);
-        if (data.metadata.niche_category) ctx.setContentNiche(data.metadata.niche_category);
       }
 
       ctx.setStep('editor');
@@ -316,6 +328,11 @@ export default function InputSection() {
                 <option key={i} value={f.name}>{f.name}</option>
               ))}
             </select>
+          )}
+          {booktokOffline && (
+            <span style={{ fontSize: 11, color: 'rgba(234,179,8,0.8)', display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.25)', borderRadius: 6 }}>
+              ⚠️ BookTok App chưa chạy — dropdown &ldquo;Nạp từ BookTok AI&rdquo; bị ẩn
+            </span>
           )}
         </div>
 

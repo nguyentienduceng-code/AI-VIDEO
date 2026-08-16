@@ -65,7 +65,7 @@ const INITIAL_STATE = {
   useBreathing: false,
   hookEffect: 'carousel_quote',
   preferStockVideo: false,
-  visualSource: 'auto',
+  visualSource: 'mixed',
   useSinglePassNarration: false,
   useFastAssembly: true,
   hookReelSfx: 'tick_wood',

@@ -83,16 +83,18 @@ def test_ba_noi_deu_goi_chung_mot_ham():
 
     import main
     from services import video_service
+    from services import pipeline_orchestrator
 
     src_main = inspect.getsource(main)
     src_vs = inspect.getsource(video_service)
+    src_orch = inspect.getsource(pipeline_orchestrator)
 
-    assert src_main.count("resolve_outro_text(") >= 3, (
-        "main.py phải gọi resolve_outro_text ở cả 2 chỗ (tính tổng thời lượng + "
+    assert (src_main + src_orch).count("resolve_outro_text(") >= 3, (
+        "main/orchestrator phải gọi resolve_outro_text ở cả 2 chỗ (tính tổng thời lượng + "
         "/api/timing-profile), cộng dòng import"
     )
     for xau in ("req.outro_text or req.hook_text", 'kwargs.get("outro_text") or hook_text'):
-        assert xau not in src_main and xau not in src_vs, (
+        assert xau not in src_main and xau not in src_vs and xau not in src_orch, (
             f"phép chọn nguồn chữ outro bị gõ lại tại chỗ: {xau!r}"
         )
 

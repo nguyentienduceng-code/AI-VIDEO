@@ -153,6 +153,7 @@ DEFAULT_PRESETS = [
         "subtitle_style": "cinematic_box",
         "color_grading": "warm_cinematic",
         "prefer_stock_video": False,
+        "visual_source": "ai_image",
         "hook_effect": "word_by_word",
         "use_sfx": True,
         "sfx_volume": 9.6,
@@ -178,6 +179,7 @@ DEFAULT_PRESETS = [
         "subtitle_style": "cinematic_box",
         "color_grading": "warm_cinematic",
         "prefer_stock_video": False,
+        "visual_source": "ai_image",
         "hook_effect": "typewriter_quote",
         "use_sfx": False,
         "sfx_volume": 8,
@@ -301,8 +303,8 @@ for _p in DEFAULT_PRESETS:
     _p.setdefault("use_ken_burns", True)
     _p.setdefault("hook_zoom_boost", False)
     _p.setdefault("use_breathing", False)
-    # "auto" giữ nguyên hành vi cũ: vẫn tôn trọng prefer_stock_video của từng preset.
-    _p.setdefault("visual_source", "auto")
+    # "mixed" đề xuất xen kẽ thông minh video thật và ảnh AI theo cảm xúc/nhịp cảnh.
+    _p.setdefault("visual_source", "mixed")
     _p.setdefault("use_single_pass_narration", False)
     _p.setdefault("hook_reel_sfx", "tick_wood")
     # Thang % (100 = 100%), khớp PresetRequest.hook_sfx_volume — đổi sang hệ số chỉ diễn

@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Play, ChevronDown, ChevronRight } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
-import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS, OUTRO_ONLY_EFFECTS } from '../constants';
+import { SUBTITLE_STYLES, COLOR_GRADINGS, VISUAL_SOURCES, HOOK_SFX_OPTIONS, OUTRO_ONLY_EFFECTS, API_BASE } from '../constants';
 
 const SectionHeader = ({ title, isOpen, onToggle }) => (
   <div 
@@ -75,48 +75,82 @@ export default function AdvancedSettings() {
   const [openImage, setOpenImage] = useState(true);
   const [openVoice, setOpenVoice] = useState(true);
   const [openHook, setOpenHook] = useState(true);
+
+  const [bgmGroups, setBgmGroups] = useState({
+    "🧘‍♀️ Thiền định & Chữa lành (Ambient)": [],
+    "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)": [],
+    "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)": [],
+    "🎉 Năng động & Tích cực (Upbeat)": [],
+    "🎧 Hip-hop & Đường phố (Rap/Trap)": [],
+    "🤡 Vui nhộn (Funny)": [],
+    "📁 Khác (Nhạc chưa phân loại)": []
+  });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/bgm-list`)
+      .then(r => r.json())
+      .then(d => {
+        const groups = {
+          "🧘‍♀️ Thiền định & Chữa lành (Ambient)": [],
+          "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)": [],
+          "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)": [],
+          "🎉 Năng động & Tích cực (Upbeat)": [],
+          "🎧 Hip-hop & Đường phố (Rap/Trap)": [],
+          "🤡 Vui nhộn (Funny)": [],
+          "📁 Khác (Nhạc chưa phân loại)": []
+        };
+        const hardcoded = {
+          "moment_of_peace": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "new_age_nature": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "deep_abstract_ambient": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "ghost_piano_yeti_music_main_version": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "black_light_all_good_folks_main": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "running_night": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "fluffy_clouds_fugu_vibes_main_version": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "lofi_jazzy_love": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "livin_easy_oliver_massa_main": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "Back_When": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "let_good_times_roll_ra_main_version": "🎉 Năng động & Tích cực (Upbeat)",
+          "afro_pop": "🎉 Năng động & Tích cực (Upbeat)",
+          "music_promotion": "🎉 Năng động & Tích cực (Upbeat)",
+          "hype_drill": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "no_sleep_hiphop": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "rap_beat": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "type_beat": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "comedy_cartoon": "🤡 Vui nhộn (Funny)"
+        };
+        (d.tracks || []).forEach(t => {
+           const id = t.id.replace(/\.[^/.]+$/, "");
+           let group = "📁 Khác (Nhạc chưa phân loại)";
+           if (hardcoded[id]) {
+             group = hardcoded[id];
+           } else {
+             const lowerId = id.toLowerCase();
+             if (lowerId.match(/ambient|chant|peace|nature|smooth|calm/)) group = "🧘‍♀️ Thiền định & Chữa lành (Ambient)";
+             else if (lowerId.match(/cinematic|epic|ghost|dark|suspens/)) group = "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)";
+             else if (lowerId.match(/chill|lofi|lo.fi|acoustic|sad|relax/)) group = "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)";
+             else if (lowerId.match(/funny|comedy|cartoon/)) group = "🤡 Vui nhộn (Funny)";
+             else if (lowerId.match(/upbeat|pop|bass|happy|energetic/)) group = "🎉 Năng động & Tích cực (Upbeat)";
+             else if (lowerId.match(/rap|hip.*hop|trap|drill|beat/)) group = "🎧 Hip-hop & Đường phố (Rap/Trap)";
+           }
+           groups[group].push({ value: id, label: t.name });
+        });
+        setBgmGroups(groups);
+      }).catch(() => {});
+  }, []);
+
   const [openOutro, setOpenOutro] = useState(true);
   const [openSystem, setOpenSystem] = useState(true);
 
-
-
   const BGMOptions = (
     <>
-      <optgroup label="🧘‍♀️ Thiền định & Chữa lành (Ambient)">
-        <option value="moment_of_peace">Moment Of Peace</option>
-        <option value="new_age_nature">New Age Nature</option>
-        <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
-      </optgroup>
-
-      <optgroup label="🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)">
-        <option value="ghost_piano_yeti_music_main_version">Ghost Piano (Yeti Music)</option>
-        <option value="black_light_all_good_folks_main">Black Light (All Good Folks)</option>
-        <option value="running_night">Running Night</option>
-      </optgroup>
-
-      <optgroup label="☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)">
-        <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
-        <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
-        <option value="livin_easy_oliver_massa_main">Livin Easy (Oliver Massa)</option>
-        <option value="Back_When">Back When</option>
-      </optgroup>
-
-      <optgroup label="🎉 Năng động & Tích cực (Upbeat)">
-        <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
-        <option value="afro_pop">Afro Pop</option>
-        <option value="music_promotion">Music Promotion</option>
-      </optgroup>
-
-      <optgroup label="🎧 Hip-hop & Đường phố (Rap/Trap)">
-        <option value="hype_drill">Hype Drill</option>
-        <option value="no_sleep_hiphop">No Sleep Hip-Hop</option>
-        <option value="rap_beat">Rap Beat</option>
-        <option value="type_beat">Type Beat</option>
-      </optgroup>
-
-      <optgroup label="🤡 Vui nhộn (Funny)">
-        <option value="comedy_cartoon">Comedy Cartoon</option>
-      </optgroup>
+      {Object.entries(bgmGroups).map(([label, tracks]) => {
+        if (tracks.length === 0) return null;
+        return (
+          <optgroup key={label} label={label}>
+            {tracks.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </optgroup>
+        );
+      })}
     </>
   );
 
@@ -303,12 +337,21 @@ export default function AdvancedSettings() {
           <label className="field-label">HIỆU ỨNG HOOK ĐẦU VIDEO</label>
           <select className="form-select form-select-sm" value={ctx.hookEffect} onChange={e => ctx.setHookEffect(e.target.value)}>
             <option value="carousel_quote">🎰 Slot Machine & Bìa sách</option>
-            <option value="blackout_question">⬛ Màn đen câu hỏi (A1 Blackout)</option>
             <option value="typewriter_quote">⌨️ Gõ chữ (A2 Typewriter)</option>
-            <option value="breathing_vignette">🕯️ Thu phóng mờ (C3 Vignette)</option>
             <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
             <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
             <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>
+            <option value="smash_cut_blackout">💥 Đóng sập đen (Smash Cut)</option>
+            <option value="cinematic_letterbox">🎬 Viền đen điện ảnh (21:9 Letterbox)</option>
+            <option value="paper_rip_split">✂️ Xé giấy/Cắt đôi (Split Reveal)</option>
+
+            {/* ── 6 Hook Nghệ Thuật Mới ── */}
+            <option value="double_exposure">👻 Ảnh ma (Double Exposure)</option>
+            <option value="light_paint_ingress">🔦 Vẽ bằng ánh sáng (Light Paint)</option>
+            <option value="memory_resurface">💫 Bề mặt ký ức (Memory Resurface)</option>
+            <option value="forbidden_uncover">🔓 Lật mở bí mật (Forbidden Uncover)</option>
+            <option value="ink_bleed">🖋️ Nhập nhòe mực (Ink Bleed)</option>
+            <option value="scene_assembly">🧩 Lắp ráp hiện thực (Scene Assembly)</option>
             <option value="none">🚫 Không dùng Hook</option>
           </select>
         </div>
@@ -383,9 +426,7 @@ export default function AdvancedSettings() {
                 đáp án từ đầu) — outro cần gây ấn tượng nhanh, không lặp lại một màn chờ
                 4.5 giây. Backend vẫn xử lý được giá trị này (preset/project cũ đã lưu),
                 chỉ ẩn khỏi lựa chọn mới. */}
-            <option value="blackout_question">⬛ Màn đen (Blackout)</option>
             <option value="typewriter_quote">⌨️ Gõ chữ (Typewriter)</option>
-            <option value="breathing_vignette">🕯️ Thu phóng mờ (Vignette)</option>
             <option value="camera_shutter">📸 Nháy máy ảnh (Camera Shutter)</option>
             <option value="cyber_glitch">⚡ Nhiễu sóng (Cyber Glitch)</option>
             <option value="vintage_film_burn">🎞️ Cháy phim (Vintage Film Burn)</option>

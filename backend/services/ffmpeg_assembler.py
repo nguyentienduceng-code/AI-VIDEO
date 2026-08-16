@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform as _sys_platform
 import subprocess
 import tempfile
 from typing import List, Dict, Any, Optional, Tuple
@@ -29,6 +30,25 @@ import imageio_ffmpeg
 from services.motion_effects import fit_highlight_fontsize, plan_scene_highlights
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_font_path(relative_name: str) -> str:
+    system = _sys_platform.system()
+    if system == "Windows":
+        return f"C:/Windows/Fonts/{relative_name}"
+    elif system == "Darwin":
+        return f"/System/Library/Fonts/{relative_name}"
+    else:  # Linux and others
+        try:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}", relative_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return f"/usr/share/fonts/truetype/{relative_name}/{relative_name}.ttf"
 
 # transition nội bộ → tên bộ lọc xfade của FFmpeg.
 # Vài hiệu ứng không có bản tương đương chính xác thì lấy cái gần nhất về CẢM GIÁC
@@ -58,7 +78,7 @@ DEFAULT_XFADE = "fade"
 # chuyển cảnh (11.8s-12.1s của 1 video thật): 2 cảnh quay người bị ép thành dải méo mó.
 _DISTORTING_XFADE = {"squeezeh", "squeezev"}
 
-HIGHLIGHT_FONT = "C:/Windows/Fonts/seguibl.ttf"   # Arial Black thiếu glyph ư/ơ
+HIGHLIGHT_FONT = _resolve_font_path("seguibl.ttf")   # Arial Black thiếu glyph ư/ơ
 HIGHLIGHT_DURATION = 1.2
 HIGHLIGHT_FADE = 0.2
 
@@ -287,9 +307,17 @@ def assemble(
     else:
         cur = "[s0]"
         for k in range(n - 1):
-            trans = TRANSITION_TO_XFADE.get(
-                scene_assets[k].get("transition", "crossfade"), DEFAULT_XFADE
-            )
+            raw_trans = scene_assets[k].get("transition") or "crossfade"
+            trans = TRANSITION_TO_XFADE.get(raw_trans)
+            if trans is None:
+                # A29 fix: log warning so operators know a transition was unrecognized,
+                # instead of silently falling back to "fade".
+                logger.warning(
+                    "[FFmpegAssembler] Unknown transition %r on scene %d — falling back to 'fade'. "
+                    "Known transitions: %s",
+                    raw_trans, k + 1, list(TRANSITION_TO_XFADE.keys())
+                )
+                trans = DEFAULT_XFADE
             if trans in _DISTORTING_XFADE and (
                 scene_assets[k].get("is_stock_video") or scene_assets[k + 1].get("is_stock_video")
             ):

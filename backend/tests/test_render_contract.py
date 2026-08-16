@@ -130,6 +130,7 @@ _TRUONG_NOI_DUNG = {
     "scenes", "mode", "topic", "hook_text", "hook_quote", "outro_text",
     "watermark_text", "cta_text", "negative_prompt", "character_description",
     "gemini_api_key", "upload_session_id", "cover_image_session_id",
+    "content_niche",
 }
 
 # Trường chỉ có ý nghĩa lúc render, không phải lựa chọn thẩm mỹ để lưu lại.
@@ -141,7 +142,7 @@ _TRUONG_CHI_RENDER = {
 # Preset có quyền đặt tên riêng cho những thứ KHÔNG phải ánh xạ 1-1 sang render.
 _PRESET_RIENG = {"name", "art_style", "voice", "target_duration", "narration_tone"}
 
-_REQ_ATTR_RE = re.compile(r"\breq\.([a-zA-Z_][a-zA-Z0-9_]*)")
+_REQ_ATTR_RE = re.compile(r"\b(?:self\.)?req\.([a-zA-Z_][a-zA-Z0-9_]*)")
 
 
 def test_preset_khong_chua_truong_noi_dung():
@@ -186,23 +187,15 @@ def test_preset_va_render_goi_cung_mot_ten_cho_cung_mot_thu():
     )
 
 
-def _pipeline_source(main_py_source: str) -> str:
-    """Thân hàm _run_render_pipeline — nơi DUY NHẤT nhận RenderVideoRequest.
-
-    Phải cắt đúng hàm này: gần như MỌI endpoint trong main.py đều đặt tên tham số là
-    `req`, nhưng của các model khác (GenerateScriptRequest, PresetRequest...). Quét cả
-    file sẽ báo động giả hàng loạt và test bị vô hiệu hoá vì không ai tin nó nữa.
-    """
-    start = main_py_source.index("async def _run_render_pipeline")
-    rest = main_py_source[start:]
-    # Hàm kết thúc ở định nghĩa top-level kế tiếp (không thụt đầu dòng).
-    end = re.search(r"\n(?=(?:async def |def |@app\.|class ))", rest)
-    return rest[: end.start()] if end else rest
+def _pipeline_source() -> str:
+    orch_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "services", "pipeline_orchestrator.py")
+    with open(orch_py, encoding="utf-8") as f:
+        return f.read()
 
 
 def test_moi_field_req_doc_deu_ton_tai_trong_model():
     """
-    Mọi `req.<field>` trong main.py phải có thật trong RenderVideoRequest.
+    Mọi `req.<field>` trong pipeline_orchestrator.py phải có thật trong RenderVideoRequest.
 
     ĐÂY LÀ LƯỚI CHO MỘT SỰ CỐ THẬT: bản Outro/Dynamic-BGM thêm `req.intro_bgm_track` vào
     pipeline nhưng QUÊN khai báo field ở model. Pydantic mặc định BỎ IM LẶNG khoá lạ, nên
@@ -213,16 +206,15 @@ def test_moi_field_req_doc_deu_ton_tai_trong_model():
     Không lớp nào trong bốn cổng chất lượng bắt được: cú pháp hợp lệ, ruff không kiểm tra
     thuộc tính Pydantic, và nhánh lỗi chỉ nổ lúc chạy thật.
     """
-    main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
-    with open(main_py, encoding="utf-8") as f:
-        source = f.read()
-
+    orch_source = _pipeline_source()
     fields = set(RenderVideoRequest.model_fields)
-    duoc_doc = set(_REQ_ATTR_RE.findall(_pipeline_source(source)))
+    duoc_doc_direct = set(_REQ_ATTR_RE.findall(orch_source))
+    duoc_doc_getattr = set(re.findall(r'getattr\((?:self\.)?req,\s*["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']', orch_source))
+    duoc_doc = duoc_doc_direct | duoc_doc_getattr
     thieu = sorted(a for a in duoc_doc if a not in fields and not a.startswith("model_"))
 
     assert not thieu, (
-        "main.py đọc req.{" + ", ".join(thieu) + "} nhưng RenderVideoRequest không khai báo. "
+        "pipeline_orchestrator.py đọc req.{" + ", ".join(thieu) + "} nhưng RenderVideoRequest không khai báo. "
         "Pydantic bỏ im lặng khoá lạ → AttributeError giữa job render."
     )
 
@@ -246,11 +238,11 @@ def _nguon(mod_path: str) -> str:
 
 
 def _khoa_master_kwargs_trong_main() -> set:
-    """Các khoá của literal `master_kwargs = dict(...)` trong main.py."""
-    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"))
+    """Các khoá của literal `master_kwargs = dict(...)` trong pipeline_orchestrator.py."""
+    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "services", "pipeline_orchestrator.py"))
     i = src.index("master_kwargs = dict(")
     j = src.index("\n        )", i)
-    return set(re.findall(r"^\s{12}([a-zA-Z_][a-zA-Z0-9_]*)\s*=", src[i:j], re.M))
+    return set(re.findall(r"^\s{8,12}([a-zA-Z_][a-zA-Z0-9_]*)\s*=", src[i:j], re.M))
 
 
 # Khoá render_worker đọc với giá trị mặc định mà main.py CỐ Ý không set: chúng không phải
@@ -274,7 +266,7 @@ def test_render_worker_khong_doc_khoa_master_kwargs_khong_ai_set():
 
     thieu = sorted(doc - set_o_main - _MASTER_MAC_DINH_CO_Y)
     assert not thieu, (
-        f"render_worker đọc master_kwargs[{', '.join(thieu)}] nhưng main.py không bao giờ "
+        f"render_worker đọc master_kwargs[{', '.join(thieu)}] nhưng pipeline_orchestrator.py không bao giờ "
         "set — giá trị luôn rơi về mặc định, không một dòng lỗi nào. Nếu đó là hằng số "
         "nội bộ có chủ ý, thêm tên vào _MASTER_MAC_DINH_CO_Y."
     )
@@ -298,11 +290,11 @@ def test_hai_duong_master_truyen_cung_bo_tham_so_hieu_ung():
     generate_ass_file ở đường worker) không được vô tình nuốt mất một tham số hiệu ứng
     thật — nếu không, tương đương lỗi cũ mà test này sinh ra để bắt.
     """
-    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"))
-    i = src.index("master_audio_and_export,")
+    src = _nguon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "services", "pipeline_orchestrator.py"))
+    i = src.index("_master_audio,")
     inline = src[i:src.index("\n                )", i)]
 
-    assert "**{k: v for k, v in master_kwargs.items()" in inline, (
+    assert "**{" in inline and "for k, v in master_kwargs.items()" in inline, (
         "nhánh inline không còn unpack master_kwargs — có nguy cơ lệch tham số với đường "
         "worker giống lỗi cũ mà test này sinh ra để bắt."
     )

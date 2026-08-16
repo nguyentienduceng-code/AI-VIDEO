@@ -525,29 +525,459 @@ def _minion_pro_transform(text: str) -> str:
 # ── Emotion Profiles V2 (Kích hoạt pitch_delta ±3-5Hz để thêm diễn cảm giữa các cảnh) ──
 # Biên độ nhỏ (±3-5Hz) đủ để tạo cảm xúc mà không làm "biến giọng" khó chịu.
 EMOTION_PROFILES = {
+    # ── Emotion cơ bản (giữ nguyên) ──
     "hook":      {"rate_delta": "+5%",   "pitch_delta": "+3Hz"},
     "calm":      {"rate_delta": "+0%",   "pitch_delta": "-2Hz"},
     "dramatic":  {"rate_delta": "-3%",   "pitch_delta": "-3Hz"},
     "excited":   {"rate_delta": "+5%",   "pitch_delta": "+5Hz"},
     "suspense":  {"rate_delta": "-3%",   "pitch_delta": "-4Hz"},
     "closing":   {"rate_delta": "-2%",   "pitch_delta": "-2Hz"},
+
+    # ── Literary Emotion Profiles (Giai đoạn 1-2) ──
+    # Giọng trữ tình, nhẹ nhàng - cho văn học lãng mạn
+    "thyme":     {"rate_delta": "-5%",   "pitch_delta": "+2Hz", "reverb": True},
+    # Giọng sử thi, trang trọng - cho triết học, lịch sử
+    "epic":      {"rate_delta": "-8%",   "pitch_delta": "-5Hz", "reverb": True, "eq_boost_bass": True},
+    # Giọng ngân nga, cảm xúc - cho thơ, văn chương
+    "lyrical":   {"rate_delta": "-3%",   "pitch_delta": "+4Hz", "tremolo": True},
+    # Giọng thiền định - cho tâm linh, chữa lành
+    "meditative":{"rate_delta": "-10%",  "pitch_delta": "+1Hz", "reverb": True, "breathing_space": True},
+    # Giọng bí ẩn sâu - cho trinh thám, kinh dị
+    "suspense_deep": {"rate_delta": "-5%", "pitch_delta": "-6Hz", "low_pass": True},
+    # Giọng sắc bén, không khoan nhượng - cho sự thật trần trụi
+    "piercing":  {"rate_delta": "-8%",   "pitch_delta": "-3Hz", "clarity": True},
+}
+
+# ── Pacing Map cho Literary Mode ──
+# Map từ pacing_recommendation của BookTok Literary Mode
+PACING_MAP = {
+    "slow_contemplative": {"rate_delta": "-10%", "pitch_delta": "+2Hz"},
+    "measured": {"rate_delta": "-5%", "pitch_delta": "-2Hz"},
+    "fast_tension": {"rate_delta": "+10%", "pitch_delta": "+3Hz"},
+    "meditative": {"rate_delta": "-15%", "pitch_delta": "+1Hz"},
+    "natural_conversation": {"rate_delta": "+5%", "pitch_delta": "+0Hz"},
+}
+
+# ── Literary Voice Styles (Giai đoạn 2) ──
+# Preset cho từng thể loại sách - tự động chọn giọng + prosody
+LITERARY_VOICE_STYLES = {
+    "literary_fiction": {
+        "voice": "vi-VN-HoaiMyNeural",
+        "rate": "-5%",
+        "pitch": "+2Hz",
+        "emotion": "thyme",
+        "reverb": True,
+        "bgm_volume": 0.3,
+        "eq_preset": "warm_vocal",
+    },
+    "literary_philosophy": {
+        "voice": "vi-VN-NamMinhNeural",
+        "rate": "-8%",
+        "pitch": "-5Hz",
+        "emotion": "epic",
+        "reverb": True,
+        "bgm_volume": 0.2,
+        "eq_preset": "cinematic_deep",
+    },
+    "literary_thriller": {
+        "voice": "vi-VN-NamMinhNeural",
+        "rate": "-3%",
+        "pitch": "-6Hz",
+        "emotion": "suspense_deep",
+        "low_pass": True,
+        "bgm_volume": 0.4,
+        "eq_preset": "dark_tension",
+    },
+    "literary_spiritual": {
+        "voice": "vi-VN-HoaiMyNeural",
+        "rate": "-12%",
+        "pitch": "+1Hz",
+        "emotion": "meditative",
+        "reverb": True,
+        "bgm_volume": 0.15,
+        "eq_preset": "ethereal",
+    },
+    "literary_selfhelp": {
+        "voice": "vi-VN-HoaiMyNeural",
+        "rate": "+5%",
+        "pitch": "+3Hz",
+        "emotion": "excited",
+        "bgm_volume": 0.25,
+        "eq_preset": "energetic",
+    },
+    "literary_business": {
+        "voice": "vi-VN-NamMinhNeural",
+        "rate": "+5%",
+        "pitch": "+0Hz",
+        "emotion": "dramatic",
+        "bgm_volume": 0.3,
+        "eq_preset": "professional",
+    },
+    "literary_poetry": {
+        "voice": "vi-VN-HoaiMyNeural",
+        "rate": "-5%",
+        "pitch": "+4Hz",
+        "emotion": "lyrical",
+        "tremolo": True,
+        "reverb": True,
+        "bgm_volume": 0.2,
+        "eq_preset": "warm_vocal",
+    },
+    "literary_raw_truth": {
+        "voice": "vi-VN-NamMinhNeural",
+        "rate": "-8%",
+        "pitch": "-3Hz",
+        "emotion": "piercing",
+        "clarity": True,
+        "bgm_volume": 0.35,
+        "eq_preset": "dark_tension",
+    },
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GIAI ĐOẠN 3: MICRO-PAUSES & TONE-AWARE PROSODY
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Dramatic Pause Thresholds ──
+# Chèn break tags tự động dựa trên dấu câu
+DRAMATIC_PAUSE_THRESHOLDS = {
+    "...": 0.8,      # Ba chấm: nghỉ 0.8s (suy tư)
+    "–": 0.5,         # Gạch ngang/em dash: nghỉ 0.5s (thay đổi hướng)
+    ":": 0.3,         # Hai chấm: nghỉ 0.3s (trước list/giải thích)
+    ";": 0.2,         # Chấm phẩy: nghỉ 0.2s (ngắt nhẹ)
+    ".": 0.15,         # Dấu chấm: nghỉ 0.15s (ngắt câu)
+    "!": 0.3,         # Dấu chấm than: nghỉ 0.3s (nhấn mạnh)
+    "?": 0.25,        # Dấu hỏi: nghỉ 0.25s (chờ đợi câu trả lời)
+}
+
+# ── Vietnamese Tone Pitch Map ──
+# Xử lý thanh điệu tiếng Việt để điều chỉnh pitch micro
+VI_TONE_PITCH_MAP = {
+    # Dấu sắc: cao rõ, lên nhanh → pitch tăng
+    "sắc":   {"pitch_delta": "+3Hz", "rate_delta": "+5%"},
+    # Dấu huyền: thấp dần, kéo dài → pitch giảm, rate chậm
+    "huyền": {"pitch_delta": "-4Hz", "rate_delta": "-5%"},
+    # Dấu hỏi: lên rồi xuống → pitch tăng nhẹ
+    "hỏi":   {"pitch_delta": "+2Hz", "rate_delta": "+0%"},
+    # Dấu ngã: lên cao, dao động → pitch tăng nhiều, rate chậm
+    "ngã":   {"pitch_delta": "+5Hz", "rate_delta": "-3%"},
+    # Dấu nặng: rõ ràng, ngắn → pitch giảm nhẹ, rate nhanh
+    "nặng":  {"pitch_delta": "-2Hz", "rate_delta": "+10%"},
+}
+
+# ── BGM Recommendations cho Literary Mode ──
+BGM_RECOMMENDATIONS = {
+    "slow_contemplative": "bgm_piano_reflective.mp3",
+    "epic": "bgm_orchestral_epic.mp3",
+    "lyrical": "bgm_acoustic_soft.mp3",
+    "meditative": "bgm_ambient_nature.mp3",
+    "suspense_deep": "bgm_tense_underscore.mp3",
+    "piercing": "bgm_dark_minimal.mp3",
+    "thyme": "bgm_warm_acoustic.mp3",
+    "hook": "bgm_energetic_upbeat.mp3",
+    "calm": "bgm_peaceful_piano.mp3",
+    "dramatic": "bgm_cinematic_strings.mp3",
+    "excited": "bgm_upbeat_激励.mp3",
+    "closing": "bgm_reflective_outro.mp3",
+    "natural_conversation": "bgm_light_acoustic.mp3",
+    "measured": "bgm_thoughtful_piano.mp3",
+    "fast_tension": "bgm_tense_drama.mp3",
+}
+
+# ── EQ Presets cho Literary Mode ──
+EQ_PRESETS = {
+    "warm_vocal": "eq_low_boost_high_cut",
+    "cinematic_deep": "eq_low_mid_boost",
+    "dark_tension": "eq_low_pass_high_cut",
+    "ethereal": "eq_high_boost_reverb",
+    "energetic": "eq_bright_clarity",
+    "professional": "eq_balanced_neutral",
 }
 
 
+def inject_dramatic_pauses(text: str, emotion: str = "") -> str:
+    """
+    Chèn break tags tự động vào văn bản dựa trên dấu câu đặc biệt.
+    Áp dụng cho các emotion cần nhịp đọc dramatic.
+
+    Args:
+        text: Văn bản cần xử lý
+        emotion: Emotion profile để xác định mức độ dramatic
+
+    Returns:
+        Văn bản đã chèn break tags
+    """
+    import re
+
+    # Chỉ áp dụng dramatic pauses cho các emotion cần nhịp
+    dramatic_emotions = {"dramatic", "suspense", "suspense_deep", "epic", "piercing", "closing"}
+    if emotion and emotion not in dramatic_emotions:
+        return text
+
+    result = text
+
+    # Xử lý dấu ba chấm (ellipsis)
+    result = re.sub(
+        r'\.{3,}',
+        lambda m: f' <break time="{DRAMATIC_PAUSE_THRESHOLDS["..."]}s"/> ',
+        result
+    )
+
+    # Xử lý em dash (–)
+    result = re.sub(
+        r'\s*–\s*',
+        f' <break time="{DRAMATIC_PAUSE_THRESHOLDS["–"]}s"/> ',
+        result
+    )
+
+    # Xử lý dấu hai chấm trước list/giải thích
+    result = re.sub(
+        r':\s+([""]?[A-Z])',
+        f' <break time="{DRAMATIC_PAUSE_THRESHOLDS[":"]}s"/> \\1',
+        result
+    )
+
+    # Xử lý dấu chấm phẩy (ngắt nhẹ trong câu phức)
+    if emotion in {"dramatic", "epic", "piercing"}:
+        result = re.sub(
+            r';\s*',
+            f' <break time="{DRAMATIC_PAUSE_THRESHOLDS[";"]}s"/> ',
+            result
+        )
+
+    # Dọn khoảng trắng thừa
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+
+    return result
+
+
+def detect_vietnamese_tones(text: str) -> list[dict]:
+    """
+    Phát hiện các từ có dấu thanh tiếng Việt trong văn bản.
+    Trả về danh sách dict với thông tin từ và thanh điệu.
+
+    Sử dụng pyvi nếu có, fallback về regex pattern.
+
+    Returns:
+        List of {"word": str, "tone": str, "tone_data": dict}
+    """
+    try:
+        from pyvi import ViTokenizer
+        # Tokenize và detect tones
+        tokens = ViTokenizer.tokenize(text).split()
+        results = []
+        for token in tokens:
+            # Kiểm tra từng từ có dấu thanh
+            for tone_key in VI_TONE_PITCH_MAP.keys():
+                tone_char = _get_tone_char(token)
+                if tone_char:
+                    results.append({
+                        "word": token,
+                        "tone": tone_char,
+                        "tone_data": VI_TONE_PITCH_MAP[tone_char]
+                    })
+                    break
+        return results
+    except ImportError:
+        logger.warning("[Tone Detection] pyvi not installed. Using fallback regex.")
+        return _detect_tones_fallback(text)
+
+
+def _get_tone_char(word: str) -> str | None:
+    """Lấy ký tự dấu thanh từ từ tiếng Việt."""
+    # Bảng ký tự dấu thanh tiếng Việt
+    tone_chars = {
+        'á': 'sắc', 'à': 'huyền', 'ả': 'hỏi', 'ã': 'ngã', 'ạ': 'nặng',
+        'ắ': 'sắc', 'ằ': 'huyền', 'ẳ': 'hỏi', 'ẵ': 'ngã', 'ặ': 'nặng',
+        'é': 'sắc', 'è': 'huyền', 'ẻ': 'hỏi', 'ẽ': 'ngã', 'ẹ': 'nặng',
+        'ế': 'sắc', 'ề': 'huyền', 'ể': 'hỏi', 'ễ': 'ngã', 'ệ': 'nặng',
+        'í': 'sắc', 'ì': 'huyền', 'ỉ': 'hỏi', 'ĩ': 'ngã', 'ị': 'nặng',
+        'ó': 'sắc', 'ò': 'huyền', 'ỏ': 'hỏi', 'õ': 'ngã', 'ọ': 'nặng',
+        'ố': 'sắc', 'ồ': 'huyền', 'ổ': 'hỏi', 'ỗ': 'ngã', 'ộ': 'nặng',
+        'ớ': 'sắc', 'ờ': 'huyền', 'ở': 'hỏi', 'ỡ': 'ngã', 'ợ': 'nặng',
+        'ú': 'sắc', 'ù': 'huyền', 'ủ': 'hỏi', 'ũ': 'ngã', 'ụ': 'nặng',
+        'ứ': 'sắc', 'ừ': 'huyền', 'ử': 'hỏi', 'ữ': 'ngã', 'ự': 'nặng',
+        'ý': 'sắc', 'ỳ': 'huyền', 'ỷ': 'hỏi', 'ỹ': 'ngã', 'ỵ': 'nặng',
+        # Viết hoa
+        'Á': 'sắc', 'À': 'huyền', 'Ả': 'hỏi', 'Ã': 'ngã', 'Ạ': 'nặng',
+        'É': 'sắc', 'È': 'huyền', 'Ẻ': 'hỏi', 'Ẽ': 'ngã', 'Ẹ': 'nặng',
+        'Í': 'sắc', 'Ì': 'huyền', 'Ỉ': 'hỏi', 'Ĩ': 'ngã', 'Ị': 'nặng',
+        'Ó': 'sắc', 'Ò': 'huyền', 'Ỏ': 'hỏi', 'Õ': 'ngã', 'Ọ': 'nặng',
+        'Ú': 'sắc', 'Ù': 'huyền', 'Ủ': 'hỏi', 'Ũ': 'ngã', 'Ụ': 'nặng',
+        'Ý': 'sắc', 'Ỳ': 'huyền', 'Ỷ': 'hỏi', 'Ỹ': 'ngã', 'Ỵ': 'nặng',
+    }
+    for char in word:
+        if char in tone_chars:
+            return tone_chars[char]
+    return None
+
+
+def _detect_tones_fallback(text: str) -> list[dict]:
+    """Fallback: detect tones using regex khi pyvi không có."""
+    import re
+    results = []
+    # Pattern tìm từ có dấu thanh
+    pattern = re.compile(r'\b[\w]+[\s]?')
+    for match in pattern.finditer(text):
+        word = match.group()
+        tone_char = _get_tone_char(word)
+        if tone_char:
+            results.append({
+                "word": word,
+                "tone": tone_char,
+                "tone_data": VI_TONE_PITCH_MAP[tone_char]
+            })
+    return results
+
+
+def apply_tone_aware_prosody(text: str, base_rate: str, base_pitch: str) -> tuple:
+    """
+    Điều chỉnh rate/pitch tổng thể dựa trên tỷ lệ thanh điệu trong văn bản.
+    Đọc toàn bộ văn bản, tính trung bình có trọng số của pitch/rate delta.
+
+    Args:
+        text: Văn bản tiếng Việt cần phân tích
+        base_rate: Rate ban đầu (VD: "+5%")
+        base_pitch: Pitch ban đầu (VD: "+0Hz")
+
+    Returns:
+        (adjusted_rate, adjusted_pitch)
+    """
+    import re
+
+    # Parse base values
+    rate_match = re.match(r'([+-]?\d+)%', base_rate)
+    base_rate_val = int(rate_match.group(1)) if rate_match else 0
+
+    pitch_match = re.match(r'([+-]?\d+)Hz', base_pitch)
+    base_pitch_val = int(pitch_match.group(1)) if pitch_match else 0
+
+    # Detect tones
+    tones = detect_vietnamese_tones(text)
+    if not tones:
+        return base_rate, base_pitch
+
+    # Đếm từng loại thanh điệu
+    tone_counts = {}
+    total = len(tones)
+    weighted_pitch_delta = 0
+    weighted_rate_delta = 0
+
+    for t in tones:
+        tone = t.get("tone")
+        if tone in VI_TONE_PITCH_MAP:
+            tone_data = VI_TONE_PITCH_MAP[tone]
+            pitch_delta = tone_data.get("pitch_delta", "0Hz")
+            rate_delta = tone_data.get("rate_delta", "0%")
+
+            pitch_m = re.match(r'([+-]?\d+)Hz', pitch_delta)
+            rate_m = re.match(r'([+-]?\d+)%', rate_delta)
+
+            if pitch_m:
+                weighted_pitch_delta += int(pitch_m.group(1))
+            if rate_m:
+                weighted_rate_delta += int(rate_m.group(1))
+
+    # Tính trung bình có trọng số (chia cho số từ có thanh)
+    avg_pitch_delta = weighted_pitch_delta / total if total > 0 else 0
+    avg_rate_delta = weighted_rate_delta / total if total > 0 else 0
+
+    # Giới hạn delta để không biến giọng quá nhiều
+    max_adjustment = 3  # Hz
+    pitch_adjustment = max(-max_adjustment, min(max_adjustment, int(avg_pitch_delta)))
+
+    max_rate_adjustment = 3  # %
+    rate_adjustment = max(-max_rate_adjustment, min(max_rate_adjustment, int(avg_rate_delta)))
+
+    final_pitch = base_pitch_val + pitch_adjustment
+    final_rate = base_rate_val + rate_adjustment
+
+    return f"{final_rate:+d}%", f"{final_pitch:+d}Hz"
+
+
+def suggest_bgm(emotion: str = "", pacing: str = "", literary_style: str = "") -> str:
+    """
+    Gợi ý file BGM phù hợp dựa trên emotion và pacing.
+
+    Args:
+        emotion: Emotion profile (VD: "thyme", "epic", "suspense_deep")
+        pacing: Pacing recommendation (VD: "slow_contemplative", "meditative")
+        literary_style: Literary style (VD: "literary_fiction", "literary_philosophy")
+
+    Returns:
+        Tên file BGM (VD: "bgm_piano_reflective.mp3")
+    """
+    # Ưu tiên 1: literary_style
+    if literary_style and literary_style in BGM_RECOMMENDATIONS:
+        return BGM_RECOMMENDATIONS[literary_style]
+
+    # Ưu tiên 2: emotion
+    if emotion and emotion in BGM_RECOMMENDATIONS:
+        return BGM_RECOMMENDATIONS[emotion]
+
+    # Ưu tiên 3: pacing
+    if pacing and pacing in BGM_RECOMMENDATIONS:
+        return BGM_RECOMMENDATIONS[pacing]
+
+    # Fallback: trả về default
+    return "bgm_default.mp3"
+
+
 def _apply_emotion_to_rate_pitch(rate: str, pitch: str, emotion: str) -> tuple:
-    """Cộng dồn delta từ emotion profile vào rate/pitch base."""
+    """Cộng dồn delta từ emotion profile vào rate/pitch base. Trả về (rate, pitch, extra_effects)."""
     profile = EMOTION_PROFILES.get(emotion)
     if not profile:
-        return rate, pitch
+        return rate, pitch, {}
+
+    # Tính rate delta
     rate_match = re.match(r'([+-]?\d+)%', rate)
     base_rate = int(rate_match.group(1)) if rate_match else 0
     delta_rate_match = re.match(r'([+-]?\d+)%', profile["rate_delta"])
     delta_rate = int(delta_rate_match.group(1)) if delta_rate_match else 0
+
+    # Tính pitch delta
     pitch_match = re.match(r'([+-]?\d+)Hz', pitch)
     base_pitch = int(pitch_match.group(1)) if pitch_match else 0
     delta_pitch_match = re.match(r'([+-]?\d+)Hz', profile["pitch_delta"])
     delta_pitch = int(delta_pitch_match.group(1)) if delta_pitch_match else 0
-    return f"{base_rate + delta_rate:+d}%", f"{base_pitch + delta_pitch:+d}Hz"
+
+    # Trích xuất extra effects
+    extra_effects = {}
+    for key in ("reverb", "tremolo", "low_pass", "clarity", "breathing_space", "eq_boost_bass"):
+        if profile.get(key):
+            extra_effects[key] = True
+
+    return f"{base_rate + delta_rate:+d}%", f"{base_pitch + delta_pitch:+d}Hz", extra_effects
+
+
+def apply_pacing(rate: str, pitch: str, pacing_recommendation: str = "") -> tuple:
+    """
+    Áp dụng pacing từ Literary Mode (pacing_recommendation).
+    Override rate/pitch dựa trên pacing style.
+    """
+    pacing = PACING_MAP.get(pacing_recommendation, {})
+    if not pacing:
+        return rate, pitch
+
+    # Override rate
+    rate_match = re.match(r'([+-]?\d+)%', pacing.get("rate_delta", rate))
+    new_rate = rate_match.group(0) if rate_match else rate
+
+    # Override pitch
+    pitch_match = re.match(r'([+-]?\d+)Hz', pacing.get("pitch_delta", pitch))
+    new_pitch = pitch_match.group(0) if pitch_match else pitch
+
+    return new_rate, new_pitch
+
+
+def get_emotion_effects(emotion: str) -> dict:
+    """Trả về dict chứa các effect đặc biệt của emotion (reverb, tremolo, etc)."""
+    profile = EMOTION_PROFILES.get(emotion, {})
+    effects = {}
+    for key in ("reverb", "tremolo", "low_pass", "clarity", "breathing_space", "eq_boost_bass"):
+        if profile.get(key):
+            effects[key] = True
+    return effects
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1750,18 +2180,39 @@ async def synthesize_speech(
     emotion: str = "",
     warning_callback=None,
     use_breathing: bool = False,
+    speech_rate_modifier: str = "",
+    pacing_recommendation: str = "",
 ) -> tuple[float, list]:
     """
-    V3.1: Chuyển văn bản → giọng nói với Sentence-Level Prosody + Multilayer Fallback.
-    Hỗ trợ chèn tiếng lấy hơi (Breathing) để tạo cảm giác tự nhiên.
+    V3.2: Chuyển văn bản → giọng nói với Sentence-Level Prosody + Multilayer Fallback.
+    Hỗ trợ:
+    - speech_rate_modifier: từ BookTok script (+15%, +5%, 0%, -5%)
+    - pacing_recommendation: từ Literary Mode (slow_contemplative, meditative, etc)
+    - Literary emotion profiles: thyme, epic, lyrical, meditative, suspense_deep, piercing
+
     Có TTS Cache: cùng (text, voice, rate, pitch, emotion, breathing) → tái dùng audio cũ,
     render lại video không tốn thời gian sinh giọng.
     """
     from services.cache_service import cache as _tts_cache
 
+    # ── Bước 1: Áp dụng speech_rate_modifier từ BookTok ──
+    if speech_rate_modifier:
+        sm_match = re.match(r'([+-]?\d+)%', speech_rate_modifier)
+        if sm_match:
+            sm_delta = int(sm_match.group(1))
+            base_rate_match = re.match(r'([+-]?\d+)%', rate)
+            base_rate = int(base_rate_match.group(1)) if base_rate_match else 0
+            rate = f"{base_rate + sm_delta:+d}%"
+
+    # ── Bước 2: Áp dụng pacing từ Literary Mode ──
+    if pacing_recommendation:
+        rate, pitch = apply_pacing(rate, pitch, pacing_recommendation)
+
     cache_params = dict(
         text=text, voice=voice, rate=rate, pitch=pitch,
         emotion=emotion or "", breathing=bool(use_breathing),
+        speech_rate_modifier=speech_rate_modifier or "",
+        pacing_recommendation=pacing_recommendation or "",
     )
     cached_meta = _tts_cache.get("tts_meta", **cache_params)
     if cached_meta and _tts_cache.get_media("tts", output_path, **cache_params):
@@ -1776,14 +2227,22 @@ async def synthesize_speech(
             dur, wbs = await _synthesize_with_breaks(
                 text, output_path, warning_callback,
                 voice=voice, rate=rate, pitch=pitch, mode=mode, emotion=emotion,
+                speech_rate_modifier=speech_rate_modifier,
+                pacing_recommendation=pacing_recommendation,
             )
         except Exception as break_err:
             logger.warning(f"[TTS Break] Ghép nhịp nghỉ thất bại ({break_err}). Đọc liền mạch.")
             dur, wbs = await _synthesize_speech_internal(
-                strip_break_tags(text), output_path, voice, rate, pitch, mode, emotion, warning_callback
+                strip_break_tags(text), output_path, voice, rate, pitch, mode, emotion, warning_callback,
+                speech_rate_modifier=speech_rate_modifier,
+                pacing_recommendation=pacing_recommendation,
             )
     else:
-        dur, wbs = await _synthesize_speech_internal(text, output_path, voice, rate, pitch, mode, emotion, warning_callback)
+        dur, wbs = await _synthesize_speech_internal(
+            text, output_path, voice, rate, pitch, mode, emotion, warning_callback,
+            speech_rate_modifier=speech_rate_modifier,
+            pacing_recommendation=pacing_recommendation,
+        )
 
     # Breathing đã DI CHUYỂN sang video_service.render_final_video (1 lần ở đầu video).
     # Ở đây chỉ sinh giọng thuần, không can thiệp audio.
@@ -1810,7 +2269,22 @@ async def _synthesize_speech_internal(
     mode: str = "storyteller",
     emotion: str = "",
     warning_callback=None,
+    speech_rate_modifier: str = "",
+    pacing_recommendation: str = "",
 ) -> tuple[float, list]:
+    # ── Bước 1: Áp dụng speech_rate_modifier từ BookTok ──
+    if speech_rate_modifier:
+        sm_match = re.match(r'([+-]?\d+)%', speech_rate_modifier)
+        if sm_match:
+            sm_delta = int(sm_match.group(1))
+            base_rate_match = re.match(r'([+-]?\d+)%', rate)
+            base_rate = int(base_rate_match.group(1)) if base_rate_match else 0
+            rate = f"{base_rate + sm_delta:+d}%"
+
+    # ── Bước 2: Áp dụng pacing từ Literary Mode ──
+    if pacing_recommendation:
+        rate, pitch = apply_pacing(rate, pitch, pacing_recommendation)
+
     # ── Xử lý OmniVoice ──
     if voice.startswith("omnivoice_"):
         return await _synthesize_omnivoice(text, output_path, voice, rate=rate, emotion=emotion, warning_callback=warning_callback)
@@ -1840,7 +2314,7 @@ async def _synthesize_speech_internal(
         text = _minion_pro_transform(text)
         use_prosody = False
     elif emotion:
-        rate, pitch = _apply_emotion_to_rate_pitch(rate, pitch, emotion)
+        rate, pitch, _ = _apply_emotion_to_rate_pitch(rate, pitch, emotion)
 
     # Retry logic Edge-TTS (dùng trực tiếp Neural TTS full-context để giữ trọn vẹn nhịp thở và diễn cảm tự nhiên)
     last_error = None

@@ -29,8 +29,16 @@ export default function ConfigSection() {
   const minScenes = 4, maxScenes = 75;
   const sliderPercent = ((ctx.numScenes - minScenes) / (maxScenes - minScenes)) * 100;
 
-  // ── Voice Cloning: danh sách giọng clone cá nhân + upload mẫu ──
   const [customVoices, setCustomVoices] = useState([]);
+  const [bgmGroups, setBgmGroups] = useState({
+    "🧘‍♀️ Thiền định & Chữa lành (Ambient)": [],
+    "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)": [],
+    "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)": [],
+    "🎉 Năng động & Tích cực (Upbeat)": [],
+    "🎧 Hip-hop & Đường phố (Rap/Trap)": [],
+    "🤡 Vui nhộn (Funny)": [],
+    "📁 Khác (Nhạc chưa phân loại)": []
+  });
   const [cloneBusy, setCloneBusy] = useState(false);
   const [clonePreviewBusy, setClonePreviewBusy] = useState(false);
   const cloneInputRef = useRef(null);
@@ -44,7 +52,60 @@ export default function ConfigSection() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => { loadCustomVoices(); }, [loadCustomVoices]);
+  const loadExtraBgm = useCallback(() => {
+    fetch(`${API_BASE}/api/bgm-list`)
+      .then(r => r.json())
+      .then(d => {
+        const groups = {
+          "🧘‍♀️ Thiền định & Chữa lành (Ambient)": [],
+          "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)": [],
+          "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)": [],
+          "🎉 Năng động & Tích cực (Upbeat)": [],
+          "🎧 Hip-hop & Đường phố (Rap/Trap)": [],
+          "🤡 Vui nhộn (Funny)": [],
+          "📁 Khác (Nhạc chưa phân loại)": []
+        };
+        const hardcoded = {
+          "moment_of_peace": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "new_age_nature": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "deep_abstract_ambient": "🧘‍♀️ Thiền định & Chữa lành (Ambient)",
+          "ghost_piano_yeti_music_main_version": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "black_light_all_good_folks_main": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "running_night": "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)",
+          "fluffy_clouds_fugu_vibes_main_version": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "lofi_jazzy_love": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "livin_easy_oliver_massa_main": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "Back_When": "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)",
+          "let_good_times_roll_ra_main_version": "🎉 Năng động & Tích cực (Upbeat)",
+          "afro_pop": "🎉 Năng động & Tích cực (Upbeat)",
+          "music_promotion": "🎉 Năng động & Tích cực (Upbeat)",
+          "hype_drill": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "no_sleep_hiphop": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "rap_beat": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "type_beat": "🎧 Hip-hop & Đường phố (Rap/Trap)",
+          "comedy_cartoon": "🤡 Vui nhộn (Funny)"
+        };
+        (d.tracks || []).forEach(t => {
+           const id = t.id.replace(/\.[^/.]+$/, "");
+           let group = "📁 Khác (Nhạc chưa phân loại)";
+           if (hardcoded[id]) {
+             group = hardcoded[id];
+           } else {
+             const lowerId = id.toLowerCase();
+             if (lowerId.match(/ambient|chant|peace|nature|smooth|calm/)) group = "🧘‍♀️ Thiền định & Chữa lành (Ambient)";
+             else if (lowerId.match(/cinematic|epic|ghost|dark|suspens/)) group = "🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)";
+             else if (lowerId.match(/chill|lofi|lo.fi|acoustic|sad|relax/)) group = "☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)";
+             else if (lowerId.match(/funny|comedy|cartoon/)) group = "🤡 Vui nhộn (Funny)";
+             else if (lowerId.match(/upbeat|pop|bass|happy|energetic/)) group = "🎉 Năng động & Tích cực (Upbeat)";
+             else if (lowerId.match(/rap|hip.*hop|trap|drill|beat/)) group = "🎧 Hip-hop & Đường phố (Rap/Trap)";
+           }
+           groups[group].push({ value: id, label: t.name });
+        });
+        setBgmGroups(groups);
+      }).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadCustomVoices(); loadExtraBgm(); }, [loadCustomVoices, loadExtraBgm]);
 
   // Giọng AI (clone cá nhân hoặc preset OmniVoice) sinh ra bằng GPU, không nghe thử
   // được qua /api/preview/voice/{id} như giọng Edge-TTS: file .mp3 mẫu ở đó là bản ghi
@@ -250,41 +311,14 @@ export default function ConfigSection() {
 
   const BGMOptions = (
     <>
-      <optgroup label="🧘‍♀️ Thiền định & Chữa lành (Ambient)">
-        <option value="moment_of_peace">Moment Of Peace</option>
-        <option value="new_age_nature">New Age Nature</option>
-        <option value="deep_abstract_ambient">Deep Abstract Ambient</option>
-      </optgroup>
-
-      <optgroup label="🕵️‍♂️ Kịch tính & Huyền bí (Cinematic)">
-        <option value="ghost_piano_yeti_music_main_version">Ghost Piano (Yeti Music)</option>
-        <option value="black_light_all_good_folks_main">Black Light (All Good Folks)</option>
-        <option value="running_night">Running Night</option>
-      </optgroup>
-
-      <optgroup label="☕ Thư giãn & Kể chuyện (Chill & Lo-Fi)">
-        <option value="fluffy_clouds_fugu_vibes_main_version">Fluffy Clouds (Fugu Vibes)</option>
-        <option value="lofi_jazzy_love">Lo-Fi Jazzy Love</option>
-        <option value="livin_easy_oliver_massa_main">Livin Easy (Oliver Massa)</option>
-        <option value="Back_When">Back When</option>
-      </optgroup>
-
-      <optgroup label="🎉 Năng động & Tích cực (Upbeat)">
-        <option value="let_good_times_roll_ra_main_version">Let Good Times Roll</option>
-        <option value="afro_pop">Afro Pop</option>
-        <option value="music_promotion">Music Promotion</option>
-      </optgroup>
-
-      <optgroup label="🎧 Hip-hop & Đường phố (Rap/Trap)">
-        <option value="hype_drill">Hype Drill</option>
-        <option value="no_sleep_hiphop">No Sleep Hip-Hop</option>
-        <option value="rap_beat">Rap Beat</option>
-        <option value="type_beat">Type Beat</option>
-      </optgroup>
-
-      <optgroup label="🤡 Vui nhộn (Funny)">
-        <option value="comedy_cartoon">Comedy Cartoon</option>
-      </optgroup>
+      {Object.entries(bgmGroups).map(([label, tracks]) => {
+        if (tracks.length === 0) return null;
+        return (
+          <optgroup key={label} label={label}>
+            {tracks.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </optgroup>
+        );
+      })}
     </>
   );
 

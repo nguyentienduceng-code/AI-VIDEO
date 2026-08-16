@@ -1,200 +1,281 @@
 # KIẾN TRÚC & CƠ CHẾ HOẠT ĐỘNG: AI VIDEO STUDIO (v2.3+)
 
-Tài liệu này mô tả chi tiết cơ cấu, luồng hoạt động và các thành phần kỹ thuật của hệ thống sinh video tự động AI Video Maker (Phiên bản v2.3+ - Đã tích hợp các tính năng điện ảnh nâng cao, router 4 tầng và cache thông minh).
+> **Nguồn sự thật duy nhất** cho mọi lần nâng cấp, debug, và thay đổi luồng hoạt động.
+> Cập nhật: **2026-08-13**
 
 ---
 
-## 1. Tổng quan Hệ thống (System Overview)
+## 1. Tổng quan Hệ thống
 
-Hệ thống được thiết kế theo kiến trúc Client-Server:
-- **Frontend (React + Vite):** Giao diện người dùng đơn trang (SPA) cho phép nhập ý tưởng kịch bản, cấu hình nhân vật (Character Reference), tuỳ chỉnh giọng đọc/âm nhạc, bật/tắt các hiệu ứng (Veo 3, Beat Sync, Ken Burns, GPU Encode) và theo dõi tiến trình qua WebSocket.
-- **Backend (FastAPI - Python):** Xử lý logic lõi, điều phối các luồng gọi API bên ngoài (Gemini 2.5, Imagen 3, Veo 3.1, Edge-TTS) và tiến hành render video tự động thông qua MoviePy.
-- **Communication:** Giao tiếp qua REST API tại endpoint `/api/generate-video` (hoặc `/api/render-video`) kết hợp với WebSockets để push trạng thái real-time.
+**AI-VIDEO-MAKER** là hệ thống Client-Server tự động hoá sản xuất video ngắn (TikTok, YouTube Shorts, Reels) bằng AI.
 
----
+| Thành phần | Công nghệ | Cổng |
+|---|---|---|
+| Frontend UI | React + Vite + TailwindCSS + Zustand | 3001 |
+| Backend API | FastAPI + Python 3.11+ | 8000 |
+| Render Engine | MoviePy v2 + FFmpeg (NVENC) | subprocess |
 
-## 2. Luồng xử lý cốt lõi (Main Workflow)
+**5 chế độ tạo video:**
 
-Quy trình từ ý tưởng thành video hoàn chỉnh diễn ra hoàn toàn tự động qua 4 bước:
-
-### Bước 1: Tiếp nhận yêu cầu (Frontend → Backend)
-- Người dùng nhập *Chủ đề (Topic)*, *Mô tả Nhân vật (Character Reference)* và các tuỳ chọn hiệu ứng (Ken Burns, Veo, GPU Encode, Beat Sync).
-- Payload được gửi qua HTTP POST tới `/api/generate-script` hoặc `/api/render-video`.
-
-### Bước 2: Sinh Kịch bản & Phân cảnh (Gemini Service)
-- Dịch vụ `gemini_service.py` gọi **Gemini 2.5 Flash/Pro** với cơ chế **Structured Outputs** (Pydantic Schema) để đảm bảo trả về JSON chuẩn xác 100%.
-- Hệ thống phân tích chủ đề và trả về các phân cảnh chi tiết (lời thoại, mô tả hình ảnh).
-
-### Bước 3: Tạo Âm thanh & Hình ảnh tĩnh/động (TTS & AI Generation)
-- **Voice:** `tts_service.py` sử dụng **OmniVoice V3.3** (chạy GPU, Zero-shot voice cloning) làm engine chính để sinh giọng đọc cao cấp. Đi kèm cơ chế Fallback tự động 4 lớp (Edge-TTS -> gTTS -> Offline TTS) và TTS Cache. Hỗ trợ Voice Cloning qua API chuyên biệt.
-- **Images/Video Router 4 Tầng:** `image_router.py` quản lý luồng fallback: **Veo 3.1** (ưu tiên nếu bật) $\rightarrow$ **Pexels Stock Video** (video thật) $\rightarrow$ **Google Imagen 3** (ảnh AI chất lượng cao) $\rightarrow$ **Pollinations AI** (ảnh AI siêu tốc). Hỗ trợ chế độ `prefer_stock_video` ép dùng video stock cho 100% cảnh.
-
-### Bước 4: Render Video (Video Service)
-- Dịch vụ `video_service.py` sử dụng thư viện **MoviePy v2.x**.
-- **Hiệu ứng & Chuyển cảnh:** Áp dụng Transition Engine 10 kiểu (slide, whip_pan, page_flip...), Ken Burns (zoom tĩnh), Hook Zoom Boost (zoom mạnh cảnh đầu), Frame Chaining, và Beat Sync. Hỗ trợ thay đổi từng cảnh.
-- **Subtitles & BGM:** Tự động Auto-ducking nhạc nền khi có giọng đọc, render phụ đề động (Karaoke effect).
-- Xuất file `.mp4` (hỗ trợ tăng tốc GPU NVENC) ở định dạng khung hình dọc (Tiktok/Reels) về thư mục `assets/output`.
+| Mode | Đầu vào | Đặc điểm |
+|---|---|---|
+| `storyteller` | Chủ đề (topic) | Gemini viết kịch bản → AI sinh ảnh → TTS → render |
+| `script_video` | Script tự nhập | Gemini chia cảnh → AI sinh ảnh → TTS → render |
+| `photo_narration` | Ảnh upload | Gemini multimodal phân tích ảnh → viết narration → render |
+| `photo_slideshow` | Ảnh upload | Slideshow cinematic + BGM (không TTS) |
+| `quiz_listicle` | Chủ đề | Gemini viết dạng Top N / Q&A → render |
 
 ---
 
-## 3. Cấu trúc mã nguồn (Directory Structure)
+## 2. Luồng xử lý cốt lõi (Pipeline)
 
-```text
+```
+User Input → Gemini (kịch bản) → TTS + AI Image/Video
+                                              ↓
+                                       FFmpeg Render
+                                       (MoviePy + NVENC)
+                                              ↓
+                                          MP4 Final
+```
+
+### Bước 1: Sinh Kịch bản — `POST /api/generate-script`
+- `gemini_service.generate_script()` gọi **Gemini 2.5 Flash/Pro** với **Structured Outputs** (Pydantic Schema)
+- Trả về JSON chuẩn gồm: `scenes[]`, `sentiment`, `hook_text`, `review` (AI Script Reviewer)
+- AI Script Reviewer tự chấm điểm kịch bản; nếu dưới 60/100 → tự viết lại 1 lượt
+
+### Bước 2: Tạo TTS — `tts_service.synthesize_speech()`
+- **OmniVoice V3.3** (GPU, zero-shot cloning) — engine chính
+- **Edge-TTS** với `boundary="WordBoundary"` — fallback L1 (bắt buộc với edge-tts ≥7.x)
+- **gTTS** — fallback L2
+- **Offline TTS** — fallback L3
+- **Forced Alignment**: stable-ts/whisper tìm word boundaries chính xác cho phụ đề karaoke
+- **Voice Cloning**: upload mẫu 5–10s → whisper transcript → kiểm tra độ khớp → đăng ký giọng
+
+### Bước 3: Sinh Hình ảnh — `image_router.generate_image_with_fallback()`
+Router 4 tầng (ưu tiên → fallback):
+
+1. **Veo 3.1** — nếu `use_veo=True` và API key có billing
+2. **Pexels / Pixabay Stock Video** — nếu `prefer_stock_video=True`
+3. **Google Imagen 3** — sinh ảnh AI chất lượng cao
+4. **Pollinations AI** — fallback siêu tốc
+5. **Gradient offline** — dự phòng cuối cùng
+
+### Bước 4: Render Video — `video_service.render_final_video()`
+
+| Thành phần | Công nghệ |
+|---|---|
+| Ghép clip | MoviePy v2.x (`CompositeVideoClip`, `concatenate_videoclips`) |
+| Ken Burns | FFmpeg zoom từng ảnh thành clip `.mp4` |
+| Chuyển cảnh | FFmpeg xfade (14 kiểu: crossfade, slide, whip_pan, page_flip...) |
+| Beat Sync | librosa phát hiện onset → snap điểm cắt cảnh |
+| Phụ đề | ASS file + FFmpeg burn-in (karaoke, cinematic_box, subtitle styles) |
+| Audio Mix | FFmpeg: auto-ducking, EQ, loudnorm -14 LUFS, limiter |
+| GPU Encode | FFmpeg NVENC (`h264_nvenc`) |
+
+**Render Worker**: chạy trong `multiprocessing.Process` riêng, không block FastAPI event loop.
+
+---
+
+## 3. Cấu trúc thư mục
+
+```
 AI-VIDEO-MAKER/
-├── frontend/                     # UI Application (React + Vite)
-│   ├── src/App.jsx               # Logic tương tác, tuỳ chỉnh nâng cao
-│   ├── src/index.css             # Định dạng, hiệu ứng UI
-│   └── vite.config.js
-├── backend/                      # API Server (FastAPI)
-│   ├── main.py                   # Điểm đầu vào, khai báo Endpoint & Background Tasks
+├── ARCHITECTURE.md          ← Nguồn sự thật: kiến trúc + cơ chế
+├── ROADMAP.md               ← Nguồn sự thật: trạng thái features + history
+├── USER_GUIDE.md            ← Hướng dẫn sử dụng cho người dùng cuối
+│
+├── backend/
+│   ├── main.py              ← Entry point, tất cả API endpoints
+│   ├── config.py            ← Nguồn Sự Thật DUY NHẤT cho đường dẫn file
+│   ├── requirements.txt
+│   │
 │   ├── services/
-│   │   ├── gemini_service.py     # Gọi LLM với Structured Outputs
-│   │   ├── image_router.py       # Tích hợp Imagen 3 sinh ảnh
-│   │   ├── veo_service.py        # Tích hợp Veo 3.1 sinh video
-│   │   ├── tts_service.py        # Tích hợp lõi OmniVoice V3.2 chạy GPU và cơ chế Fallback Edge-TTS (async/await)
-│   │   ├── audio_mix_service.py  # Xử lý Smart Audio Mixing (Auto-ducking)
-│   │   ├── beat_sync.py          # Logic đồng bộ hình ảnh/video theo nhịp bass (Beat Sync)
-│   │   ├── motion_effects.py     # Hiệu ứng chuyển động (Ken Burns, Zoom Boost)
-│   │   ├── preset_service.py     # Quản lý cấu hình lưu sẵn của người dùng
-│   │   ├── project_service.py    # Quản lý Checkpoint Smart Resume
-│   │   ├── key_manager.py        # Quản lý xoay vòng API Keys tự động
-│   │   ├── render_worker.py      # Chạy MoviePy/FFmpeg trong process con
-│   │   ├── hook_engine.py        # 4 hiệu ứng mở màn (Slot/Blackout/Typewriter/Vignette)
-│   │   ├── log_setup.py          # UTF-8 streams + log ra file + nhãn [job_id] (mục 6)
-│   │   └── video_service.py      # Core render (MoviePy v2) & ghép phụ đề
-│   ├── scripts/check_imports.py  # Cổng chất lượng chống UnboundLocalError (mục 6)
-│   ├── logs/                     # backend.log, render_worker.log (xoay vòng 10MB×5)
-│   ├── tests/                    # lớp 4 của cổng chất lượng (mục 6.3) — chạy ~2 giây
-│   │                               Phần lớn là test HỢP ĐỒNG, xem mục 6.3.
-│   ├── config.py                 # NGUỒN SỰ THẬT DUY NHẤT cho mọi đường dẫn file
-│   ├── assets/                   # Nơi lưu trữ tài nguyên
-│   │   ├── bgm/, sfx/, slot_covers/, fonts/   # ĐI KÈM MÃ NGUỒN — không di dời
-│   │   ├── audio/, images/, output/, cache/, projects/, uploads/, overrides/,
-│   │   │   custom_sfx/           # ↑ tiếng động NGƯỜI DÙNG tự nạp — tách khỏi
-│   │   │                           assets/sfx/ (đi kèm mã nguồn, được git track)
-│   │   │                         # ↑ dữ liệu sinh ra — chuyển sang ổ khác được
-│   │   │                           qua CUSTOM_ASSETS_DIR trong .env
-│   └── .env                      # Lưu API Keys + CUSTOM_ASSETS_DIR
-├── start.bat, stop.bat           # Khởi chạy trực tiếp (uvicorn) và dọn tiến trình
-├── start-pm2.bat                 # Khởi chạy qua PM2 (autorestart + log bền) — NÊN DÙNG
-├── setup-pm2-autostart.bat       # Đăng ký Scheduled Task tự chạy cùng Windows
-├── ecosystem.config.js           # Cấu hình PM2
-└── scripts/export_context.py     # Trích xuất mã nguồn ra AI_CONTEXT.md (tiện ích rời)
+│   │   ├── gemini_service.py      ← Gemini LLM: sinh kịch bản + review
+│   │   ├── tts_service.py        ← OmniVoice V3.3 + Edge-TTS + Voice Cloning
+│   │   ├── image_router.py       ← Router 4 tầng: Veo → Stock → Imagen → Pollinations
+│   │   ├── veo_service.py        ← Veo 3.1 video generation
+│   │   ├── video_service.py       ← MoviePy render + ASS subtitles + Hook/Outro
+│   │   ├── audio_mix_service.py  ← FFmpeg mastering: ducking, EQ, loudnorm, color grade
+│   │   ├── beat_sync.py          ← Librosa onset detection → snap timeline
+│   │   ├── motion_effects.py     ← Ken Burns, Timeline, Crossfade duration
+│   │   ├── cache_service.py      ← Cache binary media theo hash prompt (V2)
+│   │   ├── render_worker.py      ← multiprocessing.Process render
+│   │   ├── preset_service.py     ← Quản lý preset JSON
+│   │   ├── project_service.py     ← Checkpoint + Smart Resume
+│   │   ├── key_manager.py         ← Xoay vòng API keys
+│   │   ├── quota_service.py       ← Trạng thái quota API
+│   │   ├── log_setup.py          ← UTF-8 log + [job_id] ContextVar
+│   │   ├── hook_engine.py        ← Hiệu ứng mở màn: slot-machine, typewriter, blackout...
+│   │   ├── ffmpeg_assembler.py   ← FastAssembly bằng FFmpeg (thay MoviePy)
+│   │   ├── scene_balancer.py     ← Cân lại nhịp cảnh cho đều
+│   │   ├── script_resplit.py     ← Chia lại cảnh từ script user
+│   │   ├── duration_model.py     ← Ước lượng thời lượng theo tốc độ đọc thật
+│   │   └── image_upload_service.py
+│   │
+│   ├── tests/                ← Pytest contract tests (21 file)
+│   ├── logs/                 ← backend.log, render_worker.log (xoay vòng 10MB×5)
+│   ├── scripts/
+│   │   └── check_imports.py  ← Phát hiện UnboundLocalError do import cục bộ
+│   └── assets/
+│       ├── bgm/              ← 14 file nhạc nền (đi kèm mã nguồn)
+│       ├── sfx/              ← Tiếng động: whoosh, pop, ding, riser, bass_drop...
+│       ├── slot_covers/      ← Ảnh bìa cho hook Máy Xèng
+│       ├── fonts/            ← Font phụ đề
+│       ├── images/           ← Ảnh sinh ra (theo job_id)
+│       ├── audio/            ← Giọng đọc sinh ra (theo job_id)
+│       ├── output/          ← Video thành phẩm (.mp4 + .ass)
+│       ├── cache/            ← Cache binary media (V2, 5GB max)
+│       ├── projects/         ← State dự án để Smart Resume
+│       ├── uploads/          ← Ảnh user upload
+│       ├── overrides/         ← Hình/video user ghi đè per-scene
+│       └── voices_preview/   ← File mẫu giọng clone
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx           ← Router chính (step: config→editor→rendering)
+│   │   ├── store.js           ← Zustand store (job, scenes, config)
+│   │   ├── constants.js       ← MODES, STYLES, VOICES, TONES, DURATIONS, TRANSITIONS, SFX
+│   │   └── components/
+│   │       ├── ModeSelector.jsx     ← Chọn 5 mode
+│   │       ├── InputSection.jsx     ← Nhập topic / upload ảnh
+│   │       ├── ConfigSection.jsx    ← Style, voice, duration, content niche
+│   │       ├── SettingsPanel.jsx    ← API key, watermark, auto-fill hook
+│   │       ├── AdvancedSettings.jsx ← Veo, Ken Burns, Beat Sync, stock video, hook/outro
+│   │       ├── PresetManager.jsx    ← Save/load/delete preset
+│   │       ├── QuotaBar.jsx         ← Thanh trạng thái quota API
+│   │       ├── ScriptEditor.jsx    ← Xem/sửa kịch bản, per-scene controls, cache probe
+│   │       └── RenderProgress.jsx   ← WebSocket progress + download
+│   └── vite.config.js
+│
+├── start.bat              ← Khởi trực tiếp (uvicorn + npm)
+├── start-pm2.bat        ← PM2 autorestart (khuyến nghị)
+├── stop.bat              ← Tắt process
+├── setup-pm2-autostart.bat ← Scheduled Task tự chạy khi boot
+└── ecosystem.config.js   ← PM2 config (Backend + Frontend)
 ```
 
 ---
 
-## 4. Các tính năng Nâng cao (Advanced Features)
+## 4. Kiến trúc đường dẫn (`config.py`)
 
-Phiên bản hiện tại đã hoàn thiện các tính năng điện ảnh tiên tiến:
-1. **Veo 3.1 Image-to-Video:** Tự động tạo cảnh quay động chân thực với tùy chọn *Veo Ambient Audio* (âm thanh môi trường). Tự động cảnh báo UI khi hết quota billing.
-2. **OmniVoice V3.3 & Prosody Engine:** Sinh giọng đọc cao cấp bằng GPU với Zero-shot Cloning, Prosody Engine (micro-prosody per sentence), Forced Alignment Word Boundaries (stable-ts) cho phụ đề Karaoke chính xác, và kho giọng custom.
-3. **Beat Sync & Audio Mixing:** Phân tích Peak âm thanh của BGM để giật hình/chuyển cảnh khớp nhịp nhạc (Hype Drill, Phonk).
-4. **Motion Dynamics & Transitions:** Hỗ trợ Ken Burns, Hook Zoom Boost (nhấn mạnh 2 giây đầu video), và Transition Engine 10 kiểu.
-5. **Stock Video Router & Prefer Stock Mode:** Xử lý luồng tải video stock thông minh, tự động lọc từ khóa, kèm toggle ép dùng footage thực tế tạo sự chân thực.
-6. **Smart Resume Checkpoints:** Khôi phục render dang dở không cần tốn API chạy lại các bước TTS/Hình ảnh đã xong.
-7. **Character Consistency:** Cho phép truyền *Character Reference* để Gemini & Imagen giữ nguyên diện mạo nhân vật xuyên suốt các cảnh.
-8. **Hook & Outro Engine:** 7 hiệu ứng mở màn (Máy Xèng, Màn đen, Đánh máy, Vignette thở, Chụp ảnh, Nhiễu số, Cháy phim) và phần đuôi video dùng chung bộ dựng đó. Thời lượng lấy từ `resolve_hook_timing()` / `resolve_outro_timing()` — **nguồn chân lý duy nhất**, để `main.py` (dời timeline, tính tổng thời lượng) và `video_service` (dựng clip) không bao giờ tính ra hai con số khác nhau.
-9. **Dynamic BGM:** Nhạc mở màn riêng cho N giây đầu rồi chuyển êm sang nhạc chính bằng `acrossfade` (không phải `afade`+`amix` — xem mục 4.1).
-10. **Sidechain Ducking:** Nhạc nền tự chìm khi có giọng đọc, dùng track **chỉ-giọng** làm tín hiệu điều khiển (xem mục 4.1).
+Hai gốc thư mục, **KHÔNG phải một**:
 
-### 4.1. Vì sao filtergraph âm thanh trông như vậy
-
-Ba quyết định dễ bị "sửa cho gọn" thành sai, nên ghi lại lý do:
-
-- **`acrossfade`, không phải `afade` + `amix`.** `amix` mặc định `normalize=1` → chia biên độ cho số input, nên bật nhạc mở màn làm nhạc nền cả video tụt 6dB so với khi tắt. `loudnorm` phía sau chuẩn hoá tổng nên không lộ ở âm lượng chung, chỉ **tỉ lệ nhạc/giọng** đổi — nghe ra nhưng gần như không lần ra nguyên nhân. Ngoài ra hai `afade` độc lập tạo một chỗ trũng ngay giữa điểm chuyển, và `afade=t=in` chỉ *bịt tiếng* nhạc chính chứ không giữ nó lại nên bài hát trôi mất T giây đầu. `atrim` + `acrossfade` giải quyết cả ba.
-- **Mọi `amix` đều phải có `normalize=0`.** Cùng lý do trên.
-- **Sidechain lấy track chỉ-giọng, không lấy `[0:a]`.** `[0:a]` là audio của video thô, đã trộn sẵn giọng + **toàn bộ SFX**. Dùng nó làm tín hiệu điều khiển thì mỗi tiếng whoosh/impact/máy xèng đều dìm nhạc nền y như giọng nói — SFX là *nội dung*, không phải *tín hiệu điều khiển*. `video_service.write_voice_sidechain()` ghi riêng track đó (ở cả đường nhanh lẫn đường chậm).
-
-Bộ `tests/test_audio_filtergraph.py` canh cả ba: nó chặn `subprocess.run` và khẳng định trên chuỗi `-filter_complex` thật, thay vì phải render vài phút rồi ngồi nghe.
-
----
-
-## 5. Nợ kỹ thuật & Định hướng tiếp theo (Technical Debt & Future)
-
-Dù đã giải quyết phần lớn các lỗi hệ thống của bản MVP (đứt gãy Event Loop, HTTP Timeout, rò rỉ bộ nhớ), vẫn còn một số điểm cần tối ưu:
-
-### ✅ Đã xử lý (v2.3+ — 2026-07-24):
-1. **~~Tách Component Frontend~~:** `App.jsx` đã được tái cấu trúc thành 9 components riêng biệt + `AppContext.jsx` quản lý state tập trung.
-2. **~~Offload Video Rendering~~:** Tạo `render_worker.py` sử dụng `multiprocessing.Process` để tách MoviePy/FFmpeg ra process con.
-3. **~~Caching AI Requests~~:** Nâng cấp `cache_service.py` V2 hỗ trợ cache binary media (ảnh/video) theo hash prompt.
-4. **~~Smart Resume & Preset System~~:** Đã bổ sung cơ chế lưu file project tự động để nối tiếp render nếu lỗi, cùng hệ thống preset.
-
-### ✅ Đã xử lý (2026-07-28 — Vận hành & Chẩn đoán):
-1. **~~Mất dấu vết khi crash~~:** Log ghi ra file, có traceback đầy đủ và nhãn `[job_id]`. Xem mục 6.
-2. **~~Lỗi lọt mọi lớp kiểm tra~~:** `scripts/check_imports.py` bắt `UnboundLocalError` do import cục bộ.
-3. **~~Không có autorestart~~:** Chạy qua PM2 bằng `start-pm2.bat`.
-
-### ✅ Đã xử lý (2026-07-29 — Độ tin cậy & hợp đồng giữa các tầng):
-1. **~~Job treo vĩnh viễn~~:** Vòng poll worker giờ thoát được khi worker chết đột ngột (`is_render_active`) hoặc treo quá lâu (mốc `updated_at`).
-2. **~~Render lỗi xoá sạch asset~~:** Ảnh/giọng đọc được giữ lại khi render hỏng, để lần chạy lại không tốn quota API.
-3. **~~Ngưỡng cache 5GB không có tác dụng~~:** `_auto_cleanup` thêm pha LRU thứ hai; bản cũ chỉ xoá file > 7 ngày nên cache toàn file mới thì không dọn nổi một byte.
-4. **~~Tra cache O(N)~~:** `_find_cached()` thử thẳng đuôi đã biết thay vì liệt kê cả thư mục (đo trên cache thật: 0.115ms → 0.012ms mỗi lần tra).
-5. **~~Mất dấu job sau restart~~:** `_restore_jobs_from_disk()` dựng lại `JOBS` từ `render_status/` và `output/` lúc khởi động.
-6. **~~Path traversal qua `job_id`~~:** `project_service.safe_job_id()` dùng ở cả `PROJECTS_DIR` lẫn `IMAGES_DIR`.
-7. **~~Đường render nhanh hỏng câm~~:** Index input FFmpeg lệch +1 làm FastAssembly hỏng hoàn toàn trong khi job vẫn báo "Hoàn tất!" (chỉ chậm ~100 lần). Nay có `tests/test_ffmpeg_assembler.py` và fallback báo lên tận giao diện.
-
-### 🟢 Định hướng tiếp theo:
-1. **Distributed Rendering:** Khi mở rộng lên nhiều user đồng thời, cần chuyển từ `multiprocessing` sang Redis Queue + Celery Worker trên máy chủ Render Farm riêng.
-2. **Distributed Cache:** Cache hiện tại lưu trên disk local. Cần chuyển sang Redis/Memcached khi deploy multi-server.
-3. **Auto-publish:** Tích hợp API đăng video tự động lên TikTok/YouTube Shorts.
-4. **Log tập trung:** Khi chạy nhiều render worker song song, `RotatingFileHandler` mỗi tiến trình một file sẽ không đủ — cần `QueueHandler` + một tiến trình ghi log duy nhất.
-
----
-
-## 6. Vận hành & Chẩn đoán (Operations & Diagnostics)
-
-*Bổ sung 2026-07-28, sinh ra từ một sự cố thật: 11/07 backend chết ngầm giữa job render với `UnboundLocalError`, nhưng vì log không được ghi ra file nên mãi 17 ngày sau mới truy được nguyên nhân.*
-
-### 6.1. Khởi chạy
-
-| Cách | Lệnh | Đặc điểm |
+| Biến | Nội dung | Di dời được? |
 |---|---|---|
-| PM2 (khuyến nghị) | `start-pm2.bat` | Autorestart khi crash, log bền, chạy nền |
-| Trực tiếp | `start.bat` | Xem log cuộn trực tiếp trong cmd |
-| Tự chạy khi boot | `setup-pm2-autostart.bat` | Scheduled Task gọi `pm2 resurrect` lúc đăng nhập |
+| `BUNDLED_ASSETS_DIR` (= `backend/assets`) | Nhạc nền, tiếng động, font — đi kèm mã nguồn | Không |
+| `DATA_DIR` (= `backend/assets` mặc định) | Ảnh, video, cache, projects, uploads | Có — đặt `CUSTOM_ASSETS_DIR` trong `.env` |
 
-`pm2 startup` **không hỗ trợ Windows** — đó là lý do cần script riêng. `ecosystem.config.js` cố ý để `watch: false`: MoviePy/FFmpeg ghi file tạm trong cây dự án, bật watch sẽ restart server **giữa lúc đang render**.
+Đổi `CUSTOM_ASSETS_DIR` → restart backend (biến môi trường chỉ đọc lúc startup).
 
-### 6.2. Hệ thống Log (`services/log_setup.py`)
+---
 
-- `backend/logs/backend.log` — tiến trình FastAPI chính.
-- `backend/logs/render_worker.log` — process con (MoviePy, FFmpeg mastering).
-- Xoay vòng **10MB × 5**, encoding UTF-8 (mặc định cp1252 sẽ làm vỡ mọi dòng log tiếng Việt).
+## 5. Logging & Diagnostics
 
-**Nhãn `[job_id]` trên mọi dòng** — cài bằng `ContextVar` + `logging.Filter` ở tầng handler, nên phủ cả log của `services/` lẫn thư viện ngoài (`httpx`, `google_genai`) mà không phải sửa dòng nào trong các module đó. Đây là lý do không dùng `LoggerAdapter`: adapter chỉ gắn nhãn cho lời gọi qua chính nó, tức chỉ `main.py`.
+- **File log**: `backend/logs/backend.log` (FastAPI) + `backend/logs/render_worker.log` (render)
+- **Xoay vòng**: 10MB × 5 file — tránh đầy ổ đĩa
+- **Encoding**: UTF-8 ( không phải cp1252 — cp1252 làm vỡ mọi dòng log tiếng Việt)
+- **Nhãn `[job_id]`**: gắn vào mọi dòng log qua `ContextVar` + `logging.Filter`, kể cả log từ thư viện bên thứ ba (`httpx`, `google_genai`)
 
-`ContextVar` không vượt qua ranh giới tiến trình, nên `render_worker._worker_main()` phải gọi lại `set_job_id()` cho riêng nó.
+---
 
-**Mọi `logger.error` đều có `exc_info=True`** → traceback chỉ đúng file/dòng. Các `logger.warning` cố ý KHÔNG có, vì đó là những nhánh fallback đã biết trước nguyên nhân (Veo hết quota, Pexels 403) — thêm traceback chỉ làm loãng log.
+## 6. Cổng chất lượng (4 lớp)
 
-### 6.3. Cổng chất lượng
+| Lớp | Bắt được | Chạy khi |
+|---|---|---|
+| `compileall` | Lỗi cú pháp | `start.bat`, `start-pm2.bat` |
+| `ruff --select F821,F811,E9` | Tên chưa import, định nghĩa trùng | commit hook |
+| `scripts/check_imports.py` | `UnboundLocalError` do import cục bộ | `start.bat` |
+| `pytest tests/` | Sai hành vi (hợp đồng model ↔ kwargs) | commit hook |
 
-Bốn lớp chạy tự động ở `start.bat`, `start-pm2.bat` và git pre-commit hook:
+Loại test quan trọng nhất: **test hợp đồng** — đối chiếu tập field giữa model và kwargs thật, phát hiện field bị quên thêm vào `render_kwargs` (triệu chứng: kéo thanh trượt mà không thấy gì thay đổi).
 
-| Lớp | Bắt được |
+---
+
+## 7. Các tính năng nâng cao
+
+### 7.1. OmniVoice V3.3 & Prosody Engine
+- Zero-shot voice cloning từ mẫu 5–10s
+- Prosody Engine điều chỉnh micro-prosody theo emotion mỗi cảnh
+- Forced Alignment (stable-ts/whisper) cho karaoke word-level chính xác
+- Kho giọng custom (`omnivoice_custom_*`)
+
+### 7.2. AI Script Reviewer (B2)
+- Gemini chấm kịch bản tự động sau khi sinh
+- Điểm < 60/100 → tự viết lại 1 lượt, chỉ nhận nếu điểm cao hơn
+- UI hiển thị badge review + hook check
+
+### 7.3. A/B Hook Selector (B3)
+- Chọn variant hook thay thế trực tiếp trên UI
+
+### 7.4. Pattern Interrupt Engine (B4)
+- Flash trắng ngắn chèn giữa cảnh để giữ chú ý người xem
+
+### 7.5. Dynamic BGM Volume Envelope (B5)
+- Gemini parse `bgm_volume` cho từng cảnh
+- FFmpeg áp `volume='if(lte(t,N1),v1,if(lte(t,N2),v2,...))'` expression
+
+### 7.6. Hiệu ứng Hook & Outro
+- **Hook**: Máy Xèng (slot-machine), Đánh máy, Màn đen, Vignette thở, Chụp ảnh, Nhiễu số, Cháy phim
+- **Outro**: CTA card, fade, swipe
+
+### 7.7. Beat Sync
+- `librosa.onset.onset_strength()` phát hiện nhịp
+- `snap_cut_points_to_beats()` snap điểm cắt cảnh về beat gần nhất (max shift 0.35s)
+
+### 7.8. Smart Resume Checkpoints
+- Lưu project state sau mỗi cảnh → render lỗi không mất quota API
+
+---
+
+## 8. Bảo mật & CORS
+
+- **CORS mặc định**: whitelist `localhost:3001` + `localhost:5173` — không còn `*`
+- Thêm origin khác qua `ALLOWED_ORIGINS` trong `.env`
+- **API Keys**: che 4 ký tự đầu + 4 cuối khi hiển thị mặc định; reveal nguyên văn chỉ khi user chủ động bấm "Hiện Key"
+
+---
+
+## 9. Environment Variables
+
+| Biến | Ý nghĩa |
 |---|---|
-| `compileall` | Lỗi cú pháp |
-| `ruff --select F821,F811,E9` | Tên chưa import, định nghĩa trùng |
-| `scripts/check_imports.py` | `UnboundLocalError` do import cục bộ che module import |
-| `pytest tests` | Sai **hành vi**: cú pháp đúng, tên đủ, nhưng logic lệch |
+| `GEMINI_API_KEY` | Key Gemini chính |
+| `GEMINI_API_KEY_1..N` | Key dự phòng (xoay vòng khi 429) |
+| `PEXELS_API_KEY` | Stock video (bắt buộc để dùng footage thật) |
+| `PIXABAY_API_KEY` | Stock video thứ hai (tuỳ chọn) |
+| `OMNIVOICE_PATH` | Thư mục cài OmniVoice (mặc định `C:\dev\OmniVoice`) |
+| `OMNIVOICE_WARMUP` | `0` để tắt warmup lúc startup |
+| `ALLOWED_ORIGINS` | Danh sách CORS origin (phân cách bằng dấu phẩy) |
+| `CUSTOM_ASSETS_DIR` | Di dời DATA_DIR sang ổ khác |
 
-Lớp thứ ba tồn tại vì hai lớp trên **đều bỏ lọt** loại lỗi này — cú pháp hợp lệ, tên vẫn có import, chỉ sai thứ tự thực thi nên chỉ nổ lúc runtime ở nhánh hiếm chạy.
+---
 
-Lớp thứ tư tồn tại vì cả ba lớp trên đều mù trước lỗi logic. Ba sự cố thật đã lọt qua chúng:
-`hook_sfx_volume` có trong model, frontend gửi đều, video_service đọc đúng tên — nhưng
-`main.py` quên nhét vào `render_kwargs` nên thanh trượt vô hiệu suốt nhiều bản render;
-`req.intro_bgm_track` được đọc mà model không khai báo nên **mọi** job render chết ở
-`pending`; và index input của FastAssembly lệch +1 khiến đường render nhanh hỏng hoàn toàn
-trong khi job vẫn báo "Hoàn tất!". Bộ test chạy hết trong ~2 giây.
+## 10. Debugging & Khắc phục sự cố
 
-**Loại test quan trọng nhất ở đây là test HỢP ĐỒNG**, không phải test đơn vị: chúng đối
-chiếu hai danh sách phải luôn khớp nhau (model ↔ passthrough ↔ kwargs thật; selector
-zustand ↔ khoá được đọc; PresetRequest ↔ RenderVideoRequest; index FFmpeg ↔ số input
-thật). Đó là chỗ **kwargs và selector im lặng ở cả hai chiều — thiếu thì dùng mặc định,
-thừa thì bỏ qua, không lỗi nào cả.
+### Backend không khởi động
+```bash
+cd backend
+venv\Scripts\activate
+python -c "import main; print('OK')"
+```
 
-### 6.4. Bẫy đã gặp
+### Render treo / job đứng ở "pending"
+```bash
+pm2 logs AI-Backend --lines 50
+# Xem backend/logs/render_worker.log
+```
 
-- **Log PM2 cũ có thể đánh lừa.** Sự cố 11/07 nằm trong `~/.pm2/logs/` nhưng file đó đóng băng vì backend thực tế chạy qua `start.bat`. Các file cũ đã đổi tên thành `*.2026-07-11.log`. Luôn kiểm tra `mtime` và đối chiếu tên hàm trong traceback với code hiện tại trước khi kết luận.
-- **File `.bat` phải dùng CRLF** — `cmd.exe` xử lý sai khối `if (...)` nhiều dòng nếu file là LF.
+### Ảnh AI toàn stock / không sinh ảnh
+- Kiểm tra `GEMINI_API_KEY` có quota còn không
+- Veo 3.1 cần billing bật → luôn fallback; không phải lỗi
+
+### Phụ đề lệch
+- Đảm bảo dùng `boundary="WordBoundary"` với edge-tts ≥7.x
+- Dùng `asset["start_time"]` (đã trừ crossfade), không cộng dồn cursor
+
+### Tiếng riser/SFX không phát
+- Toggle `use_sfx` global chỉ ảnh hưởng auto-riser cảnh 1; SFX per-scene luôn phát
+
+---
+
+*File này cập nhật tự động khi code thay đổi. ROADMAP.md ghi lịch sử thay đổi theo ngày.*

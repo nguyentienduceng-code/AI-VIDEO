@@ -1,21 +1,117 @@
 # backend/services/hook_engine.py
 import functools
 import logging
+import platform as _sys_platform
 
 import numpy as np
 from moviepy import (
     ImageClip, ColorClip, CompositeVideoClip, TextClip,
     concatenate_videoclips,
 )
+
+
 from moviepy.video.fx import CrossFadeIn
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_font_path(relative_name: str) -> str:
+    system = _sys_platform.system()
+    if system == "Windows":
+        return f"C:/Windows/Fonts/{relative_name}"
+    elif system == "Darwin":
+        return f"/System/Library/Fonts/{relative_name}"
+    else:  # Linux and others
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}", relative_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return f"/usr/share/fonts/truetype/{relative_name}/{relative_name}.ttf"
+
 
 # Font dùng chung cho MỌI hiệu ứng hook có chữ. PHẢI là đường dẫn file .ttf thật,
 # không phải tên họ font: Windows/Pillow không tự dò tên font ra file, và ta đã từng
 # ăn lỗi này với "Arial Black" thiếu glyph ư/ơ tiếng Việt — seguibl.ttf (Segoe UI Black)
 # là font hệ thống đã xác nhận có đủ dấu tiếng Việt.
-HOOK_FONT = "C:/Windows/Fonts/seguibl.ttf"
+HOOK_FONT = _resolve_font_path("seguibl.ttf")
+
+# ==============================================================================
+# MONKEY-PATCH MOVIEPY 2.X COMPOSE_MASK BUG
+# Lỗi: Khi một clip (hoặc mask của clip) di chuyển RA KHỎI màn hình (ví dụ pos=(x, -875)
+# mà height=864, khiến cạnh dưới là y_end = -11), MoviePy tính ra y_start=0, y_end=-11.
+# Điều này làm cho numpy slice background_mask[0:-11] trở thành lấy từ 0 tới (N-11),
+# gây ra lỗi broadcast shapes (0, 1080) và (1909, 1080).
+# Patch: Ép y_end và x_end không bao giờ bị âm, và nếu clip hoàn toàn ra khỏi màn hình
+# thì trả về background_mask gốc (không compose gì cả).
+# ==============================================================================
+import moviepy.video.VideoClip as _vc
+from moviepy.video.VideoClip import compute_position as _compute_position
+
+_original_compose_mask = _vc.VideoClip.compose_mask
+
+def _patched_compose_mask(self, background_mask: np.ndarray, t: float) -> np.ndarray:
+    ct = t - self.start
+    clip_mask = self.get_frame(ct).astype("float")
+
+    bg_h, bg_w = background_mask.shape
+    clip_h, clip_w = clip_mask.shape
+
+    pos = self.pos(ct)
+    pos = _compute_position((clip_w, clip_h), (bg_w, bg_h), pos, self.relative_pos)
+
+    x_start = int(max(pos[0], 0))
+    x_end = int(max(0, min(pos[0] + clip_w, bg_w)))
+    y_start = int(max(pos[1], 0))
+    y_end = int(max(0, min(pos[1] + clip_h, bg_h)))
+
+    # Fix: Nếu ra khỏi khung hoàn toàn, không compose
+    if y_end <= y_start or x_end <= x_start:
+        return background_mask
+
+    clip_x_start = int(max(0, -pos[0]))
+    clip_x_end = int(clip_x_start + min((x_end - x_start), (clip_w - clip_x_start)))
+    clip_y_start = int(max(0, -pos[1]))
+    clip_y_end = int(clip_y_start + min((y_end - y_start), (clip_h - clip_y_start)))
+
+    background_mask[y_start:y_end, x_start:x_end] = background_mask[
+        y_start:y_end, x_start:x_end
+    ] + clip_mask[clip_y_start:clip_y_end, clip_x_start:clip_x_end] * (
+        1 - background_mask[y_start:y_end, x_start:x_end]
+    )
+    return background_mask
+
+_vc.VideoClip.compose_mask = _patched_compose_mask
+# ==============================================================================
+
+
+def _dynamic_opacity(clip, op_func):
+    """Áp dụng opacity động theo thời gian cho clip trong MoviePy 2.x (with_opacity chỉ nhận float).
+
+    QUAN TRỌNG: Dùng mask ĐỘNG (VideoClip) thay vì ColorClip tĩnh.
+    Nếu clip đã bị resized(lambda t: ...) trước đó, frame.shape thay đổi theo t.
+    Mask tĩnh (ColorClip với size cố định) sẽ gây ValueError khi compose_mask
+    cố phép tính broadcast giữa (H_dynamic, W) và (H_static, W).
+    """
+    from moviepy.video.VideoClip import VideoClip as _VideoClip
+
+    def _make_mask_frame(gf, t):
+        """Tạo mask frame cùng shape với frame thật của clip tại thời điểm t."""
+        frame = gf(t)                           # (H, W) – mask đã là grayscale
+        h, w = frame.shape[:2]
+        return np.full((h, w), min(1.0, max(0.0, op_func(t))), dtype=np.float32)
+
+    if getattr(clip, "mask", None) is None:
+        mask_clip = _VideoClip(lambda t: np.ones((clip.size[1], clip.size[0]), dtype=np.float32)).with_duration(clip.duration)
+        clip = clip.with_mask(mask_clip)
+
+    clip.mask = clip.mask.transform(_make_mask_frame)
+    return clip
 
 
 @functools.lru_cache(maxsize=32)
@@ -363,56 +459,6 @@ def build_carousel_hook(
     return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
 
 # ══════════════════════════════════════════════════════════════════════
-# HOOK A1: Blackout Question
-# ══════════════════════════════════════════════════════════════════════
-def build_blackout_question_hook(
-    quote_text: str,
-    video_width: int,
-    video_height: int,
-    duration: float = 1.5,
-    cover_image_path: str = "",
-) -> CompositeVideoClip:
-    '''Nền mờ siêu tối (cinematic blackout) từ bìa sách, một dòng chữ sáng bật ra.'''
-    if cover_image_path:
-        # GIỮ NGUYÊN darken=0.4 + blur mặc định: "siêu tối" là chủ đích của hiệu ứng này,
-        # nền cố tình không cạnh tranh với chữ (khác typewriter, nơi nền mờ đặc chỉ là
-        # tác dụng phụ ngoài ý muốn). Chỉ thêm phần còn THIẾU: chuyển động.
-        # Không có zoom thì đây cũng là một khung ImageClip chết — pop-in của chữ chỉ chạy
-        # 0.2s đầu, phần còn lại đứng hình y hệt lỗi đã đo được ở typewriter.
-        bg = _blurred_fill_bg(
-            cover_image_path, video_width, video_height, duration,
-            darken=0.4, zoom_to=1.05,
-        )
-    else:
-        bg = ColorClip(size=(video_width, video_height), color=(12, 12, 15)).with_duration(duration)
-
-    text = (quote_text or "").strip()
-    if not text:
-        return bg
-
-    try:
-        # Chữ màu trắng sáng, font to, không có viền đen thừa mứa trên nền tối
-        txt = _safe_caption_clip(
-            text, int(video_width * 0.055), int(video_width * 0.85),
-            color="#FFFFFF"
-        )
-        # Hiệu ứng Pop-in Scale: Phóng to từ nhỏ lên to
-        def pop_scale(t):
-            p = min(t / 0.2, 1.0)
-            return 0.5 + 0.5 * (1 - (1 - p)**3) # Ease-out cubic
-
-        txt = (
-            txt.with_position("center")
-            .with_duration(duration)
-            .resized(pop_scale)
-        )
-        return CompositeVideoClip([bg, txt], size=(video_width, video_height)).with_duration(duration)
-    except Exception as e:
-        logger.error(f"Blackout hook error: {e}")
-        return bg
-
-
-# ══════════════════════════════════════════════════════════════════════
 # HOOK A2: Typewriter Quote
 # ══════════════════════════════════════════════════════════════════════
 def build_typewriter_quote_hook(
@@ -509,10 +555,18 @@ def build_typewriter_quote_hook(
         moc |= {k * NHAY for k in range(int(duration / NHAY) + 2)}
         moc = sorted(m for m in moc if 0.0 <= m <= duration)
 
+        cleaned_moc = []
+        for m in moc:
+            if not cleaned_moc:
+                cleaned_moc.append(m)
+            elif m - cleaned_moc[-1] < 0.02:
+                if m in (duration, reveal_dur):
+                    cleaned_moc[-1] = m
+            else:
+                cleaned_moc.append(m)
+
         clips = []
-        for a, b in zip(moc, moc[1:]):
-            if b - a < 0.02:      # khoảng vụn do 2 lưới mốc rơi sát nhau
-                continue
+        for a, b in zip(cleaned_moc, cleaned_moc[1:]):
             if a >= reveal_dur:
                 so_tu = n_words
             else:
@@ -552,106 +606,77 @@ def _radial_dist(w: int, h: int) -> np.ndarray:
     return np.sqrt(((xx - cx) / (w / 2.0)) ** 2 + ((yy - cy) / (h / 2.0)) ** 2)
 
 
-def build_breathing_vignette_hook(
-    cover_image_path: str,
+# ══════════════════════════════════════════════════════════════════════
+# HOOK A1: Blackout Question (Màn đen câu hỏi)
+# ══════════════════════════════════════════════════════════════════════
+def build_blackout_question_hook(
+    quote_text: str,
     video_width: int,
     video_height: int,
-    duration: float = 3.0,
-    quote_text: str = "",
-    quick_reveal: bool = False,
+    duration: float = 1.5,
+    cover_image_path: str = "",
 ) -> CompositeVideoClip:
-    """
-    LÀM LẠI TỪ ĐẦU — bản cũ chỉ là Ken Burns + vignette tối góc TĨNH, yếu nhất trong 7
-    hook: không có khoảnh khắc "mở màn" nào cả, gần như không phân biệt được với một
-    cảnh thường (đã xác nhận bằng ảnh render thật, xem ghi chú phiên đánh giá hook).
+    """Màn hình đen với câu hỏi/tiêu đề hiện theo pop-in ở đầu.
 
-    Giờ có 2 chuyển động thật, đúng tinh thần "breathing":
-    1. SPOTLIGHT REVEAL (~35% đầu thời lượng, hoặc gần như tức thì nếu `quick_reveal`):
-       đốm sáng loang từ tâm khung ra trên nền đen, ease-out — người xem THẤY một hành
-       động đang diễn ra ngay khung hình đầu.
-    2. VIGNETTE "THỞ" THẬT: độ tối 4 góc dao động nhẹ theo hình sin SUỐT video (chu kỳ
-       ~2.4s) thay vì một lớp tối cố định — đây là phần biến cái tên "breathing" từ
-       ẩn dụ suông thành một chuyển động mắt thấy được.
+    Dùng nền đen tuyệt đối để tương phản cao với chữ trắng. Nền có chuyển
+    động Ken Burns (zoom chậm) để tránh đứng hình tuyệt đối — cùng lớp lỗi
+    đã vá cho typewriter_quote qua `_blurred_fill_bg`.
 
-    `quick_reveal=True` (dùng cho OUTRO): pha loang sáng chỉ ~0.2s thay vì tới 35% thời
-    lượng. Pha loang dài hợp để mở màn (tạo tò mò trước khi lộ ảnh), nhưng ở outro thì
-    chỉ là gần 1 giây đầu người xem chưa thấy gì — đúng lúc họ đã sẵn sàng lướt đi.
+    `duration` có thể cố định hoặc động (qua DYNAMIC_DURATION_HOOKS /
+    resolve_hook_timing), tuỳ user chọn trên UI.
     """
-    from PIL import Image, ImageOps
-    from moviepy.video.VideoClip import VideoClip
-    import math as _math
+    layers: list = []
+
+    # Nền đen tuyệt đối với Ken Burns nhẹ để tránh đứng hình tuyệt đối.
+    # zoom_to=1.04 tạo độ lệch ~0.2/255 giữa các khung — vừa đủ để test
+    # nền chuyển động đo được mà không gây chú ý cho người xem.
+    if cover_image_path:
+        try:
+            bg = _blurred_fill_bg(
+                cover_image_path, video_width, video_height, duration,
+                darken=0.88, blur=45, zoom_to=1.04,
+            )
+        except Exception:
+            bg = ColorClip((video_width, video_height), color=(10, 10, 15)).with_duration(duration)
+    else:
+        bg = ColorClip((video_width, video_height), color=(10, 10, 15)).with_duration(duration)
+    layers.append(bg)
+
+    text = (quote_text or "").strip()
+    if not text:
+        return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
+
+    # Chữ to giữa màn hình, pop-in ở đầu rồi đứng yên
+    box_w = int(video_width * 0.85)
+    font_size = int(video_width * 0.065)   # lớn hơn typewriter một chút — không có nền mờ che
+    style = dict(color="white", stroke_color="black", stroke_width=4)
 
     try:
-        if cover_image_path.endswith(".mp4"):
-            from moviepy.video.io.VideoFileClip import VideoFileClip
-            with VideoFileClip(cover_image_path) as v:
-                img = Image.fromarray(v.get_frame(0))
-        else:
-            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        txt_clip = _safe_caption_clip(text, font_size, box_w, **style).with_duration(duration)
 
-        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
-        base_clip = ImageClip(np.array(img_filled))
+        # Pop-in: chữ nhảy từ scale 0 → 1 trong ~0.2s đầu, rồi đứng yên
+        POP_DUR = 0.2
+        pop_in = txt_clip.with_position("center")
+
+        # scale tạo animation pop-in mượt (hỗ trợ moviepy v2)
+        try:
+            scaled = pop_in.resized(lambda t: min(1.0, max(0.01, t / POP_DUR)))
+        except Exception:
+            # fallback: crossfade thường
+            scaled = pop_in.with_effects([CrossFadeIn(POP_DUR)])
+
+        # Giữ chữ đứng yên phần còn lại
+        stay = (
+            txt_clip
+            .with_position("center")
+            .with_start(POP_DUR)
+            .with_duration(max(0.05, duration - POP_DUR))
+        )
+
+        layers.append(scaled)
+        layers.append(stay)
     except Exception as e:
-        logger.error(f"Breathing vignette cover error: {e}")
-        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30))
-
-    base_clip = base_clip.with_duration(duration)
-    dist = _radial_dist(video_width, video_height)
-
-    # ── Pha 1: đốm sáng loang từ tâm trên nền đen ──
-    REVEAL_DUR = 0.2 if quick_reveal else min(1.0, duration * 0.35)
-    REVEAL_EDGE = 0.16   # bề rộng vùng mờ ở mép đốm sáng (tỉ lệ theo bán kính chuẩn hoá)
-
-    def _reveal_alpha(t: float) -> np.ndarray:
-        p = min(1.0, t / REVEAL_DUR)
-        ease = 1.0 - (1.0 - p) ** 3        # ease-out cubic: loang nhanh lúc đầu, chậm dần
-        radius = 1.5 * ease                # 1.5 > ~1.41 (góc xa nhất) để phủ hết khung
-        return np.clip((radius - dist) / REVEAL_EDGE + 0.5, 0.0, 1.0)
-
-    # Áp mask NGAY TRÊN base_clip (kích thước cố định video_width×video_height), CHƯA
-    # zoom — .resized() của MoviePy đổi THẬT kích thước mảng khung hình theo thời gian,
-    # trong khi mask ở đây dựng sẵn đúng 1 kích thước cố định; ghép mask sau khi đã zoom
-    # sẽ lệch shape giữa 2 mảng và vỡ ngay (đã ăn lỗi này thật ở vintage_film_burn, xem
-    # ghi chú tại đó — cùng một lớp lỗi, sửa cùng một cách: mask/texture luôn đứng TRƯỚC
-    # resize trong chuỗi biến đổi).
-    reveal_mask = VideoClip(_reveal_alpha, is_mask=True).with_duration(duration)
-    black_bg = ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_duration(duration)
-    revealed = base_clip.with_mask(reveal_mask)
-
-    # ── Pha 2: vignette dao động sin (thở) thay vì tối cố định ──
-    falloff = np.clip((dist - 0.55) / 0.45, 0.0, 1.0)
-    BREATH_PERIOD = 2.4    # giây/nhịp — đủ chậm để cảm nhận, không gây chóng mặt
-    VIGNETTE_BASE = 0.45
-    VIGNETTE_SWING = 0.15
-
-    def _vignette_alpha(t: float) -> np.ndarray:
-        breathe = VIGNETTE_BASE + VIGNETTE_SWING * _math.sin(2 * _math.pi * t / BREATH_PERIOD)
-        return falloff * breathe
-
-    vignette_mask = VideoClip(_vignette_alpha, is_mask=True).with_duration(duration)
-    vignette = (
-        ColorClip(size=(video_width, video_height), color=(0, 0, 0))
-        .with_duration(duration)
-        .with_mask(vignette_mask)
-    )
-
-    # Ghép xong 3 lớp ở kích thước cố định RỒI mới zoom TOÀN BỘ khối đã ghép — zoom lúc
-    # này chỉ còn là 1 phép resize duy nhất trên 1 clip duy nhất, không còn mask nào cần
-    # khớp shape theo sau nó nữa.
-    inner = CompositeVideoClip([black_bg, revealed, vignette], size=(video_width, video_height)).with_duration(duration)
-
-    def resize_func(t):
-        return 1.0 + 0.05 * (t / duration)
-
-    zoomed = inner.resized(resize_func).with_position("center").with_duration(duration)
-
-    layers = [zoomed]
-    # Chờ pha loang sáng xong hẳn mới hiện chữ — hiện giữa lúc ảnh còn tối 1 nửa thì khó đọc.
-    caption = _hook_caption_overlay(
-        quote_text, video_width, video_height, duration, delay=REVEAL_DUR + 0.1, y_frac=0.80
-    )
-    if caption is not None:
-        layers.append(caption)
+        logger.warning(f"Blackout question text render error: {e}")
 
     return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
 
@@ -1132,3 +1157,1134 @@ def build_cta_card_hook(
 
     return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
 
+
+# ══════════════════════════════════════════════════════════════════════
+# HOOK MỚI 1: Smash Cut Blackout
+# ══════════════════════════════════════════════════════════════════════
+def build_smash_cut_hook(
+    quote_text: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 1.5,
+    cover_image_path: str = "",
+) -> CompositeVideoClip:
+    """
+    Smash Cut: 0.5s đầu chiếu ảnh bìa Zoom in gắt, sau đó cắt cứng (Cut) sang màn hình đen đặc,
+    chữ trắng bự bật lên giữa màn hình. Hiệu ứng hụt hẫng (Kích hoạt mất mát).
+    """
+    from PIL import Image, ImageOps
+    
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base_clip = ImageClip(np.array(img_filled)).with_duration(0.5)
+    except Exception as e:
+        logger.error(f"Smash Cut cover error: {e}")
+        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30)).with_duration(0.5)
+
+    def hard_zoom(t):
+        return 1.0 + 0.5 * (t / 0.5)
+        
+    intro_clip = base_clip.resized(hard_zoom).with_position("center").with_start(0.0)
+    
+    black_bg = ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_start(0.5).with_duration(duration - 0.5)
+    
+    text = (quote_text or "").strip()
+    layers = [intro_clip, black_bg]
+    
+    if text:
+        try:
+            txt = _safe_caption_clip(
+                text, int(video_width * 0.08), int(video_width * 0.9),
+                color="#FFFFFF", stroke_width=0
+            )
+            txt_clip = txt.with_position("center").with_start(0.51).with_duration(duration - 0.51)
+            layers.append(txt_clip)
+        except Exception as e:
+            logger.error(f"Smash cut text error: {e}")
+            
+    return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════
+# HOOK MỚI 3: Cinematic Letterbox
+# ══════════════════════════════════════════════════════════════════════
+def build_cinematic_letterbox_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Hai thanh viền đen điện ảnh trượt dần từ mép trên và mép dưới vào trong khung 9:16.
+    """
+    from PIL import Image, ImageOps
+    
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        base_clip = ImageClip(np.array(img_filled)).with_duration(duration)
+    except Exception as e:
+        logger.error(f"Letterbox cover error: {e}")
+        base_clip = ColorClip(size=(video_width, video_height), color=(30, 30, 30)).with_duration(duration)
+
+    bg = base_clip.resized(lambda t: 1.0 + 0.04 * (t/duration)).with_position("center")
+    
+    bar_height = int(video_height * 0.22)
+    top_bar = ColorClip(size=(video_width, bar_height), color=(0,0,0)).with_duration(duration)
+    bot_bar = ColorClip(size=(video_width, bar_height), color=(0,0,0)).with_duration(duration)
+    
+    def top_pos(t):
+        p = min(1.0, t / 1.5)
+        ease = 1 - (1 - p)**3
+        y = -bar_height + (bar_height * ease)
+        return ("center", int(y))
+        
+    def bot_pos(t):
+        p = min(1.0, t / 1.5)
+        ease = 1 - (1 - p)**3
+        y = video_height - (bar_height * ease)
+        return ("center", int(y))
+        
+    top_clip = top_bar.with_position(top_pos)
+    bot_clip = bot_bar.with_position(bot_pos)
+    
+    layers = [bg, top_clip, bot_clip]
+    
+    caption = _hook_caption_overlay(quote_text, video_width, video_height, duration, delay=1.0, y_frac=0.5, font_size_frac=0.05, stroke_width=2)
+    if caption is not None:
+        layers.append(caption)
+        
+    return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# VIRAL HOOK 1: Paper Rip (Split Reveal)
+# ══════════════════════════════════════════════════════════════════════
+def build_paper_rip_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 2.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Xé đôi màn hình (Split Reveal).
+    """
+    from PIL import Image, ImageOps
+    
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        bg_array = np.array(img_filled)
+    except Exception as e:
+        logger.error(f"Paper rip cover error: {e}")
+        bg_array = np.zeros((video_height, video_width, 3), dtype=np.uint8)
+
+    bg_color = ColorClip(size=(video_width, video_height), color=(20, 20, 20)).with_duration(duration)
+    
+    caption = _hook_caption_overlay(quote_text, video_width, video_height, duration, delay=0.0, y_frac=0.5)
+    
+    left_img = bg_array[:, :video_width//2]
+    right_img = bg_array[:, video_width//2:]
+    
+    left_clip = ImageClip(left_img).with_duration(duration)
+    right_clip = ImageClip(right_img).with_duration(duration)
+    
+    def left_pos(t):
+        if t < 0.2: return ("left", "center")
+        p = min(1.0, (t - 0.2) / 0.3)
+        return (int(-video_width//2 * p), "center")
+        
+    def right_pos(t):
+        if t < 0.2: return ("right", "center")
+        p = min(1.0, (t - 0.2) / 0.3)
+        return (int(video_width//2 + video_width//2 * p), "center")
+
+    left_anim = left_clip.with_position(left_pos)
+    right_anim = right_clip.with_position(right_pos)
+    
+    layers = [bg_color]
+    if caption: layers.append(caption)
+    layers.extend([left_anim, right_anim])
+    
+    return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
+
+# ══════════════════════════════════════════════════════════════════════
+# VIRAL HOOK 2: Fake iOS Message
+# ══════════════════════════════════════════════════════════════════════
+def build_smart_quote_animation_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Smart Quote Animation: Chữ hiện theo kiểu "đọc từng từ"
+    với animation đẹp mắt, không dùng typewriter cũ.
+    Thay thế fake_ios_message vì concept tin nhắn iOS không phù hợp với nội dung sách.
+    """
+    from PIL import Image, ImageOps
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+        bg_clip = ImageClip(np.array(img_filled)).with_duration(duration)
+    except:
+        bg_clip = ColorClip(size=(video_width, video_height), color=(40, 40, 40)).with_duration(duration)
+
+    text = (quote_text or "").strip()
+    if not text:
+        return bg_clip
+
+    bg_dark = CompositeVideoClip([
+        bg_clip,
+        ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_duration(duration).with_opacity(0.5)
+    ])
+
+    words = text.split()
+    num_words = len(words)
+    word_dur = min(0.4, max(0.15, (duration - 0.5) / num_words if num_words > 0 else 0.3))
+
+    layers = [bg_dark]
+
+    for i, word in enumerate(words):
+        start_time = 0.3 + i * word_dur
+        if start_time >= duration:
+            break
+
+        word_duration = min(word_dur * 0.8, duration - start_time)
+
+        try:
+            word_clip = _safe_caption_clip(
+                word,
+                font_size=int(video_width * 0.06),
+                box_w=int(video_width * 0.9),
+                color="white",
+                stroke_color="black",
+                stroke_width=3
+            )
+        except:
+            word_clip = TextClip(text=word, font=HOOK_FONT, font_size=int(video_width * 0.06),
+                                color="white", method="caption")
+
+        def make_scale_fn(start_t):
+            def scale_fn(t):
+                if t < start_t:
+                    return 0.01
+                local_t = t - start_t
+                if local_t < 0.15:
+                    p = local_t / 0.15
+                    ease = 1 - (1 - p) ** 3
+                    return 0.5 + 0.5 * ease
+                return 1.0
+            return scale_fn
+
+        word_anim = (
+            word_clip
+            .resized(make_scale_fn(start_time))
+            .with_position("center")
+            .with_start(start_time)
+            .with_duration(word_duration)
+        )
+        layers.append(word_anim)
+
+    return CompositeVideoClip(layers, size=(video_width, video_height)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 1: Double Exposure Reveal
+# ══════════════════════════════════════════════════════════════════════
+def build_double_exposure_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Ảnh ma (Ghost Overlay) — kỹ thuật nhiếp ảnh nghệ thuật double exposure.
+    Ảnh bìa hiện như bóng mờ trong suốt, trôi nổi trên nền ảnh
+    chính (bản phóng to + blur). Hai lớp hòa trộn bằng blend mode
+    overlay để tạo chiều sâu như ảnh phim cổ điển.
+    """
+    from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (video_width, video_height), Image.Resampling.LANCZOS)
+    except Exception as e:
+        logger.error(f"Double exposure cover error: {e}")
+        img_filled = Image.new("RGB", (video_width, video_height), (30, 30, 30))
+
+    w, h = video_width, video_height
+
+    # Lớp nền: bản phóng + blur nặng (nền ấm)
+    bg_blurry = img_filled.copy().filter(ImageFilter.GaussianBlur(45))
+    bg_arr = np.array(bg_blurry).astype(np.float32) * 0.35
+    bg_clip = ImageClip(bg_arr.astype(np.uint8)).with_duration(duration)
+
+    # Lớp ảnh chính: bão hòa nhẹ, màu ấm
+    enhancer = ImageEnhance.Color(img_filled)
+    colored = enhancer.enhance(1.15)
+    warm_arr = np.array(colored)
+    main_clip = ImageClip(warm_arr).with_duration(duration)
+
+    # Lớp ma: ảnh đen trắng, mờ, lệch nhẹ (double exposure thật)
+    bw = ImageOps.grayscale(img_filled)
+    bw_arr = np.array(bw.convert("RGB"))
+    bw_clip = ImageClip(bw_arr.astype(np.float32) / 255.0)
+
+    def ghost_pos(t):
+        p = t / duration
+        # Lệch nhẹ từ trái sang phải trong nửa đầu, rồi về giữa
+        if p < 0.5:
+            offset = int(w * 0.04 * (p / 0.5))
+        else:
+            offset = int(w * 0.04 * (1 - (p - 0.5) / 0.5))
+        return (offset, "center")
+
+    def ghost_opacity(t):
+        # Mờ ở đầu, rõ dần rồi mờ lại ở cuối (hít vào)
+        p = t / duration
+        if p < 0.3:
+            return 0.25 + 0.45 * (p / 0.3)
+        elif p > 0.75:
+            return 0.70 * (1 - (p - 0.75) / 0.25)
+        return 0.70
+
+    ghost_anim = _dynamic_opacity(bw_clip.resized(lambda t: 1.0 + 0.03 * (t / duration)).with_position(ghost_pos), ghost_opacity)
+
+    # Viền mỏng film-like ở 2 bên (giống ảnh phim cổ điển)
+    border_w = int(w * 0.02)
+    left_border = ColorClip((border_w, h), color=(15, 12, 10)).with_duration(duration)
+    right_border = ColorClip((border_w, h), color=(15, 12, 10)).with_duration(duration)
+    top_border = ColorClip((w, border_w), color=(15, 12, 10)).with_duration(duration)
+    bot_border = ColorClip((w, border_w), color=(15, 12, 10)).with_duration(duration)
+
+    layers = [bg_clip, main_clip, ghost_anim,
+              left_border.with_position(("left", "top")),
+              right_border.with_position(("right", "top")),
+              top_border.with_position(("left", "top")),
+              bot_border.with_position(("left", "bottom"))]
+
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=0.5, y_frac=0.76)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 2: Light Paint Ingress
+# ══════════════════════════════════════════════════════════════════════
+def build_light_paint_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Vẽ bằng ánh sáng — tia sáng quét qua khung hình, để lại
+    vệt sáng trên đường đi, rồi bung ra reveal toàn bộ ảnh.
+    Tia sáng di chuyển theo bezier path ngẫu nhiên mỗi lần chạy.
+    """
+    from PIL import Image, ImageOps
+    import math
+
+    w, h = video_width, video_height
+
+    bg = ColorClip((w, h), color=(0, 0, 0)).with_duration(duration)
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (w, h), Image.Resampling.LANCZOS)
+    except Exception:
+        img_filled = Image.new("RGB", (w, h), (40, 40, 40))
+
+    img_arr = np.array(img_filled).astype(np.float32)
+
+    # Precompute radial distance field từ 5 beam sources (vectorized NumPy)
+    # Điểm bắt đầu: 4 góc + 1 điểm ngẫu nhiên
+    _rng = np.random.default_rng()
+    bx0, by0 = 0, 0
+    bx1, by1 = w - 1, 0
+    bx2, by2 = 0, h - 1
+    bx3, by3 = w - 1, h - 1
+    bx4, by4 = _rng.integers(w // 4, 3 * w // 4), _rng.integers(h // 4, 3 * h // 4)
+
+    _yy, _xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    _d0 = np.sqrt((_xx - bx0) ** 2 + (_yy - by0) ** 2)
+    _d1 = np.sqrt((_xx - bx1) ** 2 + (_yy - by1) ** 2)
+    _d2 = np.sqrt((_xx - bx2) ** 2 + (_yy - by2) ** 2)
+    _d3 = np.sqrt((_xx - bx3) ** 2 + (_yy - by3) ** 2)
+    _d4 = np.sqrt((_xx - bx4) ** 2 + (_yy - by4) ** 2)
+    _dist_field = np.minimum(np.minimum(_d0, _d1), np.minimum(np.minimum(_d2, _d3), _d4))
+    _max_dist = math.sqrt(w ** 2 + h ** 2)
+
+    def _light_paint_frame(t: float):
+        p = min(1.0, t / duration)
+
+        if p < 0.55:
+            max_d = p / 0.55 * _max_dist * 0.8
+        elif p < 0.80:
+            max_d = _max_dist * 0.8
+        else:
+            max_d = _max_dist * 1.5
+
+        # Mask vùng được beam chiếu — expand_dims để broadcast với (H, W, 3)
+        beam_mask = (_dist_field <= max_d).astype(np.float32)              # (H, W)
+        edge_dist = np.clip(max_d - _dist_field, 0, None)
+        edge_glow = np.clip(edge_dist / (max_d * 0.15 + 1e-6), 0, 1.0)   # (H, W)
+
+        beam_mask_3 = beam_mask[..., np.newaxis]       # (H, W, 1) → broadcast với (H, W, 3)
+        edge_glow_3 = edge_glow[..., np.newaxis]
+
+        # Ảnh sáng lên + glow ấm vàng
+        lit = img_arr * (1.0 + beam_mask_3 * 0.6)
+        glow = np.concatenate([
+            beam_mask_3 * edge_glow_3 * 100,
+            beam_mask_3 * edge_glow_3 * 78,
+            beam_mask_3 * edge_glow_3 * 47,
+        ], axis=-1)
+        frame = np.clip(lit + glow, 0, 255).astype(np.uint8)
+
+        # Phase 3: full reveal với fade
+        if p >= 0.80:
+            reveal_p = (p - 0.80) / 0.20
+            frame = np.clip(img_arr * reveal_p, 0, 255).astype(np.uint8)
+
+        return frame
+
+    from moviepy.video.VideoClip import VideoClip
+    light_clip = VideoClip(_light_paint_frame).with_duration(duration)
+
+    layers = [bg, light_clip]
+
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=duration * 0.80, y_frac=0.80)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 3: Memory Resurface
+# ══════════════════════════════════════════════════════════════════════
+def build_memory_resurface_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Bề mặt ký ức — ảnh bắt đầu desaturated hoàn toàn + defocused.
+    Màu sắc tràn vào từ một điểm sáng, khôi phục độ nét.
+    Như chiếu đèn pin vào tấm ảnh cũ trong phòng tối.
+    """
+    import math
+    from PIL import Image, ImageOps
+
+    w, h = video_width, video_height
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (w, h), Image.Resampling.LANCZOS)
+    except Exception:
+        img_filled = Image.new("RGB", (w, h), (40, 40, 40))
+
+    img_arr = np.array(img_filled).astype(np.float32)
+    # Grayscale: dùng PIL cho nhanh, reshape thành (h, w)
+    gray_np = np.array(ImageOps.grayscale(img_filled)).astype(np.float32)
+    gray_3ch = np.stack([gray_np, gray_np, gray_np], axis=-1)
+
+    # Precompute normalized radial distance từ tâm ảnh (0=tâm, 1=góc xa nhất)
+    _mem_cx, _mem_cy = w / 2.0, h / 2.0
+    _mem_yy, _mem_xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    _mem_raw_dist = np.sqrt((_mem_xx - _mem_cx) ** 2 + (_mem_yy - _mem_cy) ** 2)
+    _mem_max_dist = math.sqrt(_mem_cx ** 2 + _mem_cy ** 2) + 1e-6
+    _mem_dist = _mem_raw_dist / _mem_max_dist  # normalized [0, ~1]
+
+    def _mem_frame(t: float):
+        p = min(1.0, t / duration)
+
+        if p < 0.65:
+            reveal_p = p / 0.65
+            sat = reveal_p
+            vignette_p = 0.35 + 0.08 * math.sin(2 * math.pi * t / 2.4)
+        else:
+            reveal_p = 1.0
+            sat = 1.0
+            vignette_p = 0.30 + 0.06 * math.sin(2 * math.pi * t / 2.4)
+
+        # Vectorized: color_mix từ 0→1 theo radial distance
+        # Gần tâm → sớm có màu, xa tâm → trễ hơn
+        dist = _mem_dist  # alias cho rõ nghĩa
+        color_mix = np.clip((reveal_p * 1.2 - dist) / 1.2, 0.0, 1.0)
+        color_mix = np.expand_dims(color_mix, axis=-1)  # (h, w, 1)
+
+        # Blend: grayscale ↔ color, rồi tăng saturation
+        blended = gray_3ch * (1.0 - color_mix) + img_arr * color_mix
+        saturated = blended * (0.5 + 0.5 * sat) + img_arr * (sat * 0.5)
+
+        # Vignette breathing
+        vignette_strength = vignette_p * np.clip((dist - 0.55) / 0.45, 0.0, 1.0)
+        vignette_strength = np.expand_dims(vignette_strength, axis=-1)
+        out = saturated * (1.0 - vignette_strength * 0.5)
+
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    from moviepy.video.VideoClip import VideoClip
+    mem_clip = VideoClip(_mem_frame).with_duration(duration)
+
+    layers = [mem_clip]
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=duration * 0.70, y_frac=0.78)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 4: Forbidden Uncover (Censored Reveal)
+# ══════════════════════════════════════════════════════════════════════
+def build_forbidden_uncover_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 2.5,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Lật mở bí mật — màn hình "censorsored" bị xé tách ra
+    từ giữa, reveal ảnh bìa bên dưới. Giống cảnh lật hồ sơ mật trong phim.
+    """
+    import math
+    from PIL import Image, ImageOps, ImageDraw
+
+    w, h = video_width, video_height
+
+    # Nền đen
+    bg = ColorClip((w, h), color=(8, 8, 12)).with_duration(duration)
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (w, h), Image.Resampling.LANCZOS)
+    except Exception:
+        img_filled = Image.new("RGB", (w, h), (30, 30, 30))
+
+    img_arr = np.array(img_filled)
+
+    # Tạo lớp "censorsored": nửa trên đỏ đục, nửa dưới đỏ đục, giữa có khe hở
+    panel_h = int(h * 0.45)
+    top_panel_h = panel_h
+    bot_panel_h = h - panel_h
+    panel_color = (180, 20, 20)  # đỏ đậm
+    stripe_color = (220, 30, 30)  # đỏ nhạt hơn cho sọc
+
+    top_panel = Image.new("RGB", (w, top_panel_h), panel_color)
+    bot_panel = Image.new("RGB", (w, bot_panel_h), panel_color)
+
+    draw_top = ImageDraw.Draw(top_panel)
+    draw_bot = ImageDraw.Draw(bot_panel)
+
+    # Vẽ các vạch chéo đỏ (classic censored look)
+    stripe_w = int(w * 0.08)
+    for sx in range(-h, w + h, stripe_w * 2):
+        draw_top.line([(sx, 0), (sx + top_panel_h, top_panel_h)], fill=stripe_color, width=4)
+        draw_bot.line([(sx, 0), (sx + bot_panel_h, bot_panel_h)], fill=stripe_color, width=4)
+
+    # Chữ "CLASSIFIED" ở giữa panel
+    try:
+        clf_font = _load_hook_font(int(w * 0.04))
+    except Exception:
+        clf_font = None
+
+    mid_y_top = top_panel_h // 2
+    mid_y_bot = bot_panel_h // 2
+    label = "— CLASSIFIED —"
+    if clf_font:
+        tb = draw_top.textbbox((0, 0), label, font=clf_font)
+        tw = tb[2] - tb[0]
+        th = tb[3] - tb[1]
+        draw_top.text(((w - tw) // 2, mid_y_top - th // 2), label, font=clf_font, fill=(255, 200, 200))
+        draw_bot.text(((w - tw) // 2, mid_y_bot - th // 2), label, font=clf_font, fill=(255, 200, 200))
+
+    top_arr = np.array(top_panel)
+    bot_arr = np.array(bot_panel)
+
+    # Định nghĩa timing: khi nào panel bắt đầu tách, khi nào xong
+    PEEL_START = 0.3    # giây: panel bắt đầu tách
+    PEEL_DUR = 0.9      # giây: thời gian tách
+
+    def top_panel_pos(t):
+        if t < PEEL_START:
+            return ("center", 0)
+        pt = min(1.0, (t - PEEL_START) / PEEL_DUR)
+        ease = 1.0 - (1.0 - pt) ** 3
+        return ("center", int(-(h // 2) * ease))
+
+    def bot_panel_pos(t):
+        if t < PEEL_START:
+            return ("center", top_panel_h)
+        pt = min(1.0, (t - PEEL_START) / PEEL_DUR)
+        ease = 1.0 - (1.0 - pt) ** 3
+        return ("center", int(top_panel_h + (h // 2) * ease))
+
+    # Ảnh reveal: mờ ở đầu, rõ dần
+    reveal_img_clip = ImageClip(img_arr).with_duration(duration)
+
+    def reveal_opacity(t):
+        if t < PEEL_START + PEEL_DUR:
+            return 0.0
+        p = min(1.0, (t - PEEL_START - PEEL_DUR) / 0.4)
+        return 0.3 + 0.7 * (1.0 - (1.0 - p) ** 2)
+
+    reveal_anim = _dynamic_opacity(reveal_img_clip, reveal_opacity)
+
+    top_clip = ImageClip(top_arr).with_position(top_panel_pos).with_duration(duration)
+    bot_clip = ImageClip(bot_arr).with_position(bot_panel_pos).with_duration(duration)
+
+    # Flash trắng khi panels tách xong
+    flash_delay = PEEL_START + PEEL_DUR
+    flash = ColorClip((w, h), color=(255, 255, 255)).with_duration(0.08).with_start(flash_delay).with_opacity(0.7)
+
+    layers = [bg, reveal_anim, top_clip, bot_clip, flash]
+
+    caption_delay = flash_delay + 0.2
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=caption_delay, y_frac=0.78)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 5: Ink Bleed Revelation
+# ══════════════════════════════════════════════════════════════════════
+def build_ink_bleed_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Nhập nhòe mực — màn hình trắng, mực đen từ từ lan ra từ tâm,
+    hình thành bóng ảnh. Cuối cùng: flash trắng → reveal ảnh rõ nét.
+    Kỹ thuật ink diffusion photography.
+    """
+    import math
+    from PIL import Image, ImageOps
+
+    w, h = video_width, video_height
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (w, h), Image.Resampling.LANCZOS)
+    except Exception:
+        img_filled = Image.new("RGB", (w, h), (40, 40, 40))
+
+    img_arr = np.array(img_filled).astype(np.float32)
+
+    # Precompute radial distance từ tâm (vectorized)
+    _yy, _xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    _cx, _cy = w / 2.0, h / 2.0
+    _radial_dist_arr = np.sqrt((_xx - _cx) ** 2 + (_yy - _cy) ** 2)
+    _max_d = math.sqrt(_cx ** 2 + _cy ** 2)
+
+    # Paper noise cache (fixed per-frame — fast, deterministic)
+    _paper_noise = np.random.default_rng(42).standard_normal((h, w, 1)).astype(np.float32) * 4.0
+
+    def _ink_frame(t: float):
+        p = min(1.0, t / duration)
+
+        if p < 0.60:
+            spread_p = p / 0.60
+        elif p < 0.78:
+            spread_p = 1.0
+        else:
+            spread_p = 1.0
+
+        # Bán kính mực lan: center gần → sớm, xa → trễ
+        base_r = spread_p * _max_d * 1.3
+        noise_offset = _radial_dist_arr / _max_d * _max_d * 0.15
+        spread_r = base_r - noise_offset
+
+        # Mask: vùng có mực (inside spread radius)
+        ink_mask = (_radial_dist_arr <= spread_r).astype(np.float32)
+        edge_soft = np.clip(spread_r - _radial_dist_arr, 0, None) / (spread_r * 0.08 + 1e-6)
+        ink_amount = np.clip(ink_mask * 0.85 + edge_soft * ink_mask * 0.15, 0.0, 1.0)
+
+        ink_col = np.array([15, 12, 18], dtype=np.float32)
+        white_bg = np.array([250, 248, 245], dtype=np.float32)
+
+        # Blend: mực ↔ giấy/ảnh
+        paper = white_bg + _paper_noise * 0.5
+        blended_ink = paper * (1.0 - ink_amount[..., None]) + ink_col * ink_amount[..., None]
+
+        # Vùng chưa có mực: blend giấy ↔ ảnh bìa (theo spread_p)
+        img_blend = img_arr * spread_p + paper * (1.0 - spread_p)
+
+        frame = blended_ink * ink_amount[..., None] + img_blend * (1.0 - ink_amount[..., None])
+
+        # Phase 3: flash trắng → reveal ảnh
+        if 0.78 <= p < 0.90:
+            flash_p = (p - 0.78) / 0.12
+            frame = frame * (1.0 - flash_p * 0.5) + img_arr * (flash_p * 0.5)
+
+        if p >= 0.90:
+            reveal_p = (p - 0.90) / 0.10
+            frame = img_arr * reveal_p + frame * (1.0 - reveal_p)
+
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+    from moviepy.video.VideoClip import VideoClip
+    ink_clip = VideoClip(_ink_frame).with_duration(duration)
+
+    layers = [ink_clip]
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=duration * 0.82, y_frac=0.78)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ARTISTIC HOOK 7: Minimal Text Reveal
+# ══════════════════════════════════════════════════════════════════════
+def build_scene_assembly_hook(
+    cover_image_path: str,
+    video_width: int,
+    video_height: int,
+    duration: float = 3.0,
+    quote_text: str = "",
+) -> CompositeVideoClip:
+    """
+    Lắp ráp hiện thực — particles (mảnh vụn từ ảnh) trôi nổi ngẫu nhiên
+    trên nền đen, rồi hội tụ từ từ về đúng vị trí grid để ghép lại thành
+    ảnh hoàn chỉnh. Spring physics để các mảnh "rơi vào đúng chỗ".
+    Giống cảnh nhớ lại trong phim của Christopher Nolan.
+    """
+    import math
+    from PIL import Image, ImageOps
+
+    w, h = video_width, video_height
+
+    try:
+        if cover_image_path.endswith(".mp4"):
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            with VideoFileClip(cover_image_path) as v:
+                img = Image.fromarray(v.get_frame(0))
+        else:
+            img = ImageOps.exif_transpose(Image.open(cover_image_path)).convert("RGB")
+        img_filled = ImageOps.fit(img, (w, h), Image.Resampling.LANCZOS)
+    except Exception:
+        img_filled = Image.new("RGB", (w, h), (40, 40, 40))
+
+    img_arr = np.array(img_filled)
+
+    # Tạo particles: grid GRID_X × GRID_Y, mỗi particle là 1 ô màu
+    GRID_X = 60
+    GRID_Y = 107
+    TILE_W = w // GRID_X
+    TILE_H = h // GRID_Y
+    TILE_W = max(1, TILE_W)
+    TILE_H = max(1, TILE_H)
+
+    # Precompute particle properties: vị trí bắt đầu (ngẫu nhiên) + màu
+    rng_init = np.random.default_rng(2026)
+    particles = []
+    for gy in range(GRID_Y):
+        for gx in range(GRID_X):
+            # Vị trí grid thật
+            tx = gx * TILE_W
+            ty = gy * TILE_H
+            # Vị trí bắt đầu: ngẫu nhiên trên toàn khung
+            sx = rng_init.integers(0, w)
+            sy = rng_init.integers(0, h)
+            # Màu: sample từ ảnh tại vị trí grid
+            px = max(0, min(tx, w - 1))
+            py = max(0, min(ty, h - 1))
+            color = tuple(int(c) for c in img_arr[py, px])
+            # Độ trễ: particle ở xa giữa → bắt đầu muộn hơn (parallax)
+            center_x, center_y = w / 2, h / 2
+            dist_from_center = math.sqrt((tx - center_x) ** 2 + (ty - center_y) ** 2)
+            max_dist = math.sqrt(center_x ** 2 + center_y ** 2)
+            delay = (dist_from_center / max_dist) * 0.6  # 0-0.6s delay
+
+            particles.append({
+                "sx": sx, "sy": sy, "tx": tx, "ty": ty,
+                "color": color,
+                "delay": delay,
+                "tw": TILE_W, "th": TILE_H,
+            })
+
+    def _assemble_frame(t: float):
+        frame = np.zeros((h, w, 3), dtype=np.float32)
+        # Nền đen với subtle gradient
+        for py in range(h):
+            for px in range(0, w, 3):
+                cx, cy = w / 2, h / 2
+                d = math.sqrt((px - cx) ** 2 + (cy) ** 2 + (py - cy) ** 2) / (math.sqrt(cx ** 2 + cy ** 2) + 1e-6)
+                val = 5 + int(d * 12)
+                frame[py:py + 1, px:px + 3] = [val, val, val + 2]
+
+        for p in particles:
+            local_t = t - p["delay"]
+            if local_t <= 0:
+                # Chưa bắt đầu: ở vị trí scatter
+                px_p = p["sx"]
+                py_p = p["sy"]
+            else:
+                # Ease out cubic về target
+                pt = min(1.0, local_t / (duration - p["delay"]))
+                ease = 1.0 - (1.0 - pt) ** 3
+                px_p = p["sx"] + (p["tx"] - p["sx"]) * ease
+                py_p = p["sy"] + (p["ty"] - p["sy"]) * ease
+
+            # Vẽ particle (tile)
+            for dy in range(p["th"]):
+                for dx in range(p["tw"]):
+                    fpx = int(px_p) + dx
+                    fpy = int(py_p) + dy
+                    if 0 <= fpx < w and 0 <= fpy < h:
+                        frame[fpy, fpx] = p["color"]
+
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+    from moviepy.video.VideoClip import VideoClip
+    particles_clip = VideoClip(_assemble_frame).with_duration(duration)
+
+    # Subtle glow ở tâm khi particles gần hoàn thành
+    cx_g, cy_g = w // 2, h // 2
+    _gd = np.sqrt((np.arange(w) - cx_g) ** 2 + np.arange(h)[:, None] ** 2)
+    _glow_base = np.clip(1.0 - _gd / (cx_g * 0.4 + 1e-6), 0, 1.0) ** 2
+
+    def _glow_frame(t):
+        p = t / duration
+        if p < 0.5:
+            return np.zeros((h, w, 3), dtype=np.uint8)
+        gp = (p - 0.5) / 0.5
+        intensity = gp * 0.35
+        glow = (_glow_base * intensity * 255).astype(np.uint8)[..., None]
+        glow_rgb = np.concatenate([np.full_like(glow, 255), np.full_like(glow, 240), np.full_like(glow, 200)], axis=-1)
+        return np.clip(glow_rgb, 0, 255).astype(np.uint8)
+
+    glow_rgb_clip = VideoClip(_glow_frame).with_duration(duration)
+    glow_alpha_arr = np.clip(_glow_base * 0.6 * 255, 0, 255).astype(np.uint8)
+    glow_alpha_clip = VideoClip(lambda t: glow_alpha_arr).with_duration(duration).with_effects([])
+    glow_clip = CompositeVideoClip([
+        _dynamic_opacity(glow_rgb_clip, lambda t: min(1.0, max(0.0, (t / duration - 0.5) / 0.5 * 0.8)))
+    ]).with_duration(duration)
+
+    layers = [particles_clip, glow_clip]
+
+    caption = _hook_caption_overlay(quote_text, w, h, duration, delay=duration * 0.85, y_frac=0.78)
+    if caption:
+        layers.append(caption)
+
+    return CompositeVideoClip(layers, size=(w, h)).with_duration(duration)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOOK REGISTRY — single dispatch table replacing elif chains in video_service.py
+# Add a new hook type here: no changes needed in video_service.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HOOK_AUDIO_SPECS = {
+    # Hook audio specs
+    "carousel_quote":          dict(type="ding_reel",  sfx_key="carousel_quote",   fallback="ding.wav",               start=0.0, vol_scale=1.0),
+    "typewriter_quote":        dict(type="typewriter", sfx_key="typewriter_quote",  fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.85),
+    "blackout_question":       dict(type="tick_burst", sfx_key="typewriter_quote", fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.85),
+    "camera_shutter":          dict(type="sfx",       sfx_key="camera_shutter",   fallback=None,              start=0.0, vol_scale=1.0),
+    "cyber_glitch":            dict(type="sfx",       sfx_key="cyber_glitch",     fallback=None,              start=0.0, vol_scale=1.0),
+    "vintage_film_burn":      dict(type="sfx",       sfx_key="vintage_film_burn",fallback=None,              start=0.0, vol_scale=1.0),
+    "smash_cut_blackout":      dict(type="bass_drop", sfx_key="impact",           fallback="impact_boom.wav",  start=0.5, vol_scale=1.5),
+    "cinematic_letterbox":      dict(type="swell",     sfx_key="cinematic_letterbox",fallback="ambient_mystic.wav",start=0.0,vol_scale=1.0),
+    "paper_rip_split":        dict(type="bass_drop", sfx_key="impact",           fallback="impact_boom.wav",  start=0.2, vol_scale=1.0),
+    "double_exposure":         dict(type="swell",     sfx_key="double_exposure",   fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    "light_paint_ingress":    dict(type="swell",     sfx_key="light_paint_ingress",fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    "memory_resurface":        dict(type="ambient",   sfx_key="ambient_mystic",    fallback="ambient_mystic.wav",start=0.0, vol_scale=1.0),
+    "forbidden_uncover":       dict(type="bass_drop", sfx_key="smash_cut_blackout",fallback="impact_boom.wav",start=1.2,vol_scale=1.0),
+    "ink_bleed":              dict(type="ambient",   sfx_key="ink_bleed",         fallback="ambient_mystic.wav",start=0.0, vol_scale=1.0),
+    "scene_assembly":          dict(type="swell",     sfx_key="scene_assembly",    fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    # Outro audio specs
+    "carousel_quote_outro":   dict(type="carousel",   sfx_key="carousel_quote",   fallback=None,              start=0.0, vol_scale=1.0),
+    "typewriter_quote_outro": dict(type="typewriter", sfx_key="typewriter_quote",fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.0),
+    "blackout_question_outro":dict(type="tick_burst", sfx_key="typewriter_quote",fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.0),
+    "camera_shutter_outro":  dict(type="sfx",       sfx_key="camera_shutter",  fallback=None,              start=0.0, vol_scale=1.0),
+    "cyber_glitch_outro":    dict(type="sfx",       sfx_key="cyber_glitch",    fallback=None,              start=0.0, vol_scale=1.0),
+    "vintage_film_burn_outro":dict(type="sfx",       sfx_key="vintage_film_burn",fallback=None,              start=0.0, vol_scale=1.0),
+    "cta_card":              dict(type="cta",         sfx_key="cta_card",         fallback="cta_chime.wav",   start=0.0, vol_scale=1.0),
+    "smart_quote_animation":  dict(type="ambient",   sfx_key="ambient_mystic",  fallback="ambient_mystic.wav", start=0.0, vol_scale=1.0),
+}
+
+_HOOK_BUILDER_MAP = {
+    "carousel_quote":           (build_carousel_hook,           "carousel_quote"),
+    "typewriter_quote":        (build_typewriter_quote_hook,    "typewriter_quote"),
+    "blackout_question":        (build_blackout_question_hook,   "blackout_question"),
+    "camera_shutter":           (build_camera_shutter_hook,     "camera_shutter"),
+    "cyber_glitch":             (build_cyber_glitch_hook,       "cyber_glitch"),
+    "vintage_film_burn":        (build_vintage_film_burn_hook,   "vintage_film_burn"),
+    "smash_cut_blackout":        (build_smash_cut_hook,          "smash_cut_blackout"),
+    "cinematic_letterbox":       (build_cinematic_letterbox_hook,"cinematic_letterbox"),
+    "paper_rip_split":         (build_paper_rip_hook,          "paper_rip_split"),
+    "double_exposure":          (build_double_exposure_hook,     "double_exposure"),
+    "light_paint_ingress":     (build_light_paint_hook,         "light_paint_ingress"),
+    "memory_resurface":         (build_memory_resurface_hook,    "memory_resurface"),
+    "forbidden_uncover":        (build_forbidden_uncover_hook,   "forbidden_uncover"),
+    "ink_bleed":               (build_ink_bleed_hook,            "ink_bleed"),
+    "scene_assembly":           (build_scene_assembly_hook,       "scene_assembly"),
+    "carousel_quote_outro":    (build_carousel_hook,            "carousel_quote_outro"),
+    "typewriter_quote_outro":  (build_typewriter_quote_hook,    "typewriter_quote_outro"),
+    "blackout_question_outro": (build_blackout_question_hook,   "blackout_question_outro"),
+    "camera_shutter_outro":   (build_camera_shutter_hook,      "camera_shutter_outro"),
+    "cyber_glitch_outro":     (build_cyber_glitch_hook,        "cyber_glitch_outro"),
+    "vintage_film_burn_outro":(build_vintage_film_burn_hook,   "vintage_film_burn_outro"),
+    "cta_card":               (build_cta_card_hook,            "cta_card"),
+    "smart_quote_animation":  (build_smart_quote_animation_hook, "smart_quote_animation"),
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOOK REGISTRY — single dispatch table replacing elif chains in video_service.py
+# Add a new hook type here: no changes needed in video_service.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+import os as _os
+
+_HOOK_AUDIO_SPECS = {
+    # Hook audio specs
+    "carousel_quote":          dict(type="ding_reel",  sfx_key="carousel_quote",   fallback="ding.wav",               start=0.0, vol_scale=1.0),
+    "typewriter_quote":        dict(type="typewriter", sfx_key="typewriter_quote",  fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.85),
+    "blackout_question":       dict(type="tick_burst", sfx_key="typewriter_quote", fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.85),
+    "camera_shutter":          dict(type="sfx",       sfx_key="camera_shutter",   fallback=None,              start=0.0, vol_scale=1.0),
+    "cyber_glitch":            dict(type="sfx",       sfx_key="cyber_glitch",     fallback=None,              start=0.0, vol_scale=1.0),
+    "vintage_film_burn":       dict(type="sfx",       sfx_key="vintage_film_burn",fallback=None,              start=0.0, vol_scale=1.0),
+    "smash_cut_blackout":      dict(type="bass_drop", sfx_key="impact",           fallback="impact_boom.wav",  start=0.5, vol_scale=1.5),
+    "cinematic_letterbox":     dict(type="swell",     sfx_key="cinematic_letterbox",fallback="ambient_mystic.wav",start=0.0,vol_scale=1.0),
+    "paper_rip_split":        dict(type="bass_drop", sfx_key="impact",           fallback="impact_boom.wav",  start=0.2, vol_scale=1.0),
+    "double_exposure":         dict(type="swell",     sfx_key="double_exposure",   fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    "light_paint_ingress":     dict(type="swell",     sfx_key="light_paint_ingress",fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    "memory_resurface":        dict(type="ambient",   sfx_key="ambient_mystic",    fallback="ambient_mystic.wav",start=0.0, vol_scale=1.0),
+    "forbidden_uncover":       dict(type="bass_drop", sfx_key="smash_cut_blackout",fallback="impact_boom.wav",start=1.2,vol_scale=1.0),
+    "ink_bleed":              dict(type="ambient",   sfx_key="ink_bleed",         fallback="ambient_mystic.wav",start=0.0, vol_scale=1.0),
+    "scene_assembly":          dict(type="swell",     sfx_key="scene_assembly",    fallback="cinematic_swell.wav",start=0.0,vol_scale=1.0),
+    # Outro audio specs (different SFX patterns)
+    "carousel_quote_outro":   dict(type="carousel",   sfx_key="carousel_quote",   fallback=None,              start=0.0, vol_scale=1.0),
+    "typewriter_quote_outro":  dict(type="typewriter", sfx_key="typewriter_quote",fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.0),
+    "blackout_question_outro":dict(type="tick_burst", sfx_key="typewriter_quote",fallback=None,              start=0.0, vol_scale=1.0, tick_pct=0.0),
+    "camera_shutter_outro":   dict(type="sfx",       sfx_key="camera_shutter",  fallback=None,              start=0.0, vol_scale=1.0),
+    "cyber_glitch_outro":     dict(type="sfx",       sfx_key="cyber_glitch",    fallback=None,              start=0.0, vol_scale=1.0),
+    "vintage_film_burn_outro": dict(type="sfx",       sfx_key="vintage_film_burn",fallback=None,              start=0.0, vol_scale=1.0),
+    "cta_card":               dict(type="cta",         sfx_key="cta_card",         fallback="cta_chime.wav",   start=0.0, vol_scale=1.0),
+    # Hook mới:
+    "smart_quote_animation":  dict(type="ambient",   sfx_key="ambient_mystic",  fallback="ambient_mystic.wav", start=0.0, vol_scale=1.0),
+}
+
+_HOOK_BUILDER_MAP = {
+    "carousel_quote":           (build_carousel_hook,           "carousel_quote"),
+    "typewriter_quote":         (build_typewriter_quote_hook,    "typewriter_quote"),
+    "blackout_question":         (build_blackout_question_hook,    "blackout_question"),
+    "camera_shutter":           (build_camera_shutter_hook,      "camera_shutter"),
+    "cyber_glitch":             (build_cyber_glitch_hook,        "cyber_glitch"),
+    "vintage_film_burn":        (build_vintage_film_burn_hook,   "vintage_film_burn"),
+    "smash_cut_blackout":       (build_smash_cut_hook,          "smash_cut_blackout"),
+    "cinematic_letterbox":      (build_cinematic_letterbox_hook,"cinematic_letterbox"),
+    "paper_rip_split":         (build_paper_rip_hook,          "paper_rip_split"),
+    "double_exposure":          (build_double_exposure_hook,      "double_exposure"),
+    "light_paint_ingress":      (build_light_paint_hook,        "light_paint_ingress"),
+    "memory_resurface":         (build_memory_resurface_hook,   "memory_resurface"),
+    "forbidden_uncover":         (build_forbidden_uncover_hook,  "forbidden_uncover"),
+    "ink_bleed":               (build_ink_bleed_hook,          "ink_bleed"),
+    "scene_assembly":           (build_scene_assembly_hook,      "scene_assembly"),
+    "carousel_quote_outro":     (build_carousel_hook,            "carousel_quote_outro"),
+    "typewriter_quote_outro":   (build_typewriter_quote_hook,    "typewriter_quote_outro"),
+    "blackout_question_outro":  (build_blackout_question_hook,   "blackout_question_outro"),
+    "camera_shutter_outro":     (build_camera_shutter_hook,     "camera_shutter_outro"),
+    "cyber_glitch_outro":      (build_cyber_glitch_hook,       "cyber_glitch_outro"),
+    "vintage_film_burn_outro":  (build_vintage_film_burn_hook,  "vintage_film_burn_outro"),
+    "cta_card":                (build_cta_card_hook,            "cta_card"),
+    "smart_quote_animation":   (build_smart_quote_animation_hook, "smart_quote_animation"),
+}
+
+# Public dispatch table
+HOOK_REGISTRY = {k: {"builder_fn": v[0], "audio": _HOOK_AUDIO_SPECS[v[1]]}
+                  for k, v in _HOOK_BUILDER_MAP.items()}
+
+
+def build_audio_placements(audio_spec, effect_type, duration, sfx_dir, reel_key, volume,
+                          resolve_effect_sfx_fn, hook_sfx_level_fn, hook_sfx_max_dur_fn,
+                          start_offset=0.0):
+    placements = []
+    atype     = audio_spec.get("type", "none")
+    sfx_key   = audio_spec.get("sfx_key")
+    fallback  = audio_spec.get("fallback")
+    start     = start_offset + audio_spec.get("start", 0.0)
+    vol_scale = audio_spec.get("vol_scale", 1.0)
+    tick_pct  = audio_spec.get("tick_pct", 0.0)
+
+    def sfx_path(name):
+        return _os.path.join(sfx_dir, name) if name else ""
+
+    def max_dur(d):
+        return hook_sfx_max_dur_fn(d)
+
+    DING_VARIANTS = {"arcade_8bit": "ding_v1_arcade.wav"}
+    DEFAULT_DING   = "ding.wav"
+
+    lvl = hook_sfx_level_fn(reel_key, volume) * vol_scale
+
+    if atype == "ding_reel":
+        reel = resolve_effect_sfx_fn(sfx_key, reel_key) if sfx_key else None
+        ding  = sfx_path(DING_VARIANTS.get(reel_key, DEFAULT_DING))
+        if reel:
+            placements.append((reel, start, lvl, 0.0, duration))
+        if _os.path.isfile(ding):
+            placements.append((ding, start + 2.0, hook_sfx_level_fn("_ding", volume) * vol_scale, 0.0))
+
+    elif atype == "typewriter":
+        typewriter_sfx = resolve_effect_sfx_fn(sfx_key, reel_key) if sfx_key else None
+        tick_dur = duration * tick_pct if tick_pct > 0 else 0
+        if typewriter_sfx and tick_dur > 0:
+            placements.append((typewriter_sfx, start, lvl, 0.0, tick_dur))
+        if tick_pct > 0:
+            tick_sfx = sfx_path("tick.wav")
+            if _os.path.isfile(tick_sfx):
+                steps    = max(1, min(10, 24))
+                step_dur = tick_dur / max(1, steps)
+                lvl_tick = hook_sfx_level_fn("_tick", volume)
+                for i in range(steps):
+                    placements.append((tick_sfx, start + i * step_dur, lvl_tick, 0.0, step_dur + 0.05))
+
+    elif atype == "tick_burst":
+        if tick_pct > 0:
+            tick_dur  = duration * tick_pct
+            tick_sfx  = sfx_path("tick.wav")
+            if _os.path.isfile(tick_sfx):
+                steps    = max(1, min(10, 24))
+                step_dur = tick_dur / max(1, steps)
+                lvl_tick = hook_sfx_level_fn("_tick", volume)
+                for i in range(steps):
+                    placements.append((tick_sfx, start + i * step_dur, lvl_tick, 0.0, step_dur + 0.05))
+
+    elif atype == "sfx":
+        sfx = resolve_effect_sfx_fn(sfx_key, reel_key) if sfx_key else None
+        if sfx:
+            placements.append((sfx, start, lvl, 0.0, max_dur(duration)))
+
+    elif atype == "bass_drop":
+        bass = resolve_effect_sfx_fn(sfx_key, reel_key) or sfx_path(fallback or "impact_boom.wav")
+        if _os.path.isfile(bass):
+            offset = audio_spec.get("start", 0.0)
+            placements.append((bass, start, lvl, 0.0, max_dur(max(0.1, duration - offset))))
+
+    elif atype == "swell":
+        swell = resolve_effect_sfx_fn(sfx_key, reel_key) or sfx_path(fallback or "cinematic_swell.wav")
+        if _os.path.isfile(swell):
+            placements.append((swell, start, lvl, 0.0, max_dur(duration)))
+
+    elif atype == "ambient":
+        amb = resolve_effect_sfx_fn(sfx_key, reel_key) or sfx_path(fallback or "ambient_mystic.wav")
+        if _os.path.isfile(amb):
+            placements.append((amb, start, lvl, 0.0))
+
+    elif atype == "cta":
+        ding = resolve_effect_sfx_fn(sfx_key, reel_key) or sfx_path(fallback or "cta_chime.wav")
+        if _os.path.isfile(ding):
+            placements.append((ding, start, lvl, 0.0))
+
+    elif atype == "carousel":
+        reel_sfx = resolve_effect_sfx_fn(sfx_key, reel_key) if sfx_key else None
+        whoosh   = sfx_path("whoosh.wav")
+        ding     = sfx_path(DING_VARIANTS.get(reel_key, DEFAULT_DING))
+        if _os.path.isfile(whoosh):
+            placements.append((whoosh, start, hook_sfx_level_fn("_whoosh", volume) * vol_scale, 0.0, max_dur(duration)))
+        if reel_sfx:
+            slot_dur = SLOT_DURATION
+            placements.append((reel_sfx, start + slot_dur, lvl, 0.0, max_dur(duration - slot_dur)))
+        if _os.path.isfile(ding):
+            carousel_dur = 4.5
+            placements.append((ding, start + carousel_dur - 0.5,
+                              hook_sfx_level_fn("_ding", volume) * vol_scale, 0.0, max_dur(0.5)))
+
+    return placements
+
+
+def build_hook(hook_type, cover_img, quote_text, w, h, duration, *, instant=False):
+    entry = _HOOK_BUILDER_MAP.get(hook_type)
+    if entry is None:
+        return None
+    builder_fn, _ = entry
+    type1_hooks = ("typewriter_quote", "typewriter_quote_outro", "blackout_question", "blackout_question_outro", "smash_cut_blackout")
+    type2_hooks = ("carousel_quote", "carousel_quote_outro", "cta_card")
+    
+    if hook_type in type1_hooks:
+        if "typewriter" in hook_type:
+            return builder_fn(quote_text, w, h, duration, cover_img, instant=instant)
+        return builder_fn(quote_text, w, h, duration, cover_img)
+    elif hook_type in type2_hooks:
+        return builder_fn(cover_img, quote_text, w, h, duration)
+    else:
+        return builder_fn(cover_img, w, h, duration, quote_text)
+
+
+def get_hook_audio_spec(hook_type):
+    entry = _HOOK_BUILDER_MAP.get(hook_type)
+    if entry is None:
+        return None
+    _, spec_name = entry
+    return _HOOK_AUDIO_SPECS.get(spec_name)

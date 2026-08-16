@@ -122,14 +122,26 @@ export const SFX_OPTIONS = [
   { value: 'tick', label: '👆 Tíc (Click)' },
   { value: 'ding', label: '🔔 Ding' },
   { value: 'bell', label: '🛎️ Chuông (Bell)' },
+  { value: 'bell_chime', label: '🔔 Chuông ngân (Bell Chime)' },
   { value: 'shimmer', label: '✨ Lấp lánh (Shimmer)' },
   { value: 'riser', label: '📈 Riser (dâng trào)' },
   { value: 'bass_drop', label: '🔊 Trầm rơi (Bass Drop)' },
   { value: 'impact', label: '💥 Va đập (Impact)' },
   { value: 'suspense', label: '😱 Hồi hộp (Suspense)' },
   { value: 'heartbeat', label: '🫀 Nhịp tim (Heartbeat)' },
+  { value: 'heartbeat_dramatic', label: '💓 Tim dồn dập (Dramatic Heartbeat)' },
   { value: 'laugh', label: '😂 Cười (Laugh)' },
   { value: 'breath', label: '😮‍💨 Hơi thở (Breath)' },
+  { value: 'deep_breath', label: '😮‍💨 Hít sâu (Deep Breath)' },
+  { value: 'cash_register', label: '💰 Máy tính tiền (Cash Register)' },
+  { value: 'tape_rewind', label: '⏪ Tua băng (Tape Rewind)' },
+  { value: 'typewriter_clack', label: '⌨️ Lạch cạch (Typewriter Clack)' },
+  { value: 'whip_whoosh', label: '🌪️ Vút (Whip Whoosh)' },
+  { value: 'ui_click', label: '🖱️ Click (UI Click)' },
+  { value: 'braam_horn', label: '📯 Còi (Braam Horn)' },
+  { value: 'camera_fast', label: '📸 Tách (Camera Fast)' },
+  { value: 'page_turn', label: '📄 Lật trang (Page Turn)' },
+  { value: 'clock_tick', label: '⏱️ Tích tắc (Clock Tick)' },
 ];
 
 // Tiếng trục quay Hook Máy Xèng — đồng bộ với backend video_service.HOOK_REEL_SOUNDS.
@@ -143,15 +155,11 @@ export const HOOK_REEL_SOUNDS = [
 
 export const HOOK_SFX_OPTIONS = {
   carousel_quote: HOOK_REEL_SOUNDS,
-  blackout_question: [
-    { value: 'impact_boom', label: '💥 Nổ/Va đập (Impact Boom)' },
-  ],
   typewriter_quote: [
     { value: 'typewriter_fast', label: '⌨️ Lạch cạch (Fast Typewriter)' },
   ],
-  breathing_vignette: [
-    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
-    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+  blackout_question: [
+    { value: 'typewriter_fast', label: '⌨️ Lạch cạch (Fast Typewriter)' },
   ],
   camera_shutter: [
     { value: 'camera_shutter', label: '📸 Tách máy ảnh (Camera Shutter)' },
@@ -166,6 +174,45 @@ export const HOOK_SFX_OPTIONS = {
   cta_card: [
     { value: 'cta_chime', label: '🔔 Chuông reo (Chime)' },
     { value: 'cta_pop', label: '🫧 Bụp vui tươi (Pop)' },
+  ],
+  smash_cut_blackout: [
+    { value: 'impact_boom', label: '💥 Đóng sập (Smash Boom)' },
+  ],
+  cinematic_letterbox: [
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+  ],
+  paper_rip_split: [
+    { value: 'impact_boom', label: '💥 Nổ/Va đập (Impact Boom)' },
+  ],
+  // 6 HOOK NGHỆ THUẬT MỚI:
+  double_exposure: [
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+  ],
+  light_paint_ingress: [
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+  ],
+  memory_resurface: [
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+  ],
+  forbidden_uncover: [
+    { value: 'impact_boom', label: '💥 Nổ/Va đập (Impact Boom)' },
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+  ],
+  ink_bleed: [
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+  ],
+  scene_assembly: [
+    { value: 'cinematic_swell', label: '📈 Dâng trào (Cinematic Swell)' },
+    { value: 'ambient_mystic', label: '🌌 Tĩnh mịch (Mystic Ambient)' },
+  ],
+  // Hook mới:
+  smart_quote_animation: [
+    { value: 'ambient_mystic', label: '🌌 Ambient kỳ ảo' },
+    { value: 'cinematic_swell', label: '📈 Dâng trào cinematic' },
   ],
   none: [],
 };
@@ -187,10 +234,10 @@ export const OUTRO_ONLY_EFFECTS = [
 // video tải về, dù người dùng chỉ đang chọn kiểu vẽ cho ảnh AI. Bẫy đó đã gỡ ở backend
 // (xem main._pick_visual_source), nhãn phải nói đúng sự thật mới.
 export const VISUAL_SOURCES = [
-  { value: 'auto', label: '⚙️ Tự động (ảnh AI — trừ khi bật ưu tiên video thật)' },
-  { value: 'mixed', label: '🎭 Xen kẽ thông minh (theo cảm xúc cảnh)' },
-  { value: 'ai_image', label: '🖼️ Chỉ ảnh AI (không dùng video tải về)' },
-  { value: 'stock_video', label: '🎬 Chỉ video thật (Pexels stock)' },
+  { value: 'mixed', label: '🎭 Xen kẽ thông minh (Gợi ý: Video thật & Ảnh AI)' },
+  { value: 'auto', label: '⚙️ Tự động (Theo cài đặt nâng cao / Ưu tiên video)' },
+  { value: 'ai_image', label: '🖼️ Chỉ ảnh AI (100% Ảnh sinh bởi AI)' },
+  { value: 'stock_video', label: '🎬 Chỉ video thật (100% Pexels Stock)' },
 ];
 
 export const COLOR_GRADINGS = [

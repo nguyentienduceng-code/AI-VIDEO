@@ -2,7 +2,7 @@
 
 > **Mục đích file này:** Đây là tài liệu tham chiếu duy nhất cho mọi lần update sau. AI/Dev chỉ cần đọc file này để biết cần sửa file nào, ở đâu, làm gì — **không cần đọc lại toàn bộ codebase**.
 >
-> Cập nhật lần cuối: **2026-07-19**
+> Cập nhật lần cuối: **2026-08-13**
 
 ---
 
@@ -52,7 +52,7 @@
           ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  ASSETS (backend/assets/)                                    │
-│  ├── sfx/     ── 4 file: whoosh.wav, pop.wav, ding.wav, riser.wav │
+│  ├── sfx/     ── 22+ file: whoosh, pop, ding, riser, bell, bell_chime, shimmer, tick, suspense, heartbeat, heartbeat_dramatic, breath, bass_drop, impact, ambient_mystic, cinematic_swell, swoosh_soft… │
 │  ├── bgm/     ── 14 file nhạc nền (.mp3)                    │
 │  ├── presets.json ── File lưu các preset cấu hình tùy chỉnh  │
 │  ├── output/  ── Video final (.mp4 + .ass)                   │
@@ -131,6 +131,7 @@
 - **Transition "fancy" phải bọc `try/except` fallback crossfade** — không để hiệu ứng lạ làm hỏng render.
 - **KHÔNG dùng `CompositeAudioClip` để trộn SFX ngắn** (MoviePy 2.1.2 bug: `frame_function` đọc clip vượt cửa sổ khi t là mảng → crash với file <1s như tick.wav). Trộn audio bằng numpy trong `_mix_audio_tracks` (đọc `soundfile`, resample `librosa`). `AudioFileClip.to_soundarray` cũng đọc buffer 50000 mẫu vượt file ngắn → tránh cho SFX ngắn.
 - **SFX per-scene phải LUÔN phát** (không gate bởi `use_sfx` global). Transition per-scene: `scene[i].transition` = biên i→i+1 (dùng transition cảnh TRƯỚC cho lối vào cảnh sau).
+- **Placement tuple Literary Mode 8-phần tử**: `_mix_audio_tracks` nhận tuple 8 giá trị `(path, start, volume, fadeout, max_dur, pitch_ratio, fade_in_ms, fade_out_ms)`. 4–6 phần tử vẫn backward-compatible. Fade envelope được áp bằng numpy trong `_mix_audio_tracks`, không phải FFmpeg.
 - **Veo cần billing** — key free-tier trả 429 với mọi model Veo. `_do_visuals` tự tắt Veo + báo UI khi gặp 429/403.
 
 **Backtest offline (không cần chạy server):**
@@ -202,6 +203,9 @@ PYTHONPATH=<abs backend> PYTHONIOENCODING=utf-8 venv/Scripts/python.exe <script>
 | 55 | **A/B Hook Selector (B3)**: Chọn hook variant thay thế trực tiếp trên UI. | `ScriptEditor.jsx`, `store.js` | 2026-07-29 |
 | 56 | **Pattern Interrupt Engine (B4)**: Toggle vi-mô cắt nhịp (flash trắng ngắn) giữ chú ý. Tránh phá không khí ở tone Story/Emotional. | `audio_mix_service.py`, `video_service.py`, `AdvancedSettings.jsx`, `main.py` | 2026-07-29 |
 | 57 | **Dynamic BGM Volume Envelope (B5)**: Parse bgm_volume từ LLM và áp dụng tự động cho từng scene thông qua Ffmpeg expression. | `audio_mix_service.py`, `gemini_service.py`, `main.py` | 2026-07-29 |
+| 58 | **Literary Mode SFX — Phase 1 (Quick Fix)**: Tạo `bell_chime.wav`, `heartbeat_dramatic.wav` + sửa gain `heartbeat_dramatic` 1.20→0.95. | `assets/sfx/`, `video_service.py` | 2026-08-13 |
+| 59 | **Literary Mode SFX — Phase 2 (Wire Pipeline)**: Wire `get_literary_sfx()`, `adjust_sfx_for_scene_duration()`, `apply_sfx_fade_filter()` vào render pipeline. Thêm `content_niche` vào passthrough fields. | `main.py`, `video_service.py` | 2026-08-13 |
+| 60 | **Literary Mode SFX — Phase 3 (RMS Calibration)**: Đo RMS 14 file SFX, về SCENE_SFX_GAIN về RMS-calibrated (-22dB target), gain_boost=1.0 cho tất cả genre. Viết test `test_literary_sfx.py`. | `video_service.py`, `tools/measure_sfx_rms.py`, `tests/test_literary_sfx.py` | 2026-08-13 |
 
 ---
 
